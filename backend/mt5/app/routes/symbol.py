@@ -1,10 +1,51 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 import MetaTrader5 as mt5
 from flasgger import swag_from
 import logging
 
 symbol_bp = Blueprint('symbol', __name__)
 logger = logging.getLogger(__name__)
+
+@symbol_bp.route('/symbols_get', methods=['GET'])
+@swag_from({
+    'tags': ['Symbol'],
+    'parameters': [
+        {
+            'name': 'visible',
+            'in': 'query',
+            'type': 'boolean',
+            'required': False,
+            'default': True,
+            'description': 'If true, only return symbols visible in Market Watch.'
+        }
+    ],
+    'responses': {
+        200: {
+            'description': 'List of symbol names.',
+            'schema': {
+                'type': 'array',
+                'items': {'type': 'string'}
+            }
+        },
+        500: {
+            'description': 'Failed to retrieve symbols.'
+        }
+    }
+})
+def get_symbols():
+    """
+    Get All Symbols
+    ---
+    description: Retrieve symbol names from MT5, optionally filtered to Market Watch visible symbols.
+    """
+    visible = request.args.get('visible', 'true').lower() != 'false'
+    symbols = mt5.symbols_get()
+    if symbols is None:
+        return jsonify({"error": "Failed to retrieve symbols"}), 500
+    if visible:
+        symbols = [s for s in symbols if s.visible]
+    names = sorted(s.name for s in symbols)
+    return jsonify(names)
 
 @symbol_bp.route('/symbol_info_tick/<symbol>', methods=['GET'])
 @swag_from({

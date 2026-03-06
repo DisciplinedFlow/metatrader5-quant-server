@@ -92,3 +92,6 @@ logs
 
 # Database
 *.sqlite3
+
+# MT5/Wine large binaries (exceed GitHub 100MB limit)
+config/.wine/

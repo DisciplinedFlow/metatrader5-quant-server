@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=MetaTrader 5
+Exec=env WINEPREFIX="/config/.wine" wine C:\\\\users\\\\abc\\\\AppData\\\\Roaming\\\\Microsoft\\\\Windows\\\\Start\\ Menu\\\\Programs\\\\MetaTrader\\ 5\\\\MetaTrader\\ 5.lnk
+Type=Application
+StartupNotify=true
+Path=/config/.wine/dosdevices/c:/Program Files/MetaTrader 5
+Icon=BB3F_Terminal.0
+StartupWMClass=terminal64.exe

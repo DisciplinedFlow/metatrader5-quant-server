@@ -1,0 +1,105 @@
+/* Trading Dashboard overrides */
+
+/* Nav active link */
+.active-nav {
+    color: var(--pico-primary-color) !important;
+    border-bottom: 2px solid var(--pico-primary-color);
+}
+
+/* Profit/loss coloring */
+.profit { color: #26a69a; font-weight: 600; }
+.loss { color: #ef5350; font-weight: 600; }
+
+/* Auth bar */
+#auth-bar form[role="group"] {
+    margin: 0;
+}
+#auth-bar input {
+    max-width: 120px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.85rem;
+}
+#auth-bar button {
+    padding: 0.3rem 0.8rem;
+    font-size: 0.85rem;
+}
+.auth-label {
+    color: #26a69a;
+    font-size: 0.85rem;
+    margin-right: 0.5rem;
+}
+
+/* Toast system */
+#toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.toast {
+    padding: 0.75rem 1.25rem;
+    border-radius: 0.5rem;
+    color: #fff;
+    font-size: 0.9rem;
+    opacity: 0;
+    transform: translateX(100%);
+    transition: opacity 0.3s, transform 0.3s;
+    max-width: 400px;
+}
+.toast.show {
+    opacity: 1;
+    transform: translateX(0);
+}
+.toast-success { background: #26a69a; }
+.toast-error { background: #ef5350; }
+.toast-info { background: #42a5f5; }
+
+/* Chart container */
+#chart-container {
+    width: 100%;
+    min-height: 500px;
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+/* Table tweaks */
+table {
+    font-size: 0.9rem;
+}
+table td, table th {
+    white-space: nowrap;
+}
+table button {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.8rem;
+    margin: 0 0.15rem;
+}
+
+/* Description list in cards */
+dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.25rem 1rem;
+    margin: 0;
+}
+dl dt {
+    color: var(--pico-muted-color);
+    font-size: 0.85rem;
+}
+dl dd {
+    margin: 0;
+    font-weight: 600;
+}
+
+/* Dialog overrides */
+dialog article {
+    max-width: 500px;
+}
+dialog footer {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}

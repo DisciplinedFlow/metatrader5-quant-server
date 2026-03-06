@@ -1,0 +1,5 @@
+# HSTS 1.0 Known Hosts database for GNU Wget.
+# Edit at your own risk.
+# <hostname>	<port>	<incl. subdomains>	<created>	<max-age>
+download.mql5.com	0	0	1772830772	31536000
+www.python.org	0	1	1772831316	63072000

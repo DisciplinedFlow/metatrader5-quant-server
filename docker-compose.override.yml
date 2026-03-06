@@ -1,0 +1,83 @@
+# Local development overrides - disables TLS (Let's Encrypt won't work on localhost)
+services:
+  traefik:
+    image: traefik:v3.3
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DOCKER_API_VERSION=1.44
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-public-certificates:/certificates
+    command:
+      - --providers.docker
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.http.address=:80
+      # No HTTPS entrypoint or Let's Encrypt for local dev
+      - --accesslog
+      - --log
+      - --api
+      - --api.insecure=true
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik-public
+      traefik.http.services.traefik-dashboard.loadbalancer.server.port: "8080"
+      traefik.http.routers.traefik-dashboard-http.entrypoints: http
+      traefik.http.routers.traefik-dashboard-http.rule: Host(`${TRAEFIK_DOMAIN}`)
+      traefik.http.routers.traefik-dashboard-http.service: api@internal
+      # Basic auth for dashboard
+      traefik.http.middlewares.admin-auth.basicauth.users: ${TRAEFIK_USERNAME}:${TRAEFIK_HASHED_PASSWORD}
+      traefik.http.routers.traefik-dashboard-http.middlewares: admin-auth
+    ports:
+      - 80:80
+      - 8080:8080  # Traefik dashboard
+
+  mt5:
+    platform: linux/amd64
+    ports:
+      - 3443:3000  # KasmVNC web interface
+      - 5001:5001  # MT5 API
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik-public
+      # VNC - HTTP only
+      traefik.http.routers.vnc-mt5-http.rule: Host(`${VNC_DOMAIN}`)
+      traefik.http.routers.vnc-mt5-http.entrypoints: http
+      traefik.http.routers.vnc-mt5-http.service: vnc-mt5-service
+      traefik.http.services.vnc-mt5-service.loadbalancer.server.port: "3000"
+      # API - HTTP only
+      traefik.http.routers.api-mt5-http.rule: Host(`${API_DOMAIN}`)
+      traefik.http.routers.api-mt5-http.entrypoints: http
+      traefik.http.routers.api-mt5-http.service: api-mt5-service
+      traefik.http.services.api-mt5-service.loadbalancer.server.port: "5001"
+
+  django:
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik-public
+      traefik.http.routers.django-http.rule: Host(`${DJANGO_DOMAIN}`)
+      traefik.http.routers.django-http.entrypoints: http
+      traefik.http.routers.django-http.service: django-service
+      traefik.http.services.django-service.loadbalancer.server.port: "8000"
+
+  dashboard:
+    build:
+      context: backend/dashboard
+      dockerfile: Dockerfile
+    ports:
+      - 3080:80
+    depends_on:
+      - mt5
+      - django
+    networks:
+      - default
+      - traefik-public
+
+  grafana:
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik-public
+      traefik.http.routers.grafana.rule: Host(`${GRAFANA_DOMAIN}`)
+      traefik.http.routers.grafana.entrypoints: http
+      traefik.http.services.grafana.loadbalancer.server.port: "3000"
+    ports:
+      - 3001:3000  # Remap to avoid port conflict with MT5 VNC through Traefik

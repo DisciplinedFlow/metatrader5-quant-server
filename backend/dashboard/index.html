@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT5 Trading Dashboard</title>
+    <link rel="stylesheet" href="/css/pico.min.css">
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+    <nav class="container-fluid">
+        <ul>
+            <li><strong>MT5 Dashboard</strong></li>
+        </ul>
+        <ul>
+            <li><a href="#/dashboard" data-nav>Overview</a></li>
+            <li><a href="#/positions" data-nav>Positions</a></li>
+            <li><a href="#/order" data-nav>Order</a></li>
+            <li><a href="#/history" data-nav>History</a></li>
+            <li><a href="#/chart" data-nav>Chart</a></li>
+        </ul>
+        <ul id="auth-bar">
+            <li id="auth-status">
+                <form id="login-form" role="group">
+                    <input type="text" name="username" placeholder="Username" required>
+                    <input type="password" name="password" placeholder="Password" required>
+                    <button type="submit" class="secondary">Login</button>
+                </form>
+            </li>
+        </ul>
+    </nav>
+
+    <main class="container" id="app">
+        <p aria-busy="true">Loading...</p>
+    </main>
+
+    <div id="toast-container"></div>
+
+    <script src="/js/vendor/lightweight-charts.standalone.production.js"></script>
+    <script type="module" src="/js/api.js"></script>
+    <script type="module" src="/js/components/toast.js"></script>
+    <script type="module" src="/js/router.js"></script>
+</body>
+</html>

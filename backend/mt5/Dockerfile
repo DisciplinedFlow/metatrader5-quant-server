@@ -1,5 +1,6 @@
 # Stage 1: Base image with apt packages
-FROM ghcr.io/linuxserver/baseimage-kasmvnc:debianbullseye-8446af38-ls104 AS base
+# Force amd64 - Wine/MetaTrader5 are x86-only
+FROM --platform=linux/amd64 ghcr.io/linuxserver/baseimage-kasmvnc:debianbullseye-8446af38-ls104 AS base
 
 ENV TITLE=MetaTrader
 ENV WINEARCH=win64
@@ -11,8 +12,10 @@ RUN mkdir -p /config/.wine && \
     chown -R abc:abc /config/.wine && \
     chmod -R 755 /config/.wine
 
-# Update package lists and upgrade packages
-RUN apt-get update && apt-get upgrade -y
+# Remove stale backports repo (no longer has a Release file) then update
+RUN rm -f /etc/apt/sources.list.d/*backports* && \
+    sed -i '/bullseye-backports/d' /etc/apt/sources.list && \
+    apt-get update && apt-get upgrade -y
 
 # Install required packages
 RUN apt-get install -y \
