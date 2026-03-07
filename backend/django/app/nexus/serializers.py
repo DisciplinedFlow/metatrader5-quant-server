@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Trade, TradeClosePricesMutation, StrategyConfig, BacktestResult
+from .models import Trade, TradeClosePricesMutation, StrategyConfig, BacktestResult, CustomStrategy
 
 class TradeClosePricesMutationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -28,5 +28,13 @@ class StrategyConfigSerializer(serializers.ModelSerializer):
     def get_latest_backtest(self, obj):
         latest = obj.backtest_results.order_by('-run_time').first()
         if latest:
-            return BacktestResultSerializer(latest).data
+            data = BacktestResultSerializer(latest).data
+            data.pop('trades', None)
+            return data
         return None
+
+
+class CustomStrategySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomStrategy
+        fields = '__all__'

@@ -6,23 +6,15 @@ import numpy as np
 
 from app.utils.api.data import fetch_data_pos
 from app.utils.api.yahoo import fetch_yahoo_data
-from app.quant.indicators.scalping import ema_crossover, rsi, atr
-from app.quant.algorithms.scalping.config import (
+from app.quant.indicators.mean_reversion import mean_reversion
+from app.quant.algorithms.mean_reversion.config import (
     PAIRS,
     MAIN_TIMEFRAME,
-    EMA_FAST,
-    EMA_SLOW,
-    RSI_PERIOD,
-    ATR_PERIOD,
-    SL_ATR_MULTIPLIER,
-    TP_ATR_MULTIPLIER,
-    MIN_WIN_RATE,
+    TP_PNL_MULTIPLIER,
+    SL_PNL_MULTIPLIER,
 )
 
 logger = logging.getLogger(__name__)
-
-YAHOO_PERIOD = '60d'
-YAHOO_INTERVAL = '5m'
 
 
 def _bar_to_unix(df, idx):
@@ -31,15 +23,20 @@ def _bar_to_unix(df, idx):
     return int(ts.timestamp()) if hasattr(ts, 'timestamp') else 0
 
 
-def _simulate_trades(df):
+YAHOO_PERIOD = '60d'
+YAHOO_INTERVAL = '15m'
+BB_WINDOW = 20
+MIN_WIN_RATE = 0.55
+
+
+def _simulate_trades_mr(df):
     """
-    Walk forward through candle data and simulate trades based on EMA crossover + RSI.
+    Walk forward through candle data and simulate trades based on Bollinger Band
+    mean-reversion signals.  'top' -> SELL, 'bottom' -> BUY.
     Returns a list of trade result dicts.
     """
     df = df.copy()
-    df['ema_signal'] = ema_crossover(df, fast=EMA_FAST, slow=EMA_SLOW)
-    df['rsi'] = rsi(df, period=RSI_PERIOD)
-    df['atr'] = atr(df, period=ATR_PERIOD)
+    df['mr_signal'] = mean_reversion(df, window=BB_WINDOW)
 
     trades = []
     in_trade = False
@@ -57,26 +54,22 @@ def _simulate_trades(df):
         if in_trade:
             trade_base = {'type': trade_type, 'entry': entry_price, 'sl': sl_price, 'tp': tp_price, 'signal': entry_signal, 'entry_time': _bar_to_unix(df, entry_bar_idx)}
             if trade_type == 'BUY':
-                # Check SL hit (low touches SL)
                 if row['low'] <= sl_price:
                     pnl = sl_price - entry_price
                     trades.append({**trade_base, 'exit': sl_price, 'pnl_pct': pnl / entry_price, 'result': 'SL', 'exit_time': _bar_to_unix(df, i)})
                     in_trade = False
                     continue
-                # Check TP hit (high touches TP)
                 if row['high'] >= tp_price:
                     pnl = tp_price - entry_price
                     trades.append({**trade_base, 'exit': tp_price, 'pnl_pct': pnl / entry_price, 'result': 'TP', 'exit_time': _bar_to_unix(df, i)})
                     in_trade = False
                     continue
             elif trade_type == 'SELL':
-                # Check SL hit (high touches SL)
                 if row['high'] >= sl_price:
                     pnl = entry_price - sl_price
                     trades.append({**trade_base, 'exit': sl_price, 'pnl_pct': pnl / entry_price, 'result': 'SL', 'exit_time': _bar_to_unix(df, i)})
                     in_trade = False
                     continue
-                # Check TP hit (low touches TP)
                 if row['low'] <= tp_price:
                     pnl = entry_price - tp_price
                     trades.append({**trade_base, 'exit': tp_price, 'pnl_pct': pnl / entry_price, 'result': 'TP', 'exit_time': _bar_to_unix(df, i)})
@@ -85,38 +78,34 @@ def _simulate_trades(df):
             continue
 
         # Check for entry signal on previous bar
-        signal = prev['ema_signal']
-        rsi_val = prev['rsi']
-        atr_val = prev['atr']
+        signal = prev['mr_signal']
 
-        if pd.isna(rsi_val) or pd.isna(atr_val) or atr_val <= 0:
-            continue
-
-        if signal == 'bull_cross' and 30 <= rsi_val <= 65:
-            trade_type = 'BUY'
-            entry_price = row['open']
-            entry_bar_idx = i
-            sl_price = entry_price - (atr_val * SL_ATR_MULTIPLIER)
-            tp_price = entry_price + (atr_val * TP_ATR_MULTIPLIER)
-            entry_signal = f"EMA bull cross, RSI {rsi_val:.1f}"
-            in_trade = True
-        elif signal == 'bear_cross' and 35 <= rsi_val <= 70:
+        if signal == 'top':
+            # Price crossed above upper band -> expect reversion down -> SELL
             trade_type = 'SELL'
             entry_price = row['open']
             entry_bar_idx = i
-            sl_price = entry_price + (atr_val * SL_ATR_MULTIPLIER)
-            tp_price = entry_price - (atr_val * TP_ATR_MULTIPLIER)
-            entry_signal = f"EMA bear cross, RSI {rsi_val:.1f}"
+            sl_price = entry_price * (1 - SL_PNL_MULTIPLIER / 100)   # SL_PNL_MULTIPLIER is negative
+            tp_price = entry_price * (1 - TP_PNL_MULTIPLIER / 100)
+            entry_signal = 'BB upper band touch'
+            in_trade = True
+        elif signal == 'bottom':
+            # Price crossed below lower band -> expect reversion up -> BUY
+            trade_type = 'BUY'
+            entry_price = row['open']
+            entry_bar_idx = i
+            sl_price = entry_price * (1 + SL_PNL_MULTIPLIER / 100)   # SL_PNL_MULTIPLIER is negative
+            tp_price = entry_price * (1 + TP_PNL_MULTIPLIER / 100)
+            entry_signal = 'BB lower band touch'
             in_trade = True
 
     return trades
 
 
-def run_backtest():
+def run_backtest_mr():
     """
-    Run backtest across all pairs using historical M5 data.
-    Primary: Yahoo Finance (up to 60 days of 5m data).
-    Fallback: MT5 API (500 bars).
+    Run mean-reversion backtest across all pairs using historical M15 data.
+    Primary: Yahoo Finance.  Fallback: MT5 API.
     Returns a dict with aggregated results.
     """
     all_trades = []
@@ -125,30 +114,28 @@ def run_backtest():
 
     for pair in PAIRS:
         try:
-            # Primary: Yahoo Finance
             df = fetch_yahoo_data(pair, period=YAHOO_PERIOD, interval=YAHOO_INTERVAL)
             source = 'yahoo'
 
-            # Fallback: MT5
-            if df is None or df.empty or len(df) < EMA_SLOW + 10:
-                logger.info(f"Backtest {pair}: Yahoo data insufficient, falling back to MT5")
+            if df is None or df.empty or len(df) < BB_WINDOW + 10:
+                logger.info(f"MR Backtest {pair}: Yahoo data insufficient, falling back to MT5")
                 df = fetch_data_pos(pair, MAIN_TIMEFRAME, 500)
                 source = 'mt5'
                 if source == 'mt5' and data_source == 'YAHOO':
                     data_source = 'MIXED'
 
-            if df is None or df.empty or len(df) < EMA_SLOW + 10:
-                logger.info(f"Backtest: insufficient data for {pair} (both sources)")
+            if df is None or df.empty or len(df) < BB_WINDOW + 10:
+                logger.info(f"MR Backtest: insufficient data for {pair} (both sources)")
                 continue
 
-            trades = _simulate_trades(df)
+            trades = _simulate_trades_mr(df)
             for t in trades:
                 t['symbol'] = pair
             all_trades.extend(trades)
-            logger.info(f"Backtest {pair}: {len(trades)} trades simulated ({source}, {len(df)} bars)")
+            logger.info(f"MR Backtest {pair}: {len(trades)} trades simulated ({source}, {len(df)} bars)")
 
         except Exception as e:
-            logger.error(f"Backtest error for {pair}: {e}\n{traceback.format_exc()}")
+            logger.error(f"MR Backtest error for {pair}: {e}\n{traceback.format_exc()}")
 
     if not all_trades:
         return {
@@ -228,45 +215,5 @@ def run_backtest():
         'symbol_breakdown': symbol_breakdown,
     }
 
-    logger.info(f"Backtest complete: {result}")
+    logger.info(f"MR Backtest complete: {result}")
     return result
-
-
-def run_and_store_backtest(strategy_name='SCALPING'):
-    """
-    Run backtest and store the result in the database.
-    Returns the BacktestResult instance.
-    """
-    from app.nexus.models import StrategyConfig, BacktestResult
-
-    strategy = StrategyConfig.objects.filter(name=strategy_name).first()
-    if strategy is None:
-        logger.error(f"{strategy_name} strategy not found, cannot store backtest result.")
-        return None
-
-    if strategy_name == 'MEAN_REVERSION':
-        from app.quant.backtester_mr import run_backtest_mr
-        result = run_backtest_mr()
-    else:
-        result = run_backtest()
-
-    backtest = BacktestResult.objects.create(
-        strategy=strategy,
-        total_trades=result['total_trades'],
-        winning_trades=result['winning_trades'],
-        losing_trades=result['losing_trades'],
-        win_rate=result['win_rate'],
-        total_pnl=result['total_pnl'],
-        profit_factor=result['profit_factor'],
-        avg_win=result['avg_win'],
-        avg_loss=result['avg_loss'],
-        passed=result['passed'],
-        data_source=result.get('data_source', 'MT5'),
-        period_days=result.get('period_days', 7),
-        trades=result.get('trades', []),
-        equity_curve=result.get('equity_curve', []),
-        symbol_breakdown=result.get('symbol_breakdown', {}),
-    )
-
-    logger.info(f"Backtest result stored: id={backtest.id}, passed={backtest.passed}")
-    return backtest

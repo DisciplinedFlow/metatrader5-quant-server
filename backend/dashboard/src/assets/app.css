@@ -1,0 +1,204 @@
+/* Make #app invisible to layout so Pico CSS body > * selectors still match */
+#app { display: contents; }
+
+/* Trading Dashboard overrides */
+
+/* Nav active link */
+.router-link-active {
+    color: var(--pico-primary-color) !important;
+    border-bottom: 2px solid var(--pico-primary-color);
+}
+
+/* Profit/loss coloring */
+.profit { color: #26a69a; font-weight: 600; }
+.loss { color: #ef5350; font-weight: 600; }
+
+/* Toast system */
+.toast-container {
+    position: fixed;
+    top: 4.5rem;
+    right: 1rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.toast {
+    padding: 0.75rem 1.25rem;
+    border-radius: 0.5rem;
+    color: #fff;
+    font-size: 0.9rem;
+    opacity: 0;
+    transform: translateX(100%);
+    transition: opacity 0.3s, transform 0.3s;
+    max-width: 400px;
+}
+.toast.show {
+    opacity: 1;
+    transform: translateX(0);
+}
+.toast-success { background: #26a69a; }
+.toast-error { background: #ef5350; }
+.toast-info { background: #42a5f5; }
+
+/* Chart container */
+.chart-container {
+    width: 100%;
+    min-height: 500px;
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+/* Table tweaks */
+table {
+    font-size: 0.9rem;
+}
+table td, table th {
+    white-space: nowrap;
+}
+table button {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.8rem;
+    margin: 0 0.15rem;
+}
+
+/* Description list in cards */
+dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.25rem 1rem;
+    margin: 0;
+}
+dl dt {
+    color: var(--pico-muted-color);
+    font-size: 0.85rem;
+}
+dl dd {
+    margin: 0;
+    font-weight: 600;
+}
+
+/* Log viewer */
+.log-viewer {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    max-height: 70vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.log-error { color: #ef5350; }
+.log-warning { color: #ffa726; }
+.log-info { color: #c9d1d9; }
+
+/* Market Sessions */
+.sessions-container {
+    position: relative;
+}
+.timeline-hours {
+    position: relative;
+    height: 20px;
+    margin-left: 210px;
+    margin-bottom: 0.25rem;
+    border-bottom: 1px solid #2a2a4a;
+}
+.timeline-hours span {
+    position: absolute;
+    transform: translateX(-50%);
+    font-size: 0.7rem;
+    color: var(--pico-muted-color);
+    top: 2px;
+}
+.session-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    gap: 0.3rem;
+}
+.session-label {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: 200px;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.session-label strong {
+    font-size: 0.85rem;
+}
+.session-status {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    opacity: 0.6;
+    flex-shrink: 0;
+}
+.session-timeline {
+    position: relative;
+    height: 20px;
+    background: #1a1a2e;
+    border-radius: 3px;
+    flex: 1;
+    min-width: 200px;
+    overflow: hidden;
+}
+.session-bar {
+    position: absolute;
+    top: 3px;
+    height: 14px;
+    border-radius: 2px;
+    transition: opacity 0.3s;
+}
+.session-now {
+    position: absolute;
+    top: 0;
+    width: 2px;
+    height: 100%;
+    background: #fff;
+    opacity: 0.8;
+    z-index: 1;
+}
+.session-meta {
+    width: 100%;
+    display: flex;
+    gap: 0.75rem;
+    padding-left: 160px;
+}
+.session-meta small {
+    font-size: 0.72rem;
+    color: var(--pico-muted-color);
+}
+.session-local {
+    opacity: 0.6;
+}
+.session-meta .session-assets {
+    opacity: 0.5;
+    margin-left: auto;
+}
+
+/* Strategy card buttons */
+article > footer {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+article > footer button {
+    width: auto;
+}
+
+/* Dialog overrides */
+dialog article {
+    max-width: 500px;
+}
+dialog footer {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}

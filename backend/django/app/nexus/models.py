@@ -106,9 +106,27 @@ class BacktestResult(models.Model):
     avg_loss = models.FloatField(null=True)
     passed = models.BooleanField()
     data_source = models.CharField(max_length=20, default='MT5')
+    trades = models.JSONField(default=list, blank=True)
+    equity_curve = models.JSONField(default=list, blank=True)
+    symbol_breakdown = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ['-run_time']
 
     def __str__(self):
         return f"Backtest {self.strategy.name} @ {self.run_time} - {'PASS' if self.passed else 'FAIL'}"
+
+
+class CustomStrategy(models.Model):
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    definition = models.JSONField(default=dict)
+    strategy_config = models.OneToOneField(
+        StrategyConfig, on_delete=models.CASCADE,
+        related_name='custom_definition', null=True, blank=True
+    )
+
+    def __str__(self):
+        return self.name

@@ -5,15 +5,15 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework import viewsets, status, views
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Trade, TradeClosePricesMutation, StrategyConfig, BacktestResult
+from .models import Trade, TradeClosePricesMutation, StrategyConfig, BacktestResult, CustomStrategy
 from .serializers import (
     TradeSerializer,
     TradeClosePricesMutationSerializer,
     StrategyConfigSerializer,
     BacktestResultSerializer,
+    CustomStrategySerializer,
 )
 from .filters import TradeFilter
 from app.utils.api.order import send_market_order, modify_sl_tp
@@ -30,8 +30,6 @@ class TradeViewSet(viewsets.ReadOnlyModelViewSet):
         return Trade.objects.prefetch_related('close_prices_mutations').all()
 
 class SendMarketOrderView(views.APIView):
-    permission_classes = [IsAuthenticated]
-
     def post(self, request):
         data = request.data
         required_fields = ['symbol', 'volume', 'order_type']
@@ -80,8 +78,6 @@ class SendMarketOrderView(views.APIView):
 
 
 class ModifySLTPView(views.APIView):
-    permission_classes = [IsAuthenticated]
-
     def post(self, request):
         data = request.data
         required_fields = ['id', 'ticket', 'stop_loss', 'take_profit']
@@ -147,14 +143,8 @@ class StrategyViewSet(viewsets.ReadOnlyModelViewSet):
     def run_backtest(self, request, pk=None):
         """Trigger a backtest for this strategy on demand."""
         strategy = self.get_object()
-        if strategy.name != 'SCALPING':
-            return Response(
-                {'error': 'Backtest is only supported for the SCALPING strategy.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         from app.quant.tasks import run_backtest as run_backtest_task
-        run_backtest_task.delay()
+        run_backtest_task.delay(strategy_name=strategy.name)
         return Response({'status': 'Backtest started'}, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['get'], url_path='backtest-results')
@@ -163,3 +153,57 @@ class StrategyViewSet(viewsets.ReadOnlyModelViewSet):
         strategy = self.get_object()
         results = BacktestResult.objects.filter(strategy=strategy).order_by('-run_time')[:20]
         return Response(BacktestResultSerializer(results, many=True).data)
+
+    @action(detail=True, methods=['get'], url_path='backtest-results/(?P<result_id>[^/.]+)')
+    def backtest_detail(self, request, pk=None, result_id=None):
+        result = BacktestResult.objects.filter(strategy_id=pk, id=result_id).first()
+        if not result:
+            return Response({'error': 'Not found'}, status=404)
+        return Response(BacktestResultSerializer(result).data)
+
+
+class BotControlView(views.APIView):
+    def get(self, request):
+        from app.utils.bot_control import get_bot_status
+        return Response(get_bot_status())
+
+    def post(self, request):
+        from app.utils.bot_control import set_bot_paused
+        paused = request.data.get('paused', True)
+        set_bot_paused(paused)
+        return Response({'paused': paused})
+
+
+class YahooDataView(views.APIView):
+    def get(self, request):
+        from app.utils.api.yahoo import fetch_yahoo_data
+        symbol = request.query_params.get('symbol')
+        period = request.query_params.get('period', '60d')
+        interval = request.query_params.get('interval', '5m')
+        if not symbol:
+            return Response({'error': 'symbol required'}, status=status.HTTP_400_BAD_REQUEST)
+        df = fetch_yahoo_data(symbol, period=period, interval=interval)
+        if df is None or df.empty:
+            return Response([])
+        records = []
+        for idx, row in df.iterrows():
+            records.append({
+                'time': idx.isoformat() if hasattr(idx, 'isoformat') else str(idx),
+                'open': row['open'],
+                'high': row['high'],
+                'low': row['low'],
+                'close': row['close'],
+            })
+        return Response(records)
+
+
+class CustomStrategyViewSet(viewsets.ModelViewSet):
+    queryset = CustomStrategy.objects.all()
+    serializer_class = CustomStrategySerializer
+
+    @action(detail=True, methods=['post'], url_path='backtest')
+    def run_backtest(self, request, pk=None):
+        custom = self.get_object()
+        from app.quant.tasks import run_custom_backtest
+        run_custom_backtest.delay(custom_strategy_id=custom.id)
+        return Response({'status': 'Backtest started'}, status=status.HTTP_202_ACCEPTED)
