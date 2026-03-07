@@ -67,12 +67,11 @@ LOGGING = {
         },
     },
     'loggers': {
-        'quant': {
+        'app.quant': {
             'handlers': ['console', 'file'],
             'level': 'INFO',
-            'propagate': True,
+            'propagate': False,
         },
-        # ... other loggers ...
     },
 }
 
@@ -216,5 +215,9 @@ CELERY_BEAT_SCHEDULE = {
     'run-quant-close-algorithm': {
         'task': 'quant.tasks.run_quant_close_algorithm',  # This should match the @shared_task name
         'schedule': 15,
+    },
+    'run-backtest': {
+        'task': 'quant.tasks.run_backtest',
+        'schedule': 60.0 * 60 * 6,  # every 6 hours
     },
 }

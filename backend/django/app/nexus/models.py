@@ -78,3 +78,37 @@ class TradeClosePricesMutation(models.Model):
 
     def __str__(self):
         return f"Mutation for {self.trade} at {self.mutation_time}"
+
+
+class StrategyConfig(models.Model):
+    name = models.CharField(max_length=50, unique=True)
+    is_active = models.BooleanField(default=False)
+    description = models.TextField(blank=True)
+    last_activated = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.name} ({'active' if self.is_active else 'inactive'})"
+
+
+class BacktestResult(models.Model):
+    strategy = models.ForeignKey(
+        StrategyConfig, on_delete=models.CASCADE, related_name='backtest_results'
+    )
+    run_time = models.DateTimeField(auto_now_add=True)
+    period_days = models.IntegerField(default=7)
+    total_trades = models.IntegerField()
+    winning_trades = models.IntegerField()
+    losing_trades = models.IntegerField()
+    win_rate = models.FloatField()
+    total_pnl = models.FloatField()
+    profit_factor = models.FloatField(null=True)
+    avg_win = models.FloatField(null=True)
+    avg_loss = models.FloatField(null=True)
+    passed = models.BooleanField()
+    data_source = models.CharField(max_length=20, default='MT5')
+
+    class Meta:
+        ordering = ['-run_time']
+
+    def __str__(self):
+        return f"Backtest {self.strategy.name} @ {self.run_time} - {'PASS' if self.passed else 'FAIL'}"

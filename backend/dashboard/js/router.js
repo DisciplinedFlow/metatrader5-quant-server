@@ -8,6 +8,8 @@ const routes = {
     '/order': () => import('./pages/order.js'),
     '/history': () => import('./pages/history.js'),
     '/chart': () => import('./pages/chart.js'),
+    '/logs': () => import('./pages/logs.js'),
+    '/strategies': () => import('./pages/strategies.js'),
 };
 
 let currentCleanup = null;

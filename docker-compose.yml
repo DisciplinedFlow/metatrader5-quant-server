@@ -138,6 +138,7 @@ services:
     container_name: django
     volumes:
       - static_volume:/app/staticfiles
+      - quant-logs:/app/logs
     restart: unless-stopped
     ports:
       - 8000:8000
@@ -197,6 +198,7 @@ services:
     command: celery -A app worker --loglevel=info --concurrency=3
     volumes:
       - static_volume:/app/staticfiles
+      - quant-logs:/app/logs
     env_file:
       - .env
     depends_on:
@@ -430,6 +432,7 @@ volumes:
   prometheus-data: {}
   postgres-data: {}
   static_volume: {}
+  quant-logs: {}
 
 networks:
   default:

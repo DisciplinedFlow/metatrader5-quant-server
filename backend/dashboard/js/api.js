@@ -168,6 +168,36 @@ const api = {
             headers,
         });
     },
+
+    // --- Strategy API ---
+
+    getStrategies() {
+        return this.django('v1/strategies/');
+    },
+
+    activateStrategy(id) {
+        const headers = {};
+        const basic = localStorage.getItem('django_basic');
+        if (basic) headers.Authorization = `Basic ${basic}`;
+        return this.django(`v1/strategies/${id}/activate/`, {
+            method: 'POST',
+            headers,
+        });
+    },
+
+    runBacktest(id) {
+        const headers = {};
+        const basic = localStorage.getItem('django_basic');
+        if (basic) headers.Authorization = `Basic ${basic}`;
+        return this.django(`v1/strategies/${id}/backtest/`, {
+            method: 'POST',
+            headers,
+        });
+    },
+
+    getBacktestResults(id) {
+        return this.django(`v1/strategies/${id}/backtest-results/`);
+    },
 };
 
 export default api;
