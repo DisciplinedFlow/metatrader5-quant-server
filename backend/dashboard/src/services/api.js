@@ -196,6 +196,126 @@ const api = {
   fetchYahooData(symbol, period = '60d', interval = '5m') {
     return this.django(`v1/yahoo-data/?symbol=${encodeURIComponent(symbol)}&period=${period}&interval=${interval}`)
   },
+
+  // --- Polymarket API ---
+
+  getPolymarketBotStatus() {
+    return this.django('v1/polymarket/bot/status/')
+  },
+
+  setPolymarketBotPaused(paused) {
+    return this.django('v1/polymarket/bot/status/', {
+      method: 'POST',
+      body: JSON.stringify({ paused }),
+    })
+  },
+
+  getPolymarketDashboard() {
+    return this.django('v1/polymarket/dashboard/')
+  },
+
+  getPolymarketMarkets() {
+    return this.django('v1/polymarket/markets/')
+  },
+
+  getPolymarketPositions(status) {
+    const qs = status ? `?status=${status}` : ''
+    return this.django(`v1/polymarket/positions/${qs}`)
+  },
+
+  getPolymarketTrades() {
+    return this.django('v1/polymarket/trades/')
+  },
+
+  syncPolymarketMarkets() {
+    return this.django('v1/polymarket/markets/sync/', {
+      method: 'POST',
+    })
+  },
+
+  getPolymarketLogs(lines = 200) {
+    return this.django(`v1/polymarket/logs/?lines=${lines}`)
+  },
+
+  getPolymarketBacktests() {
+    return this.django('v1/polymarket/backtests/')
+  },
+
+  getPolymarketBacktest(id) {
+    return this.django(`v1/polymarket/backtests/${id}/`)
+  },
+
+  runPolymarketBacktest() {
+    return this.django('v1/polymarket/backtests/run/', {
+      method: 'POST',
+    })
+  },
+
+  getPolymarketStrategyConfig() {
+    return this.django('v1/polymarket/strategy/')
+  },
+
+  updatePolymarketStrategyConfig(data) {
+    return this.django('v1/polymarket/strategy/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  // --- Crypto API ---
+
+  getCryptoBotStatus() {
+    return this.django('v1/crypto/bot/status/')
+  },
+
+  setCryptoBotPaused(paused) {
+    return this.django('v1/crypto/bot/status/', {
+      method: 'POST',
+      body: JSON.stringify({ paused }),
+    })
+  },
+
+  getCryptoDashboard() {
+    return this.django('v1/crypto/dashboard/')
+  },
+
+  getCryptoPositions(status) {
+    const qs = status ? `?status=${status}` : ''
+    return this.django(`v1/crypto/positions/${qs}`)
+  },
+
+  getCryptoTrades() {
+    return this.django('v1/crypto/trades/')
+  },
+
+  getCryptoLogs(lines = 200) {
+    return this.django(`v1/crypto/logs/?lines=${lines}`)
+  },
+
+  getCryptoBacktests() {
+    return this.django('v1/crypto/backtests/')
+  },
+
+  getCryptoBacktest(id) {
+    return this.django(`v1/crypto/backtests/${id}/`)
+  },
+
+  runCryptoBacktest() {
+    return this.django('v1/crypto/backtests/run/', {
+      method: 'POST',
+    })
+  },
+
+  getCryptoStrategyConfig() {
+    return this.django('v1/crypto/strategy/')
+  },
+
+  updateCryptoStrategyConfig(data) {
+    return this.django('v1/crypto/strategy/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
 }
 
 export default api

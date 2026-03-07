@@ -1,7 +1,18 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { usePolling } from '@/composables/usePolling'
+import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
+
+const forexLinks = [
+  { to: '/forex', label: 'Overview' },
+  { to: '/forex/positions', label: 'Positions' },
+  { to: '/forex/order', label: 'Order' },
+  { to: '/forex/history', label: 'History' },
+  { to: '/forex/chart', label: 'Chart' },
+  { to: '/forex/logs', label: 'Logs' },
+  { to: '/forex/strategy', label: 'Strategies' },
+]
 
 const lines = ref('200')
 const autoScroll = ref(true)
@@ -43,6 +54,7 @@ function logClass(line) {
 </script>
 
 <template>
+  <SectionNav :links="forexLinks" />
   <h2>Bot Logs</h2>
   <div style="display:flex;gap:1rem;align-items:center;margin-bottom:1rem;">
     <label style="margin:0;">

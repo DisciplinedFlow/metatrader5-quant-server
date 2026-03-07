@@ -3,7 +3,18 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { createChart, CandlestickSeries, HistogramSeries, CrosshairMode } from 'lightweight-charts'
 import { useToast } from '@/composables/useToast'
 import SymbolSelect from '@/components/SymbolSelect.vue'
+import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
+
+const forexLinks = [
+  { to: '/forex', label: 'Overview' },
+  { to: '/forex/positions', label: 'Positions' },
+  { to: '/forex/order', label: 'Order' },
+  { to: '/forex/history', label: 'History' },
+  { to: '/forex/chart', label: 'Chart' },
+  { to: '/forex/logs', label: 'Logs' },
+  { to: '/forex/strategy', label: 'Strategies' },
+]
 
 const toast = useToast()
 
@@ -100,6 +111,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <SectionNav :links="forexLinks" />
   <h2>Chart</h2>
   <form class="grid" style="align-items:end;" @submit.prevent="loadChart">
     <label>

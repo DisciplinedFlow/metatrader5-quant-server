@@ -1,38 +1,84 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 const routes = [
+  // Root redirect
   {
     path: '/',
-    redirect: '/dashboard',
+    redirect: '/forex',
   },
+
+  // Backwards-compat redirects for old routes
+  { path: '/dashboard', redirect: '/forex' },
+  { path: '/positions', redirect: '/forex/positions' },
+  { path: '/order', redirect: '/forex/order' },
+  { path: '/history', redirect: '/forex/history' },
+  { path: '/chart', redirect: '/forex/chart' },
+  { path: '/logs', redirect: '/forex/logs' },
+  { path: '/strategies', redirect: '/forex/strategy' },
+
+  // --- Forex ---
   {
-    path: '/dashboard',
+    path: '/forex',
     component: () => import('@/pages/DashboardPage.vue'),
   },
   {
-    path: '/positions',
+    path: '/forex/positions',
     component: () => import('@/pages/PositionsPage.vue'),
   },
   {
-    path: '/order',
+    path: '/forex/order',
     component: () => import('@/pages/OrderPage.vue'),
   },
   {
-    path: '/history',
+    path: '/forex/history',
     component: () => import('@/pages/HistoryPage.vue'),
   },
   {
-    path: '/chart',
+    path: '/forex/chart',
     component: () => import('@/pages/ChartPage.vue'),
   },
   {
-    path: '/logs',
+    path: '/forex/logs',
     component: () => import('@/pages/LogsPage.vue'),
   },
   {
-    path: '/strategies',
+    path: '/forex/strategy',
     component: () => import('@/pages/StrategiesPage.vue'),
   },
+
+  // --- Polymarket ---
+  {
+    path: '/polymarket',
+    component: () => import('@/pages/polymarket/PolyDashboardPage.vue'),
+  },
+  {
+    path: '/polymarket/markets',
+    component: () => import('@/pages/polymarket/PolyMarketsPage.vue'),
+  },
+  {
+    path: '/polymarket/positions',
+    component: () => import('@/pages/polymarket/PolyPositionsPage.vue'),
+  },
+  {
+    path: '/polymarket/strategy',
+    component: () => import('@/pages/polymarket/PolyStrategyPage.vue'),
+  },
+
+  // --- Crypto ---
+  {
+    path: '/crypto',
+    component: () => import('@/pages/crypto/CryptoDashboardPage.vue'),
+  },
+  {
+    path: '/crypto/positions',
+    component: () => import('@/pages/crypto/CryptoPositionsPage.vue'),
+  },
+  {
+    path: '/crypto/strategy',
+    component: () => import('@/pages/crypto/CryptoStrategyPage.vue'),
+  },
+
+  // Catch-all
   {
     path: '/:pathMatch(.*)*',
     component: () => import('@/pages/NotFoundPage.vue'),

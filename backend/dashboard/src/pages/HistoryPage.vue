@@ -1,6 +1,17 @@
 <script setup>
 import { ref, computed } from 'vue'
+import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
+
+const forexLinks = [
+  { to: '/forex', label: 'Overview' },
+  { to: '/forex/positions', label: 'Positions' },
+  { to: '/forex/order', label: 'Order' },
+  { to: '/forex/history', label: 'History' },
+  { to: '/forex/chart', label: 'Chart' },
+  { to: '/forex/logs', label: 'Logs' },
+  { to: '/forex/strategy', label: 'Strategies' },
+]
 
 const now = new Date()
 const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
@@ -71,6 +82,7 @@ async function searchOrders() {
 </script>
 
 <template>
+  <SectionNav :links="forexLinks" />
   <h2>Trade History</h2>
 
   <article>

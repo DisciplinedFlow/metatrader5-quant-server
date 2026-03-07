@@ -4,7 +4,18 @@ import { usePositionsStore } from '@/stores/positions'
 import { usePolling } from '@/composables/usePolling'
 import PositionsTable from '@/components/PositionsTable.vue'
 import MarketSessions from '@/components/MarketSessions.vue'
+import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
+
+const forexLinks = [
+  { to: '/forex', label: 'Overview' },
+  { to: '/forex/positions', label: 'Positions' },
+  { to: '/forex/order', label: 'Order' },
+  { to: '/forex/history', label: 'History' },
+  { to: '/forex/chart', label: 'Chart' },
+  { to: '/forex/logs', label: 'Logs' },
+  { to: '/forex/strategy', label: 'Strategies' },
+]
 
 const positionsStore = usePositionsStore()
 const tick = ref(null)
@@ -47,6 +58,7 @@ usePolling(refresh, 5000)
 </script>
 
 <template>
+  <SectionNav :links="forexLinks" />
   <h2>Account Overview</h2>
   <div class="grid">
     <article>

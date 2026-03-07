@@ -8,6 +8,17 @@ import TradeMarkersChart from '@/components/charts/TradeMarkersChart.vue'
 import SymbolBreakdownTable from '@/components/charts/SymbolBreakdownTable.vue'
 import BacktestHistoryChart from '@/components/charts/BacktestHistoryChart.vue'
 import StrategyBuilder from '@/components/StrategyBuilder.vue'
+import SectionNav from '@/components/SectionNav.vue'
+
+const forexLinks = [
+  { to: '/forex', label: 'Overview' },
+  { to: '/forex/positions', label: 'Positions' },
+  { to: '/forex/order', label: 'Order' },
+  { to: '/forex/history', label: 'History' },
+  { to: '/forex/chart', label: 'Chart' },
+  { to: '/forex/logs', label: 'Logs' },
+  { to: '/forex/strategy', label: 'Strategies' },
+]
 
 const toast = useToast()
 const strategies = ref([])
@@ -135,6 +146,7 @@ function onBuilderSaved() {
 </script>
 
 <template>
+  <SectionNav :links="forexLinks" />
   <h2>Strategy Management</h2>
 
   <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">

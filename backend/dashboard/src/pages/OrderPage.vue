@@ -2,7 +2,18 @@
 import { reactive, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import SymbolSelect from '@/components/SymbolSelect.vue'
+import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
+
+const forexLinks = [
+  { to: '/forex', label: 'Overview' },
+  { to: '/forex/positions', label: 'Positions' },
+  { to: '/forex/order', label: 'Order' },
+  { to: '/forex/history', label: 'History' },
+  { to: '/forex/chart', label: 'Chart' },
+  { to: '/forex/logs', label: 'Logs' },
+  { to: '/forex/strategy', label: 'Strategies' },
+]
 
 const toast = useToast()
 
@@ -57,6 +68,7 @@ async function handleSubmit() {
 </script>
 
 <template>
+  <SectionNav :links="forexLinks" />
   <h2>Place Market Order</h2>
   <article>
     <form @submit.prevent="handleSubmit">

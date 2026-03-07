@@ -5,7 +5,18 @@ import { usePolling } from '@/composables/usePolling'
 import { useToast } from '@/composables/useToast'
 import PositionsTable from '@/components/PositionsTable.vue'
 import ModifyDialog from '@/components/ModifyDialog.vue'
+import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
+
+const forexLinks = [
+  { to: '/forex', label: 'Overview' },
+  { to: '/forex/positions', label: 'Positions' },
+  { to: '/forex/order', label: 'Order' },
+  { to: '/forex/history', label: 'History' },
+  { to: '/forex/chart', label: 'Chart' },
+  { to: '/forex/logs', label: 'Logs' },
+  { to: '/forex/strategy', label: 'Strategies' },
+]
 
 const positionsStore = usePositionsStore()
 const toast = useToast()
@@ -71,6 +82,7 @@ async function handleModifySubmit({ ticket, sl, tp }) {
 </script>
 
 <template>
+  <SectionNav :links="forexLinks" />
   <h2>Active Positions</h2>
   <div style="display:flex;gap:.5rem;margin-bottom:1rem;">
     <button class="outline" @click="refresh">Refresh</button>
