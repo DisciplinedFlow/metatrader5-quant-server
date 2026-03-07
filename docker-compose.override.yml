@@ -1,10 +1,9 @@
 # Local development overrides - disables TLS (Let's Encrypt won't work on localhost)
 services:
   traefik:
-    image: traefik:v3.3
+    image: traefik:v3
     environment:
       - DOCKER_HOST=unix:///var/run/docker.sock
-      - DOCKER_API_VERSION=1.44
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-public-certificates:/certificates
@@ -24,9 +23,13 @@ services:
       traefik.http.routers.traefik-dashboard-http.entrypoints: http
       traefik.http.routers.traefik-dashboard-http.rule: Host(`${TRAEFIK_DOMAIN}`)
       traefik.http.routers.traefik-dashboard-http.service: api@internal
+      traefik.http.routers.traefik-dashboard-http.middlewares: admin-auth
+      # Override HTTPS router from base to use HTTP for local dev
+      traefik.http.routers.traefik-dashboard-https.entrypoints: http
+      traefik.http.routers.traefik-dashboard-https.tls: "false"
+      traefik.http.routers.traefik-dashboard-https.tls.certresolver: ""
       # Basic auth for dashboard
       traefik.http.middlewares.admin-auth.basicauth.users: ${TRAEFIK_USERNAME}:${TRAEFIK_HASHED_PASSWORD}
-      traefik.http.routers.traefik-dashboard-http.middlewares: admin-auth
     ports:
       - 80:80
       - 8080:8080  # Traefik dashboard
@@ -44,11 +47,19 @@ services:
       traefik.http.routers.vnc-mt5-http.entrypoints: http
       traefik.http.routers.vnc-mt5-http.service: vnc-mt5-service
       traefik.http.services.vnc-mt5-service.loadbalancer.server.port: "3000"
+      # Override HTTPS VNC router from base to use HTTP
+      traefik.http.routers.vnc-mt5-https.entrypoints: http
+      traefik.http.routers.vnc-mt5-https.tls: "false"
+      traefik.http.routers.vnc-mt5-https.tls.certresolver: ""
       # API - HTTP only
       traefik.http.routers.api-mt5-http.rule: Host(`${API_DOMAIN}`)
       traefik.http.routers.api-mt5-http.entrypoints: http
       traefik.http.routers.api-mt5-http.service: api-mt5-service
       traefik.http.services.api-mt5-service.loadbalancer.server.port: "5001"
+      # Override HTTPS API router from base to use HTTP
+      traefik.http.routers.api-mt5-https.entrypoints: http
+      traefik.http.routers.api-mt5-https.tls: "false"
+      traefik.http.routers.api-mt5-https.tls.certresolver: ""
 
   django:
     labels:
@@ -58,6 +69,10 @@ services:
       traefik.http.routers.django-http.entrypoints: http
       traefik.http.routers.django-http.service: django-service
       traefik.http.services.django-service.loadbalancer.server.port: "8000"
+      # Override HTTPS router from base to use HTTP
+      traefik.http.routers.django-https.entrypoints: http
+      traefik.http.routers.django-https.tls: "false"
+      traefik.http.routers.django-https.tls.certresolver: ""
 
   dashboard:
     build:
@@ -78,6 +93,8 @@ services:
       traefik.docker.network: traefik-public
       traefik.http.routers.grafana.rule: Host(`${GRAFANA_DOMAIN}`)
       traefik.http.routers.grafana.entrypoints: http
+      traefik.http.routers.grafana.tls: "false"
+      traefik.http.routers.grafana.tls.certresolver: ""
       traefik.http.services.grafana.loadbalancer.server.port: "3000"
     ports:
       - 3001:3000  # Remap to avoid port conflict with MT5 VNC through Traefik
