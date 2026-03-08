@@ -18,8 +18,8 @@ const maxWinRate = computed(() => {
 </script>
 
 <template>
-  <figure v-if="rows.length">
-    <table role="grid">
+  <figure v-if="rows.length" style="overflow-x: auto;">
+    <table role="grid" style="min-width: 500px;">
       <thead>
         <tr>
           <th>Symbol</th>

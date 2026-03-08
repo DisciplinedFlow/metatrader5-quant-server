@@ -159,8 +159,9 @@ const api = {
 
   // --- Custom Strategy API ---
 
-  getCustomStrategies() {
-    return this.django('v1/custom-strategies/')
+  getCustomStrategies(domain) {
+    const qs = domain ? `?domain=${domain}` : ''
+    return this.django(`v1/custom-strategies/${qs}`)
   },
 
   getCustomStrategy(id) {
@@ -189,6 +190,12 @@ const api = {
 
   runCustomBacktest(id) {
     return this.django(`v1/custom-strategies/${id}/backtest/`, {
+      method: 'POST',
+    })
+  },
+
+  activateCustomStrategy(id) {
+    return this.django(`v1/custom-strategies/${id}/activate/`, {
       method: 'POST',
     })
   },
@@ -315,6 +322,10 @@ const api = {
       method: 'POST',
       body: JSON.stringify(data),
     })
+  },
+
+  getCryptoWallet() {
+    return this.django('v1/crypto/wallet/')
   },
 }
 

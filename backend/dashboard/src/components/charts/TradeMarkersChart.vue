@@ -7,12 +7,17 @@ import api from '@/services/api'
 const STRATEGY_INTERVAL = {
   SCALPING: '5m',
   MEAN_REVERSION: '15m',
+  // MT5 timeframe codes used by custom strategies
+  M1: '1m', M5: '5m', M15: '15m',
+  H1: '1h', H4: '4h', D1: '1d',
 }
 
 const props = defineProps({
   trades: { type: Array, default: () => [] },
   symbol: { type: String, default: '' },
   strategy: { type: String, default: '' },
+  timeframe: { type: String, default: '' },
+  symbolSuffix: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:symbol'])
@@ -119,8 +124,8 @@ async function loadChart() {
   loading.value = true
   selectedTradeIdx.value = null
   try {
-    const interval = STRATEGY_INTERVAL[props.strategy] || '5m'
-    const data = await api.fetchYahooData(selectedSymbol.value, '60d', interval)
+    const interval = STRATEGY_INTERVAL[props.timeframe] || STRATEGY_INTERVAL[props.strategy] || '5m'
+    const data = await api.fetchYahooData(selectedSymbol.value + props.symbolSuffix, '60d', interval)
     const candles = data.map(d => ({
       time: Math.floor(new Date(d.time).getTime() / 1000),
       open: d.open, high: d.high, low: d.low, close: d.close,

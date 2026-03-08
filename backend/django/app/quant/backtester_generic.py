@@ -8,6 +8,7 @@ from app.utils.api.data import fetch_data_pos
 from app.utils.api.yahoo import fetch_yahoo_data
 from app.quant.indicators.scalping import ema_crossover, rsi, atr
 from app.quant.indicators.mean_reversion import mean_reversion
+from app.quant.indicators.cvd import cvd_divergence, cvd_raw, cvd_leading, cvd_extremes, cvd_mtf, cvd_cross_market
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,14 @@ INDICATOR_REGISTRY = {
     'RSI': lambda df, params: rsi(df, period=params.get('period', 14)),
     'ATR': lambda df, params: atr(df, period=params.get('period', 14)),
     'BOLLINGER_BANDS': lambda df, params: mean_reversion(df, window=params.get('window', 20), num_std_dev=params.get('num_std_dev', 2)),
+    'CVD': lambda df, params: cvd_divergence(df, lookback=params.get('lookback', 20), swing_lookback=params.get('swing_lookback', 5)),
+    'CVD_RAW': lambda df, params: cvd_raw(df, lookback=params.get('lookback', 20)),
+    'CVD_LEADING': lambda df, params: cvd_leading(df, lookback=params.get('lookback', 10), swing_lookback=params.get('swing_lookback', 5)),
+    'CVD_EXTREMES': lambda df, params: cvd_extremes(df, lookback=params.get('lookback', 50), swing_lookback=params.get('swing_lookback', 5), strength=params.get('strength', 3)),
+    'CVD_MTF': lambda df, params: cvd_mtf(df, lookback=params.get('lookback', 20), swing_lookback=params.get('swing_lookback', 5)),
+    'CVD_CROSS_MARKET': lambda df, params: cvd_cross_market(df, lookback=params.get('lookback', 20), swing_lookback=params.get('swing_lookback', 5)),
+    # SWING_DETECTOR is used by Extremes Scanner — CVD_EXTREMES handles swing detection internally
+    'SWING_DETECTOR': lambda df, params: pd.Series(0, index=df.index),
 }
 
 CONDITION_OPS = {
@@ -26,17 +35,43 @@ CONDITION_OPS = {
     'lte': lambda a, b: float(a) <= float(b),
     'gt': lambda a, b: float(a) > float(b),
     'lt': lambda a, b: float(a) < float(b),
+    # CVD divergence conditions: signal value contains the pattern name
+    'divergence': lambda a, b: isinstance(a, str) and b in a,
+    'leading_divergence': lambda a, b: isinstance(a, str) and b in a,
+    'extreme_divergence': lambda a, b: isinstance(a, str) and b in a,
+    'mtf_divergence': lambda a, b: isinstance(a, str) and b in a,
+    'cross_market_divergence': lambda a, b: isinstance(a, str) and b in a,
+    'cross_side_divergence': lambda a, b: isinstance(a, str) and b in a,
+    'leading_volume': lambda a, b: isinstance(a, str) and b in a,
 }
 
 TIMEFRAME_YAHOO_INTERVAL = {
     'M1': '1m', 'M5': '5m', 'M15': '15m',
     'H1': '1h', 'H4': '4h', 'D1': '1d',
+    # Crypto-format timeframes (used by Hyperliquid/Binance strategies)
+    '1m': '1m', '5m': '5m', '15m': '15m',
+    '1h': '1h', '4h': '4h', '1d': '1d',
 }
 
 
 def _bar_to_unix(df, idx):
     ts = df.index[idx] if hasattr(df.index[idx], 'timestamp') else pd.Timestamp(df.iloc[idx].get('time', 0))
     return int(ts.timestamp()) if hasattr(ts, 'timestamp') else 0
+
+
+def _clean_trade(trade):
+    """Convert numpy types to native Python for JSON serialization."""
+    cleaned = {}
+    for k, v in trade.items():
+        if isinstance(v, (np.integer,)):
+            cleaned[k] = int(v)
+        elif isinstance(v, (np.floating,)):
+            cleaned[k] = float(v)
+        elif isinstance(v, np.ndarray):
+            cleaned[k] = v.tolist()
+        else:
+            cleaned[k] = v
+    return cleaned
 
 
 class GenericBacktester:
@@ -49,15 +84,41 @@ class GenericBacktester:
         self.exit_rules = definition.get('exit_rules', {})
         self.min_win_rate = definition.get('min_win_rate', 0.55)
 
+    # Map entry rule conditions to the CVD variant that produces those signals
+    CVD_CONDITION_TO_VARIANT = {
+        'leading_divergence': 'CVD_LEADING',
+        'extreme_divergence': 'CVD_EXTREMES',
+        'mtf_divergence': 'CVD_MTF',
+        'cross_market_divergence': 'CVD_CROSS_MARKET',
+        'cross_side_divergence': 'CVD_CROSS_MARKET',
+    }
+
+    def _resolve_cvd_variant(self):
+        """Determine which CVD variant to use based on entry rule conditions."""
+        for side in ['long', 'short', 'buy_yes', 'buy_no']:
+            for rule in self.entry_rules.get(side, []):
+                condition = rule.get('condition', '')
+                if condition in self.CVD_CONDITION_TO_VARIANT:
+                    return self.CVD_CONDITION_TO_VARIANT[condition]
+        return None
+
     def _compute_indicators(self, df):
         """Compute all declared indicators and store as columns."""
+        cvd_variant = self._resolve_cvd_variant()
         results = {}
         for ind in self.indicators:
             ind_type = ind['type']
             params = ind.get('params', {})
-            if ind_type in INDICATOR_REGISTRY:
+
+            if ind_type == 'CVD' and cvd_variant and cvd_variant in INDICATOR_REGISTRY:
+                # Use the specialized CVD variant that matches the entry rule conditions
+                results[ind_type] = INDICATOR_REGISTRY[cvd_variant](df, params)
+            elif ind_type in INDICATOR_REGISTRY:
                 results[ind_type] = INDICATOR_REGISTRY[ind_type](df, params)
-                df[ind_type] = results[ind_type]
+            else:
+                continue
+
+            df[ind_type] = results[ind_type]
         return df
 
     def _check_rules(self, df, idx, rules):
@@ -94,11 +155,16 @@ class GenericBacktester:
             tp_mult = exit_params.get('tp_multiplier', 2.0)
             df['_atr'] = atr(df, period=atr_period)
         else:
-            sl_pct = exit_params.get('sl_pct', 0.5) / 100
-            tp_pct = exit_params.get('tp_pct', 0.5) / 100
+            sl_pct = exit_params.get('stop_loss_pct', exit_params.get('sl_pct', 0.5))
+            tp_pct = exit_params.get('take_profit_pct', exit_params.get('tp_pct', 0.5))
+            # Normalize: if values look like raw percentages (> 1), divide by 100
+            if sl_pct > 1:
+                sl_pct = sl_pct / 100
+            if tp_pct > 1:
+                tp_pct = tp_pct / 100
 
-        long_rules = self.entry_rules.get('long', [])
-        short_rules = self.entry_rules.get('short', [])
+        long_rules = self.entry_rules.get('long', self.entry_rules.get('buy_yes', []))
+        short_rules = self.entry_rules.get('short', self.entry_rules.get('buy_no', []))
 
         trades = []
         in_trade = False
@@ -208,7 +274,7 @@ class GenericBacktester:
                 trades = self._simulate_trades(df)
                 for t in trades:
                     t['symbol'] = pair
-                all_trades.extend(trades)
+                all_trades.extend(_clean_trade(t) for t in trades)
                 logger.info(f"Generic Backtest {pair}: {len(trades)} trades ({source}, {len(df)} bars)")
 
             except Exception as e:

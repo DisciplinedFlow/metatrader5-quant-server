@@ -4,6 +4,8 @@ import os
 HYPERLIQUID_PRIVATE_KEY = os.getenv('HYPERLIQUID_PRIVATE_KEY', '')
 HYPERLIQUID_WALLET_ADDRESS = os.getenv('HYPERLIQUID_WALLET_ADDRESS', '')
 HYPERLIQUID_TESTNET = os.getenv('HYPERLIQUID_TESTNET', 'true').lower() == 'true'
+# Agent wallet: trade-only delegate key (cannot withdraw). Set to use instead of master key.
+HYPERLIQUID_AGENT_KEY = os.getenv('HYPERLIQUID_AGENT_KEY', '')
 
 # Trading parameters
 CRYPTO_PAIRS = os.getenv('CRYPTO_PAIRS', 'BTC,ETH,SOL,ARB').split(',')

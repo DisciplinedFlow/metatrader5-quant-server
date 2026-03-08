@@ -8,6 +8,7 @@ import TradeMarkersChart from '@/components/charts/TradeMarkersChart.vue'
 import SymbolBreakdownTable from '@/components/charts/SymbolBreakdownTable.vue'
 import BacktestHistoryChart from '@/components/charts/BacktestHistoryChart.vue'
 import StrategyBuilder from '@/components/StrategyBuilder.vue'
+import StrategyLibrary from '@/components/StrategyLibrary.vue'
 import SectionNav from '@/components/SectionNav.vue'
 
 const forexLinks = [
@@ -64,10 +65,24 @@ async function toggleBot() {
 
 async function refreshCustom() {
   try {
-    const resp = await api.getCustomStrategies()
+    const resp = await api.getCustomStrategies('FOREX')
     customStrategies.value = resp.results || resp
   } catch (err) {
     console.error('Custom strategies error:', err)
+  }
+}
+
+async function loadDetailForConfig(configId, cs) {
+  if (!configId) return
+  const bt = cs?.latest_backtest
+  if (!bt) return
+  // Skip if already loaded for this exact backtest
+  if (detailData.value[configId]?.id === bt.id) return
+  try {
+    const data = await api.getBacktestDetail(configId, bt.id)
+    detailData.value[configId] = data
+  } catch (err) {
+    console.error('Detail load error:', err)
   }
 }
 
@@ -119,7 +134,9 @@ async function deleteCustom(id) {
 
 async function loadDetail(strategy) {
   const bt = strategy.latest_backtest
-  if (!bt || detailData.value[strategy.id]) return
+  if (!bt) return
+  // Re-fetch if backtest ID changed (new backtest ran)
+  if (detailData.value[strategy.id]?.id === bt.id) return
   try {
     const data = await api.getBacktestDetail(strategy.id, bt.id)
     detailData.value[strategy.id] = data
@@ -220,12 +237,13 @@ function getColor(index) {
     </div>
 
     <!-- Strategy Builder -->
-    <StrategyBuilder v-if="showBuilder" @saved="onBuilderSaved" @cancel="showBuilder = false" />
+    <StrategyBuilder v-if="showBuilder" domain="FOREX" @saved="onBuilderSaved" @cancel="showBuilder = false" />
 
     <!-- Tabs -->
     <div class="tp-tabs">
       <button :class="{ active: pageTab === 'active' }" @click="pageTab = 'active'">Active Strategies</button>
       <button :class="{ active: pageTab === 'custom' }" @click="pageTab = 'custom'">Custom Strategies</button>
+      <button :class="{ active: pageTab === 'library' }" @click="pageTab = 'library'">CVD Library</button>
     </div>
 
     <!-- Built-in Strategies Grid -->
@@ -314,11 +332,11 @@ function getColor(index) {
               <template v-if="detailData[s.id]">
                 <div class="chart-tabs">
                   <button class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': !activeTab[s.id] || activeTab[s.id] === 'equity' }" @click="setTab(s.id, 'equity')">Equity Curve</button>
-                  <button class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeTab[s.id] === 'trades' }" @click="setTab(s.id, 'trades')">Trade Markers</button>
-                  <button class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeTab[s.id] === 'breakdown' }" @click="setTab(s.id, 'breakdown')">Symbol Breakdown</button>
+                  <button v-if="detailData[s.id].trades?.length" class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeTab[s.id] === 'trades' }" @click="setTab(s.id, 'trades')">Trade Markers</button>
+                  <button v-if="detailData[s.id].trades?.length || Object.keys(detailData[s.id].symbol_breakdown || {}).length" class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeTab[s.id] === 'breakdown' }" @click="setTab(s.id, 'breakdown')">Symbol Breakdown</button>
                 </div>
                 <EquityCurveChart v-if="!activeTab[s.id] || activeTab[s.id] === 'equity'" :equity-curve="detailData[s.id].equity_curve || []" />
-                <TradeMarkersChart v-if="activeTab[s.id] === 'trades'" :trades="detailData[s.id].trades || []" :strategy="s.name" />
+                <TradeMarkersChart v-if="activeTab[s.id] === 'trades' && detailData[s.id].trades?.length" :trades="detailData[s.id].trades" :strategy="s.name" />
                 <SymbolBreakdownTable v-if="activeTab[s.id] === 'breakdown'" :breakdown="detailData[s.id].symbol_breakdown || {}" />
               </template>
               <p v-else style="color:var(--tp-text-dim);font-size:0.85rem;padding:0.5rem 0;">Loading chart data...</p>
@@ -369,6 +387,11 @@ function getColor(index) {
       </div>
     </div>
 
+    <!-- CVD Library Tab -->
+    <div v-if="pageTab === 'library'" style="margin-top: 1rem;">
+      <StrategyLibrary domain="FOREX" />
+    </div>
+
     <!-- Custom Strategies Tab -->
     <div v-if="pageTab === 'custom'">
       <div v-if="customStrategies.length === 0" class="empty-state">
@@ -405,6 +428,50 @@ function getColor(index) {
 
             <!-- Charts for custom strategies -->
             <template v-if="cs.strategy_config">
+              <!-- Backtest Stats -->
+              <template v-if="cs.latest_backtest">
+                <div class="card-stats">
+                  <div class="stat-item">
+                    <span class="stat-micro-label">Win Rate</span>
+                    <span class="stat-micro-value" :class="(cs.latest_backtest.win_rate * 100) >= 50 ? 'positive' : 'negative'">
+                      {{ (cs.latest_backtest.win_rate * 100).toFixed(1) }}%
+                    </span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-micro-label">Trades</span>
+                    <span class="stat-micro-value">{{ cs.latest_backtest.total_trades }}</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-micro-label">Total PnL</span>
+                    <span class="stat-micro-value" :class="(cs.latest_backtest.total_pnl ?? 0) >= 0 ? 'positive' : 'negative'">
+                      {{ cs.latest_backtest.total_pnl != null ? (cs.latest_backtest.total_pnl * 100).toFixed(3) + '%' : 'N/A' }}
+                    </span>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Backtest Charts -->
+              <details @toggle="e => { if (e.target.open) loadDetailForConfig(cs.strategy_config, cs) }">
+                <summary class="expand-summary">
+                  <span class="material-symbols-outlined" style="font-size:16px">ssid_chart</span>
+                  Backtest Charts
+                </summary>
+                <div class="expand-content">
+                  <template v-if="detailData[cs.strategy_config]">
+                    <div class="chart-tabs">
+                      <button class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': !activeTab[cs.strategy_config] || activeTab[cs.strategy_config] === 'equity' }" @click="setTab(cs.strategy_config, 'equity')">Equity Curve</button>
+                      <button v-if="detailData[cs.strategy_config].trades?.length" class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeTab[cs.strategy_config] === 'trades' }" @click="setTab(cs.strategy_config, 'trades')">Trade Markers</button>
+                      <button v-if="detailData[cs.strategy_config].trades?.length || Object.keys(detailData[cs.strategy_config].symbol_breakdown || {}).length" class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeTab[cs.strategy_config] === 'breakdown' }" @click="setTab(cs.strategy_config, 'breakdown')">Symbol Breakdown</button>
+                    </div>
+                    <EquityCurveChart v-if="!activeTab[cs.strategy_config] || activeTab[cs.strategy_config] === 'equity'" :equity-curve="detailData[cs.strategy_config].equity_curve || []" />
+                    <TradeMarkersChart v-if="activeTab[cs.strategy_config] === 'trades' && detailData[cs.strategy_config].trades?.length" :trades="detailData[cs.strategy_config].trades" :strategy="cs.name" :timeframe="cs.definition?.timeframe || 'M5'" />
+                    <SymbolBreakdownTable v-if="activeTab[cs.strategy_config] === 'breakdown'" :breakdown="detailData[cs.strategy_config].symbol_breakdown || {}" />
+                  </template>
+                  <p v-else style="color:var(--tp-text-dim);font-size:0.85rem;padding:0.5rem 0;">Loading chart data...</p>
+                </div>
+              </details>
+
+              <!-- Backtest History -->
               <details @toggle="e => { if (e.target.open) loadHistory(cs.strategy_config) }">
                 <summary class="expand-summary">
                   <span class="material-symbols-outlined" style="font-size:16px">history</span>

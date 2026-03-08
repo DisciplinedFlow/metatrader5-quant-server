@@ -110,10 +110,16 @@ def run_custom_backtest(custom_strategy_id):
         result = backtester.run()
 
         # Create or get a StrategyConfig to link the result
-        strategy_config, _ = StrategyConfig.objects.get_or_create(
-            name=f'CUSTOM_{custom.id}',
+        # Use the actual strategy name so it appears correctly in the UI
+        # Include domain to avoid name collisions across domains
+        config_name = f'{custom.name[:40]} ({custom.domain})'[:50]
+        strategy_config, created = StrategyConfig.objects.get_or_create(
+            name=config_name,
             defaults={'description': custom.description, 'is_active': False}
         )
+        if not created:
+            strategy_config.description = custom.description
+            strategy_config.save(update_fields=['description'])
         if not custom.strategy_config:
             custom.strategy_config = strategy_config
             custom.save()

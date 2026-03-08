@@ -6,19 +6,33 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 MT5_TO_YAHOO = {
+    # Forex pairs
     'EURUSD': 'EURUSD=X',
     'EURGBP': 'EURGBP=X',
+    'GBPUSD': 'GBPUSD=X',
     'USDJPY': 'USDJPY=X',
     'USDCAD': 'USDCAD=X',
     'USDCHF': 'USDCHF=X',
     'AUDUSD': 'AUDUSD=X',
     'NZDUSD': 'NZDUSD=X',
-    'XAUUSD': 'XAUUSD=X',
-    'XAGUSD': 'XAGUSD=X',
+    # Metals
+    'XAUUSD': 'GC=F',
+    'XAGUSD': 'SI=F',
     'XAUEUR': 'XAUEUR=X',
+    # Commodities
     'NG': 'NG=F',
     'BRN': 'BZ=F',
     'WTI': 'CL=F',
+    # Crypto
+    'BTC': 'BTC-USD',
+    'ETH': 'ETH-USD',
+    'SOL': 'SOL-USD',
+    'AVAX': 'AVAX-USD',
+    'DOGE': 'DOGE-USD',
+    'ADA': 'ADA-USD',
+    'MATIC': 'MATIC-USD',
+    'DOT': 'DOT-USD',
+    'LINK': 'LINK-USD',
 }
 
 

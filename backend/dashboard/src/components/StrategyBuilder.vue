@@ -1,15 +1,44 @@
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { useToast } from '@/composables/useToast'
 import api from '@/services/api'
+
+const props = defineProps({
+  domain: { type: String, default: 'FOREX' },
+})
 
 const emit = defineEmits(['saved', 'cancel'])
 
 const toast = useToast()
 const saving = ref(false)
 
-const ALL_PAIRS = ['NG', 'BRN', 'WTI', 'XAGUSD', 'XAUUSD', 'XAUEUR', 'EURUSD', 'EURGBP', 'USDJPY', 'USDCAD', 'USDCHF', 'AUDUSD', 'NZDUSD']
-const TIMEFRAMES = ['M1', 'M5', 'M15', 'H1', 'H4', 'D1']
+const PLATFORM_CONFIG = {
+  FOREX: {
+    pairs: ['NG', 'BRN', 'WTI', 'XAGUSD', 'XAUUSD', 'XAUEUR', 'EURUSD', 'EURGBP', 'USDJPY', 'USDCAD', 'USDCHF', 'AUDUSD', 'NZDUSD'],
+    timeframes: ['M1', 'M5', 'M15', 'H1', 'H4', 'D1'],
+    pairLabel: 'Trading Pairs',
+    longLabel: 'Entry Rules - Long',
+    shortLabel: 'Entry Rules - Short',
+  },
+  CRYPTO: {
+    pairs: ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'DOGE', 'ARB'],
+    timeframes: ['M15', 'H1', 'H4', 'D1'],
+    pairLabel: 'Trading Pairs',
+    longLabel: 'Entry Rules - Long',
+    shortLabel: 'Entry Rules - Short',
+  },
+  POLYMARKET: {
+    pairs: ['POLITICS', 'CRYPTO_PRICE', 'MACRO', 'SPORTS', 'ENTERTAINMENT'],
+    timeframes: ['H1', 'H4', 'D1'],
+    pairLabel: 'Market Categories',
+    longLabel: 'Entry Rules - Buy Yes',
+    shortLabel: 'Entry Rules - Buy No',
+  },
+}
+
+const platformConfig = computed(() => PLATFORM_CONFIG[props.domain] || PLATFORM_CONFIG.FOREX)
+const ALL_PAIRS = computed(() => platformConfig.value.pairs)
+const TIMEFRAMES = computed(() => platformConfig.value.timeframes)
 const INDICATOR_TYPES = [
   { value: 'EMA_CROSSOVER', label: 'EMA Crossover', defaults: { fast: 9, slow: 21 } },
   { value: 'RSI', label: 'RSI', defaults: { period: 14 } },
@@ -91,6 +120,7 @@ async function save() {
       name: form.name,
       description: form.description,
       definition,
+      domain: props.domain,
     })
     toast.success('Strategy saved')
     emit('saved')
@@ -125,7 +155,7 @@ async function save() {
 
     <!-- Pairs -->
     <fieldset>
-      <legend>Trading Pairs</legend>
+      <legend>{{ platformConfig.pairLabel }}</legend>
       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
         <label v-for="pair in ALL_PAIRS" :key="pair" style="display: inline-flex; align-items: center; gap: 0.25rem; min-width: 6rem;">
           <input type="checkbox" :checked="form.pairs.includes(pair)" @change="togglePair(pair)" />
@@ -164,7 +194,7 @@ async function save() {
 
     <!-- Entry Rules -->
     <fieldset>
-      <legend>Entry Rules - Long</legend>
+      <legend>{{ platformConfig.longLabel }}</legend>
       <div v-for="(rule, idx) in form.longRules" :key="'l'+idx" class="grid" style="align-items: end;">
         <label>
           Indicator
@@ -188,7 +218,7 @@ async function save() {
     </fieldset>
 
     <fieldset>
-      <legend>Entry Rules - Short</legend>
+      <legend>{{ platformConfig.shortLabel }}</legend>
       <div v-for="(rule, idx) in form.shortRules" :key="'s'+idx" class="grid" style="align-items: end;">
         <label>
           Indicator

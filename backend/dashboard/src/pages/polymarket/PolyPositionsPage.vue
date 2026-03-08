@@ -87,8 +87,14 @@ usePolling(refresh, 10000)
           </thead>
           <tbody>
             <tr v-if="positions.length === 0">
-              <td colspan="9" style="text-align: center; color: var(--tp-text-dim); padding: 2rem;">
-                No positions found.
+              <td colspan="9" style="padding: 4rem 2rem; text-align: center;">
+                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                  <div style="width: 4rem; height: 4rem; border-radius: 50%; background: var(--tp-bg-surface); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                    <span class="material-symbols-outlined" style="font-size: 2rem; color: var(--tp-text-dim);">inventory_2</span>
+                  </div>
+                  <p style="font-weight: 600; font-size: 1rem; color: var(--tp-text); margin-bottom: 0.25rem;">No open positions</p>
+                  <p style="font-size: 0.85rem; color: var(--tp-text-dim); margin: 0;">Your active trades will appear here once executed.</p>
+                </div>
               </td>
             </tr>
             <tr v-for="p in positions" :key="p.id">

@@ -35,6 +35,20 @@ class StrategyConfigSerializer(serializers.ModelSerializer):
 
 
 class CustomStrategySerializer(serializers.ModelSerializer):
+    latest_backtest = serializers.SerializerMethodField()
+
     class Meta:
         model = CustomStrategy
         fields = '__all__'
+
+    def get_latest_backtest(self, obj):
+        if not obj.strategy_config_id:
+            return None
+        latest = BacktestResult.objects.filter(
+            strategy_id=obj.strategy_config_id
+        ).order_by('-run_time').first()
+        if latest:
+            data = BacktestResultSerializer(latest).data
+            data.pop('trades', None)
+            return data
+        return None

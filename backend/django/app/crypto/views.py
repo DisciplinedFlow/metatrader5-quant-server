@@ -132,3 +132,62 @@ class CryptoDashboardView(views.APIView):
             'total_pnl': total_pnl,
             'positions': list(open_positions_data),
         })
+
+
+class CryptoWalletView(views.APIView):
+    """Live wallet data from Hyperliquid: prices, account state, on-chain positions."""
+
+    TRACKED_COINS = ['BTC', 'ETH', 'SOL', 'AVAX', 'DOGE', 'ARB', 'MATIC', 'LINK', 'OP', 'SUI']
+
+    def get(self, request):
+        from app.quant.algorithms.crypto.config import HYPERLIQUID_WALLET_ADDRESS
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+
+        if not HYPERLIQUID_WALLET_ADDRESS:
+            return Response({'error': 'HYPERLIQUID_WALLET_ADDRESS not configured'}, status=400)
+
+        try:
+            info = Info(constants.MAINNET_API_URL, skip_ws=True)
+
+            # Fetch prices and account state in parallel-ish (sequential but fast)
+            all_mids = info.all_mids()
+            user_state = info.user_state(HYPERLIQUID_WALLET_ADDRESS)
+
+            # Build price list for tracked coins
+            prices = []
+            for coin in self.TRACKED_COINS:
+                mid = all_mids.get(coin)
+                if mid:
+                    prices.append({'coin': coin, 'price': float(mid)})
+
+            # Parse account state
+            margin = user_state.get('marginSummary', {})
+            positions = []
+            for pos in user_state.get('assetPositions', []):
+                p = pos.get('position', {})
+                size = float(p.get('szi', 0))
+                if size != 0:
+                    positions.append({
+                        'coin': p.get('coin'),
+                        'size': size,
+                        'side': 'LONG' if size > 0 else 'SHORT',
+                        'entry_price': float(p.get('entryPx', 0)),
+                        'mark_price': float(all_mids.get(p.get('coin'), 0)),
+                        'unrealized_pnl': float(p.get('unrealizedPnl', 0)),
+                        'margin_used': float(p.get('marginUsed', 0)),
+                        'leverage': p.get('leverage', {}).get('value', 1),
+                    })
+
+            return Response({
+                'wallet_address': HYPERLIQUID_WALLET_ADDRESS,
+                'account_value': float(margin.get('accountValue', 0)),
+                'total_margin_used': float(margin.get('totalMarginUsed', 0)),
+                'total_ntl_pos': float(margin.get('totalNtlPos', 0)),
+                'withdrawable': float(user_state.get('withdrawable', 0)),
+                'positions': positions,
+                'prices': prices,
+            })
+        except Exception as e:
+            logger.error(f"Wallet data error: {e}")
+            return Response({'error': str(e)}, status=500)

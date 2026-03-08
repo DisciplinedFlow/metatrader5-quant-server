@@ -86,8 +86,14 @@ usePolling(refresh, 10000)
           </thead>
           <tbody>
             <tr v-if="filtered.length === 0">
-              <td colspan="7" style="text-align: center; color: var(--tp-text-dim); padding: 2rem;">
-                No markets found.
+              <td colspan="7" style="padding: 4rem 2rem; text-align: center;">
+                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                  <div style="width: 4rem; height: 4rem; border-radius: 50%; background: var(--tp-bg-surface); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                    <span class="material-symbols-outlined" style="font-size: 2rem; color: var(--tp-text-dim);">search_off</span>
+                  </div>
+                  <p style="font-weight: 600; font-size: 1rem; color: var(--tp-text); margin-bottom: 0.25rem;">No markets found</p>
+                  <p style="font-size: 0.85rem; color: var(--tp-text-dim); margin: 0;">Try adjusting your filters or sync markets.</p>
+                </div>
               </td>
             </tr>
             <tr v-for="m in filtered" :key="m.id">

@@ -1,12 +1,16 @@
 import logging
+import requests
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs, OrderType
-from .config import (POLYMARKET_PRIVATE_KEY, POLYMARKET_API_KEY, POLYMARKET_API_SECRET,
-                     POLYMARKET_API_PASSPHRASE, POLYMARKET_CHAIN_ID, POLYMARKET_SIGNATURE_TYPE)
+from .config import (POLYMARKET_PRIVATE_KEY, POLYMARKET_FUNDER_ADDRESS, POLYMARKET_API_KEY,
+                     POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE, POLYMARKET_CHAIN_ID,
+                     POLYMARKET_SIGNATURE_TYPE)
 
 logger = logging.getLogger('app.polymarket')
 
 _client = None
+
+DATA_API_BASE = "https://data-api.polymarket.com"
 
 
 def get_client():
@@ -14,12 +18,13 @@ def get_client():
     global _client
     if _client is None:
         host = "https://clob.polymarket.com"
+        funder = POLYMARKET_FUNDER_ADDRESS or None
         _client = ClobClient(
             host,
             key=POLYMARKET_PRIVATE_KEY,
             chain_id=POLYMARKET_CHAIN_ID,
             signature_type=POLYMARKET_SIGNATURE_TYPE,
-            funder=POLYMARKET_PRIVATE_KEY,
+            funder=funder,
         )
         # Set API credentials if available
         if POLYMARKET_API_KEY:
@@ -28,7 +33,7 @@ def get_client():
                 api_secret=POLYMARKET_API_SECRET,
                 api_passphrase=POLYMARKET_API_PASSPHRASE,
             ))
-        logger.info("CLOB client initialized")
+        logger.info("CLOB client initialized (funder=%s)", funder[:10] + '...' if funder else 'None')
     return _client
 
 
@@ -89,3 +94,57 @@ def cancel_order(order_id):
     except Exception as e:
         logger.error(f"Error cancelling order {order_id}: {e}")
         return None
+
+
+# ─── Data API (positions, trades, activity) ───
+
+def get_positions(wallet_address=None):
+    """Fetch current positions from the Polymarket Data API.
+
+    Returns list of positions with size, avgPrice, currentValue, cashPnl, percentPnl, etc.
+    """
+    address = wallet_address or POLYMARKET_FUNDER_ADDRESS
+    if not address:
+        logger.warning("No wallet address configured for position lookup")
+        return []
+    try:
+        resp = requests.get(f"{DATA_API_BASE}/positions", params={"user": address}, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Error fetching positions: {e}")
+        return []
+
+
+def get_activity(wallet_address=None, activity_type=None, limit=50):
+    """Fetch trade activity from the Polymarket Data API.
+
+    activity_type: TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION (or None for all)
+    """
+    address = wallet_address or POLYMARKET_FUNDER_ADDRESS
+    if not address:
+        return []
+    params = {"user": address, "limit": limit}
+    if activity_type:
+        params["type"] = activity_type
+    try:
+        resp = requests.get(f"{DATA_API_BASE}/activity", params=params, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Error fetching activity: {e}")
+        return []
+
+
+def get_trades(wallet_address=None, limit=50):
+    """Fetch trade history from the Polymarket Data API."""
+    address = wallet_address or POLYMARKET_FUNDER_ADDRESS
+    if not address:
+        return []
+    try:
+        resp = requests.get(f"{DATA_API_BASE}/trades", params={"user": address, "limit": limit}, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Error fetching trades: {e}")
+        return []

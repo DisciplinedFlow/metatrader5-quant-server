@@ -9,6 +9,7 @@ from .views import (
     CryptoLogsView,
     CryptoDashboardView,
     CryptoStrategyConfigView,
+    CryptoWalletView,
 )
 
 router = DefaultRouter()
@@ -21,5 +22,6 @@ urlpatterns = [
     path('bot/status/', CryptoBotControlView.as_view(), name='crypto-bot-status'),
     path('logs/', CryptoLogsView.as_view(), name='crypto-logs'),
     path('dashboard/', CryptoDashboardView.as_view(), name='crypto-dashboard'),
+    path('wallet/', CryptoWalletView.as_view(), name='crypto-wallet'),
     path('strategy/', CryptoStrategyConfigView.as_view(), name='crypto-strategy'),
 ]

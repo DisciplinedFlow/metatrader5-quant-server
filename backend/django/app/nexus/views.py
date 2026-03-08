@@ -125,8 +125,8 @@ class LogsView(views.APIView):
 
 
 class StrategyViewSet(viewsets.ReadOnlyModelViewSet):
-    """List strategies with their latest backtest result."""
-    queryset = StrategyConfig.objects.all()
+    """List built-in strategies with their latest backtest result."""
+    queryset = StrategyConfig.objects.filter(custom_definition__isnull=True)
     serializer_class = StrategyConfigSerializer
 
     @action(detail=True, methods=['post'], url_path='activate')
@@ -201,9 +201,51 @@ class CustomStrategyViewSet(viewsets.ModelViewSet):
     queryset = CustomStrategy.objects.all()
     serializer_class = CustomStrategySerializer
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        domain = self.request.query_params.get('domain')
+        if domain:
+            qs = qs.filter(domain=domain.upper())
+        return qs
+
     @action(detail=True, methods=['post'], url_path='backtest')
     def run_backtest(self, request, pk=None):
         custom = self.get_object()
         from app.quant.tasks import run_custom_backtest
         run_custom_backtest.delay(custom_strategy_id=custom.id)
         return Response({'status': 'Backtest started'}, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=['post'], url_path='activate')
+    def activate(self, request, pk=None):
+        """Activate a custom strategy by writing its params to the platform's Redis config."""
+        import redis
+        import json
+        custom = self.get_object()
+        domain = custom.domain
+        definition = custom.definition or {}
+
+        r = redis.Redis.from_url(settings.CACHES.get('default', {}).get('LOCATION', 'redis://redis:6379/0'))
+
+        if domain == 'POLYMARKET':
+            config = {
+                'ev_threshold': definition.get('ev_threshold', 0.05),
+                'kelly_fraction': definition.get('kelly_fraction', 0.15),
+                'max_positions': definition.get('max_positions', 5),
+                'capital_usd': definition.get('capital_usd', 500),
+                'stop_loss_threshold': definition.get('stop_loss_threshold', 0.15),
+            }
+            r.set('polymarket:strategy:config', json.dumps(config))
+        elif domain == 'CRYPTO':
+            config = {
+                'pairs': definition.get('pairs', ['BTC', 'ETH', 'SOL']),
+                'capital_usd': definition.get('capital_usd', 1000),
+                'leverage': definition.get('leverage', 1),
+                'fast_ma': definition.get('fast_ma', 50),
+                'slow_ma': definition.get('slow_ma', 200),
+                'max_position_pct': definition.get('max_position_pct', 0.10),
+            }
+            r.set('crypto:strategy:config', json.dumps(config))
+        else:
+            return Response({'error': f'Activation not supported for domain: {domain}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({'status': 'activated', 'domain': domain})
