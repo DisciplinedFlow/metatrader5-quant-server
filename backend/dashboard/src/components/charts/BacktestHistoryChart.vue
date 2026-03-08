@@ -1,30 +1,43 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { createChart, LineSeries, HistogramSeries, CrosshairMode } from 'lightweight-charts'
+import { useTheme, getChartThemeColors } from '@/composables/useTheme'
 
 const props = defineProps({
   results: { type: Array, default: () => [] },
 })
 
+const { theme } = useTheme()
 const chartEl = ref(null)
 let chart = null
 let winRateSeries = null
 let pnlSeries = null
 let resizeObserver = null
 
+function applyThemeToChart() {
+  if (!chart) return
+  const c = getChartThemeColors()
+  chart.applyOptions({
+    layout: { background: { color: c.bg }, textColor: c.text },
+    grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
+  })
+  if (winRateSeries) winRateSeries.applyOptions({ color: c.accent })
+}
+
 function initChart() {
   if (!chartEl.value) return
+  const c = getChartThemeColors()
   chart = createChart(chartEl.value, {
     width: chartEl.value.clientWidth,
     height: 300,
-    layout: { background: { color: '#1a1a2e' }, textColor: '#e0e0e0' },
-    grid: { vertLines: { color: '#2a2a4a' }, horzLines: { color: '#2a2a4a' } },
+    layout: { background: { color: c.bg }, textColor: c.text },
+    grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
     crosshair: { mode: CrosshairMode.Normal },
     timeScale: { timeVisible: true, secondsVisible: false },
   })
 
   winRateSeries = chart.addSeries(LineSeries, {
-    color: '#42a5f5',
+    color: c.accent,
     lineWidth: 2,
     title: 'Win Rate',
     priceFormat: { type: 'custom', formatter: v => (v * 100).toFixed(1) + '%' },
@@ -58,10 +71,11 @@ function updateData() {
     value: r.win_rate,
   }))
 
+  const c = getChartThemeColors()
   const pnlData = sorted.map(r => ({
     time: Math.floor(new Date(r.run_time).getTime() / 1000),
     value: r.total_pnl,
-    color: r.total_pnl >= 0 ? '#26a69a' : '#ef5350',
+    color: r.total_pnl >= 0 ? c.up : c.down,
   }))
 
   winRateSeries.setData(winRateData)
@@ -70,6 +84,7 @@ function updateData() {
 }
 
 watch(() => props.results, updateData, { deep: true })
+watch(theme, () => { setTimeout(applyThemeToChart, 50) })
 
 onMounted(() => {
   initChart()
@@ -85,8 +100,8 @@ onBeforeUnmount(() => {
 <template>
   <div ref="chartEl" style="width: 100%; min-height: 300px;"></div>
   <div v-if="results.length" style="display: flex; gap: 1.5rem; justify-content: center; margin-top: 0.5rem; font-size: 0.85rem;">
-    <span><span style="color: #42a5f5;">&#9644;</span> Win Rate (left axis)</span>
-    <span><span style="color: #26a69a;">&#9632;</span>/<span style="color: #ef5350;">&#9632;</span> Total PnL (right axis)</span>
+    <span><span style="color: var(--tp-primary);">&#9644;</span> Win Rate (left axis)</span>
+    <span><span style="color: var(--tp-success);">&#9632;</span>/<span style="color: var(--tp-danger);">&#9632;</span> Total PnL (right axis)</span>
   </div>
   <p v-else class="secondary" style="text-align:center;">No backtest history available.</p>
 </template>

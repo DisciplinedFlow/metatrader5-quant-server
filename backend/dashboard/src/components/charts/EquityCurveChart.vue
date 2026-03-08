@@ -1,30 +1,49 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { createChart, AreaSeries, CrosshairMode } from 'lightweight-charts'
+import { useTheme, getChartThemeColors } from '@/composables/useTheme'
 
 const props = defineProps({
   equityCurve: { type: Array, default: () => [] },
 })
 
+const { theme } = useTheme()
 const chartEl = ref(null)
 let chart = null
 let series = null
 let resizeObserver = null
 
+function applyThemeToChart() {
+  if (!chart) return
+  const c = getChartThemeColors()
+  chart.applyOptions({
+    layout: { background: { color: c.bg }, textColor: c.text },
+    grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
+  })
+  if (series) {
+    series.applyOptions({
+      lineColor: c.up,
+      topColor: c.up + '66',
+      bottomColor: c.up + '00',
+    })
+  }
+}
+
 function initChart() {
   if (!chartEl.value) return
+  const c = getChartThemeColors()
   chart = createChart(chartEl.value, {
     width: chartEl.value.clientWidth,
     height: 300,
-    layout: { background: { color: '#1a1a2e' }, textColor: '#e0e0e0' },
-    grid: { vertLines: { color: '#2a2a4a' }, horzLines: { color: '#2a2a4a' } },
+    layout: { background: { color: c.bg }, textColor: c.text },
+    grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
     crosshair: { mode: CrosshairMode.Normal },
     timeScale: { timeVisible: true, secondsVisible: false },
   })
   series = chart.addSeries(AreaSeries, {
-    lineColor: '#26a69a',
-    topColor: 'rgba(38, 166, 154, 0.4)',
-    bottomColor: 'rgba(38, 166, 154, 0.0)',
+    lineColor: c.up,
+    topColor: c.up + '66',
+    bottomColor: c.up + '00',
     lineWidth: 2,
   })
   resizeObserver = new ResizeObserver(() => {
@@ -53,6 +72,7 @@ function updateData() {
 }
 
 watch(() => props.equityCurve, updateData, { deep: true })
+watch(theme, () => { setTimeout(applyThemeToChart, 50) })
 
 onMounted(() => {
   initChart()

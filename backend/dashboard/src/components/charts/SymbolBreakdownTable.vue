@@ -34,18 +34,18 @@ const maxWinRate = computed(() => {
         <tr v-for="r in rows" :key="r.symbol">
           <td><strong>{{ r.symbol }}</strong></td>
           <td>{{ r.total }}</td>
-          <td style="color: #26a69a;">{{ r.wins }}</td>
-          <td style="color: #ef5350;">{{ r.losses }}</td>
+          <td style="color: var(--tp-success);">{{ r.wins }}</td>
+          <td style="color: var(--tp-danger);">{{ r.losses }}</td>
           <td>
             <div style="display: flex; align-items: center; gap: 0.5rem;">
               <div
-                style="height: 8px; border-radius: 4px; background: #26a69a;"
+                style="height: 8px; border-radius: 4px; background: var(--tp-success);"
                 :style="{ width: ((r.win_rate || 0) / maxWinRate * 100) + '%', minWidth: '4px' }"
               ></div>
               <span>{{ ((r.win_rate || 0) * 100).toFixed(1) }}%</span>
             </div>
           </td>
-          <td :style="{ color: r.pnl >= 0 ? '#26a69a' : '#ef5350' }">
+          <td :style="{ color: r.pnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
             {{ (r.pnl * 100).toFixed(3) }}%
           </td>
         </tr>

@@ -67,9 +67,9 @@ usePolling(refresh, 10000)
   <div class="tp-page">
     <SectionNav :links="polyLinks" />
     
-    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem;">
+    <div class="page-header">
       <div>
-        <h1 style="font-size: 2.25rem; font-weight: 900; letter-spacing: -0.02em;">Polymarket Dashboard</h1>
+        <h1 class="page-title">Polymarket Dashboard</h1>
         <p style="color: var(--tp-text-muted); margin-top: 0.25rem;">Trading Pro Platform</p>
       </div>
       <div style="display: flex; gap: 0.75rem;">
@@ -132,3 +132,24 @@ usePolling(refresh, 10000)
     </div>
   </div>
 </template>
+
+<style scoped>
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 2rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.page-title {
+  font-size: 2.25rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+@media (max-width: 480px) {
+  .page-title {
+    font-size: 1.75rem;
+  }
+}
+</style>

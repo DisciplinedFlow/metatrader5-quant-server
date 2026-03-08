@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { createChart, CandlestickSeries, HistogramSeries, CrosshairMode } from 'lightweight-charts'
 import { useToast } from '@/composables/useToast'
+import { useTheme, getChartThemeColors } from '@/composables/useTheme'
 import SymbolSelect from '@/components/SymbolSelect.vue'
 import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
@@ -17,6 +18,7 @@ const forexLinks = [
 ]
 
 const toast = useToast()
+const { theme } = useTheme()
 
 const symbol = ref('EURUSD')
 const timeframe = ref('H1')
@@ -29,35 +31,46 @@ let candleSeries = null
 let volumeSeries = null
 let resizeObserver = null
 
+function applyThemeToChart() {
+  if (!chart) return
+  const c = getChartThemeColors()
+  chart.applyOptions({
+    layout: { background: { color: c.bg }, textColor: c.text },
+    grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
+  })
+  if (candleSeries) {
+    candleSeries.applyOptions({
+      upColor: c.up, downColor: c.down,
+      borderUpColor: c.up, borderDownColor: c.down,
+      wickUpColor: c.up, wickDownColor: c.down,
+    })
+  }
+  if (volumeSeries) {
+    volumeSeries.applyOptions({ color: c.volume })
+  }
+}
+
 function initChart() {
   if (!chartEl.value) return
+  const c = getChartThemeColors()
 
   chart = createChart(chartEl.value, {
     width: chartEl.value.clientWidth,
     height: 500,
-    layout: {
-      background: { color: '#1a1a2e' },
-      textColor: '#e0e0e0',
-    },
-    grid: {
-      vertLines: { color: '#2a2a4a' },
-      horzLines: { color: '#2a2a4a' },
-    },
+    layout: { background: { color: c.bg }, textColor: c.text },
+    grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
     crosshair: { mode: CrosshairMode.Normal },
     timeScale: { timeVisible: true, secondsVisible: false },
   })
 
   candleSeries = chart.addSeries(CandlestickSeries, {
-    upColor: '#26a69a',
-    downColor: '#ef5350',
-    borderDownColor: '#ef5350',
-    borderUpColor: '#26a69a',
-    wickDownColor: '#ef5350',
-    wickUpColor: '#26a69a',
+    upColor: c.up, downColor: c.down,
+    borderUpColor: c.up, borderDownColor: c.down,
+    wickUpColor: c.up, wickDownColor: c.down,
   })
 
   volumeSeries = chart.addSeries(HistogramSeries, {
-    color: '#385263',
+    color: c.volume,
     priceFormat: { type: 'volume' },
     priceScaleId: 'volume',
   })
@@ -85,10 +98,11 @@ async function loadChart() {
       close: d.close,
     }))
 
+    const c = getChartThemeColors()
     const volumes = data.map((d) => ({
       time: Math.floor(new Date(d.time).getTime() / 1000),
       value: d.tick_volume || d.real_volume || 0,
-      color: d.close >= d.open ? '#26a69a80' : '#ef535080',
+      color: d.close >= d.open ? c.up + '80' : c.down + '80',
     }))
 
     candleSeries.setData(candles)
@@ -98,6 +112,10 @@ async function loadChart() {
     toast.error(`Chart error: ${err.message}`)
   }
 }
+
+watch(theme, () => {
+  setTimeout(applyThemeToChart, 50)
+})
 
 onMounted(() => {
   initChart()

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { createChart, CandlestickSeries, LineSeries, CrosshairMode, createSeriesMarkers } from 'lightweight-charts'
+import { useTheme, getChartThemeColors } from '@/composables/useTheme'
 import api from '@/services/api'
 
 const STRATEGY_INTERVAL = {
@@ -15,6 +16,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:symbol'])
+const { theme } = useTheme()
 
 const chartEl = ref(null)
 const symbols = ref([])
@@ -39,20 +41,37 @@ function extractSymbols() {
   }
 }
 
+function applyThemeToChart() {
+  if (!chart) return
+  const c = getChartThemeColors()
+  chart.applyOptions({
+    layout: { background: { color: c.bg }, textColor: c.text },
+    grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
+  })
+  if (candleSeries) {
+    candleSeries.applyOptions({
+      upColor: c.up, downColor: c.down,
+      borderUpColor: c.up, borderDownColor: c.down,
+      wickUpColor: c.up, wickDownColor: c.down,
+    })
+  }
+}
+
 function initChart() {
   if (!chartEl.value) return
+  const c = getChartThemeColors()
   chart = createChart(chartEl.value, {
     width: chartEl.value.clientWidth,
     height: 450,
-    layout: { background: { color: '#1a1a2e' }, textColor: '#e0e0e0' },
-    grid: { vertLines: { color: '#2a2a4a' }, horzLines: { color: '#2a2a4a' } },
+    layout: { background: { color: c.bg }, textColor: c.text },
+    grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
     crosshair: { mode: CrosshairMode.Normal },
     timeScale: { timeVisible: true, secondsVisible: false },
   })
   candleSeries = chart.addSeries(CandlestickSeries, {
-    upColor: '#26a69a', downColor: '#ef5350',
-    borderDownColor: '#ef5350', borderUpColor: '#26a69a',
-    wickDownColor: '#ef5350', wickUpColor: '#26a69a',
+    upColor: c.up, downColor: c.down,
+    borderUpColor: c.up, borderDownColor: c.down,
+    wickUpColor: c.up, wickDownColor: c.down,
   })
 
   // Entry price line (blue dashed)
@@ -208,6 +227,10 @@ function formatTime(ts) {
   return new Date(ts * 1000).toLocaleString()
 }
 
+watch(theme, () => {
+  setTimeout(applyThemeToChart, 50)
+})
+
 watch(selectedSymbol, () => {
   emit('update:symbol', selectedSymbol.value)
   loadChart()
@@ -244,9 +267,9 @@ onBeforeUnmount(() => {
 
   <!-- Legend -->
   <div v-if="trades.length" style="display: flex; gap: 1.5rem; justify-content: center; margin: 0.5rem 0; font-size: 0.8rem;">
-    <span><span style="color: #42a5f5;">---</span> Entry</span>
-    <span><span style="color: #ef5350;">---</span> Stop Loss</span>
-    <span><span style="color: #26a69a;">---</span> Take Profit</span>
+    <span><span style="color: var(--tp-primary);">---</span> Entry</span>
+    <span><span style="color: var(--tp-danger);">---</span> Stop Loss</span>
+    <span><span style="color: var(--tp-success);">---</span> Take Profit</span>
     <span style="opacity: 0.7;">Click a trade row to highlight on chart</span>
   </div>
 
@@ -279,16 +302,16 @@ onBeforeUnmount(() => {
           @click="selectedTradeIdx === idx ? clearHighlight() : highlightTrade(idx)"
         >
           <td>{{ idx + 1 }}</td>
-          <td :style="{ color: t.type === 'BUY' ? '#26a69a' : '#ef5350', fontWeight: 'bold' }">{{ t.type }}</td>
+          <td :style="{ color: t.type === 'BUY' ? 'var(--tp-success)' : 'var(--tp-danger)', fontWeight: 'bold' }">{{ t.type }}</td>
           <td style="font-size: 0.8rem; opacity: 0.85;">{{ t.signal || '-' }}</td>
           <td>{{ formatPrice(t.entry) }}</td>
-          <td style="color: #ef5350;">{{ formatPrice(t.sl) }}</td>
-          <td style="color: #26a69a;">{{ formatPrice(t.tp) }}</td>
+          <td style="color: var(--tp-danger);">{{ formatPrice(t.sl) }}</td>
+          <td style="color: var(--tp-success);">{{ formatPrice(t.tp) }}</td>
           <td>{{ formatPrice(t.exit) }}</td>
           <td>
             <mark :class="{ secondary: t.result !== 'TP' }">{{ t.result }}</mark>
           </td>
-          <td :style="{ color: t.pnl_pct >= 0 ? '#26a69a' : '#ef5350' }">
+          <td :style="{ color: t.pnl_pct >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
             {{ (t.pnl_pct * 100).toFixed(3) }}%
           </td>
           <td style="font-size: 0.8rem;">{{ formatTime(t.entry_time) }}</td>

@@ -137,7 +137,7 @@ async function save() {
     <!-- Indicators -->
     <fieldset>
       <legend>Indicators</legend>
-      <div v-for="(ind, idx) in form.indicators" :key="idx" style="margin-bottom: 0.75rem; padding: 0.5rem; border: 1px solid #2a2a4a; border-radius: 4px;">
+      <div v-for="(ind, idx) in form.indicators" :key="idx" style="margin-bottom: 0.75rem; padding: 0.5rem; border: 1px solid var(--tp-border); border-radius: 4px;">
         <div class="grid" style="align-items: end;">
           <label>
             Type
