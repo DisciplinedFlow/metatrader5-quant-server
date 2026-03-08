@@ -7,6 +7,7 @@ import SectionNav from '@/components/SectionNav.vue'
 const cryptoLinks = [
   { to: '/crypto', label: 'Dashboard' },
   { to: '/crypto/positions', label: 'Positions' },
+  { to: '/crypto/logs', label: 'Logs' },
   { to: '/crypto/strategy', label: 'Strategy' },
 ]
 
@@ -51,70 +52,87 @@ usePolling(refresh, 10000)
 </script>
 
 <template>
-  <SectionNav :links="cryptoLinks" />
-  <h2>Crypto Dashboard</h2>
-  <div class="grid">
-    <article>
-      <header>Bot Status</header>
-      <dl>
-        <dt>Status</dt>
-        <dd>
-          <mark :class="botPaused ? 'secondary' : ''">
-            {{ botPaused ? 'PAUSED' : 'RUNNING' }}
-          </mark>
-        </dd>
-      </dl>
-      <button
-        :class="botPaused ? '' : 'outline secondary'"
-        :aria-busy="botStatusLoading"
-        style="width: auto; padding: 0.5rem 1rem; margin-bottom: 0;"
-        @click="toggleBot"
-      >
-        {{ botPaused ? 'Resume Bot' : 'Pause Bot' }}
-      </button>
-    </article>
-    <article>
-      <header>Open Positions</header>
-      <p><strong>{{ openPositions }}</strong></p>
-    </article>
-    <article>
-      <header>Total P&amp;L</header>
-      <p>
-        <strong :style="{ color: totalPnl >= 0 ? 'var(--ins-color)' : 'var(--del-color)' }">
-          ${{ fmt(totalPnl) }}
-        </strong>
-      </p>
-    </article>
-  </div>
+  <div class="tp-page">
+    <SectionNav :links="cryptoLinks" />
+    
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem;">
+      <div>
+        <h1 style="font-size: 2.25rem; font-weight: 900; letter-spacing: -0.02em;">Crypto Dashboard</h1>
+        <p style="color: var(--tp-text-muted); margin-top: 0.25rem;">Trading Pro Platform</p>
+      </div>
+    </div>
 
-  <article v-if="positions.length">
-    <header>Open Positions</header>
-    <figure>
-      <table>
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Side</th>
-            <th>Entry Price</th>
-            <th>Size</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="p in positions" :key="p.symbol">
-            <td>{{ p.symbol }}</td>
-            <td>
-              <mark :class="p.side === 'LONG' ? '' : 'secondary'">{{ p.side }}</mark>
-            </td>
-            <td>${{ fmt(p.entry_price) }}</td>
-            <td>{{ fmt(p.size) }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </figure>
-  </article>
+    <div class="tp-stats-grid" style="margin-bottom: 2rem;">
+      <div class="tp-stat-card">
+        <div class="stat-label">Bot Status</div>
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div class="stat-value">{{ botPaused ? 'Paused' : 'Active' }}</div>
+          <span v-if="!botPaused" class="tp-badge tp-badge-success">
+            <span class="pulse-dot"></span> Running
+          </span>
+          <span v-else class="tp-badge tp-badge-warning">
+            Stopped
+          </span>
+        </div>
+        <div style="margin-top: 1rem;">
+          <button class="tp-btn" :class="botPaused ? 'tp-btn-success' : 'tp-btn-outline'" style="width: 100%" :disabled="botStatusLoading" @click="toggleBot">
+            <span class="material-symbols-outlined">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
+            {{ botPaused ? 'Resume Bot' : 'Pause Bot' }}
+          </button>
+        </div>
+      </div>
+      
+      <div class="tp-stat-card">
+        <div class="stat-label">Open Positions</div>
+        <div class="stat-value">{{ openPositions }}</div>
+        <div style="margin-top: 1rem;">
+          <RouterLink to="/crypto/positions" class="tp-btn tp-btn-outline" style="width: 100%">
+            View Positions
+          </RouterLink>
+        </div>
+      </div>
 
-  <div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
-    <RouterLink to="/crypto/positions" role="button" class="outline" style="margin-bottom: 0; width: auto;">View All Positions</RouterLink>
-    <RouterLink to="/crypto/strategy" role="button" class="outline" style="margin-bottom: 0; width: auto;">Strategy Config</RouterLink>
+      <div class="tp-stat-card">
+        <div class="stat-label">Total P&amp;L</div>
+        <div class="stat-value" :style="{ color: totalPnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
+          {{ totalPnl >= 0 ? '+' : '' }}${{ fmt(totalPnl) }}
+        </div>
+        <div style="margin-top: 1rem;">
+          <RouterLink to="/crypto/strategy" class="tp-btn tp-btn-outline" style="width: 100%">
+            Strategy Config
+          </RouterLink>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="positions.length" class="tp-card" style="margin-bottom: 1.5rem;">
+      <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--tp-border);">
+        <h3 style="font-size: 1.1rem; font-weight: 700; margin: 0;">Open Positions</h3>
+      </div>
+      <div style="overflow-x: auto;">
+        <table class="tp-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Entry Price</th>
+              <th>Size</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in positions" :key="p.symbol">
+              <td style="font-weight: 600;">{{ p.symbol }}</td>
+              <td>
+                <span class="tp-badge" :class="p.side === 'LONG' ? 'tp-badge-success' : 'tp-badge-danger'">
+                  {{ p.side }}
+                </span>
+              </td>
+              <td style="font-weight: 500;">${{ fmt(p.entry_price) }}</td>
+              <td style="font-weight: 500;">{{ fmt(p.size) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </template>

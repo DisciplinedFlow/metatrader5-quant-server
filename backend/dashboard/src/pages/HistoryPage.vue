@@ -37,6 +37,9 @@ const ordersError = ref('')
 const dealKeys = computed(() => deals.value?.length ? Object.keys(deals.value[0]) : [])
 const orderKeys = computed(() => orders.value?.length ? Object.keys(orders.value[0]) : [])
 
+// Active section tab
+const activeSection = ref('ticket')
+
 async function lookupTicket() {
   ticketError.value = ''
   try {
@@ -83,79 +86,273 @@ async function searchOrders() {
 
 <template>
   <SectionNav :links="forexLinks" />
-  <h2>Trade History</h2>
+  <div class="tp-page history-page">
+    <!-- Page Header -->
+    <div class="page-header">
+      <div>
+        <h1>Trade History</h1>
+        <p>Manage and search your past trading activity across all markets.</p>
+      </div>
+    </div>
 
-  <article>
-    <header>Lookup by Ticket</header>
-    <form class="grid" style="align-items:end;" @submit.prevent="lookupTicket">
-      <label>
-        Ticket
-        <input v-model="ticketNum" type="number" required placeholder="Order/Deal ticket">
-      </label>
-      <label>
-        Type
-        <select v-model="lookupType">
-          <option value="deal">Deal</option>
-          <option value="order">Order</option>
-        </select>
-      </label>
-      <button type="submit">Lookup</button>
-    </form>
-    <pre v-if="ticketResult">{{ JSON.stringify(ticketResult, null, 2) }}</pre>
-    <p v-if="ticketError">Error: {{ ticketError }}</p>
-  </article>
+    <!-- Search Type Tabs -->
+    <div class="tp-tabs">
+      <button :class="{ active: activeSection === 'ticket' }" @click="activeSection = 'ticket'">
+        <span class="material-symbols-outlined tab-icon">confirmation_number</span> Lookup by Ticket
+      </button>
+      <button :class="{ active: activeSection === 'deals' }" @click="activeSection = 'deals'">
+        <span class="material-symbols-outlined tab-icon">swap_horiz</span> Deals History
+      </button>
+      <button :class="{ active: activeSection === 'orders' }" @click="activeSection = 'orders'">
+        <span class="material-symbols-outlined tab-icon">receipt_long</span> Orders History
+      </button>
+    </div>
 
-  <article>
-    <header>Deals History (by Position)</header>
-    <form class="grid" style="align-items:end;" @submit.prevent="searchDeals">
-      <label>
-        From
-        <input v-model="fromDate" type="datetime-local">
-      </label>
-      <label>
-        To
-        <input v-model="toDate" type="datetime-local">
-      </label>
-      <label>
-        Position
-        <input v-model="dealsPosition" type="number" required placeholder="Position ticket">
-      </label>
-      <button type="submit">Search</button>
-    </form>
-    <p v-if="dealsLoading" aria-busy="true">Searching...</p>
-    <p v-else-if="dealsError">{{ dealsError }}</p>
-    <figure v-else-if="deals">
-      <table>
-        <thead><tr><th v-for="k in dealKeys" :key="k">{{ k }}</th></tr></thead>
-        <tbody>
-          <tr v-for="(d, i) in deals" :key="i">
-            <td v-for="k in dealKeys" :key="k">{{ d[k] ?? '' }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </figure>
-  </article>
+    <!-- Ticket Lookup Section -->
+    <div v-if="activeSection === 'ticket'" class="section-card tp-card">
+      <div class="card-inner">
+        <h3 class="section-title">
+          <span class="material-symbols-outlined" style="color:var(--tp-primary)">search</span>
+          Lookup by Ticket
+        </h3>
+        <form class="search-form" @submit.prevent="lookupTicket">
+          <div class="form-row">
+            <div class="field">
+              <label class="tp-label">Ticket Number</label>
+              <input v-model="ticketNum" type="number" required placeholder="Order/Deal ticket" class="tp-input" />
+            </div>
+            <div class="field" style="max-width: 160px;">
+              <label class="tp-label">Type</label>
+              <select v-model="lookupType" class="tp-select">
+                <option value="deal">Deal</option>
+                <option value="order">Order</option>
+              </select>
+            </div>
+            <div class="field field-btn">
+              <button type="submit" class="tp-btn tp-btn-primary search-btn">
+                <span class="material-symbols-outlined" style="font-size:18px">search</span>
+                Lookup
+              </button>
+            </div>
+          </div>
+        </form>
+        <!-- Result -->
+        <div v-if="ticketResult" class="result-block">
+          <pre class="result-pre">{{ JSON.stringify(ticketResult, null, 2) }}</pre>
+        </div>
+        <div v-if="ticketError" class="error-msg">
+          <span class="material-symbols-outlined" style="font-size:16px">error</span>
+          {{ ticketError }}
+        </div>
+      </div>
+    </div>
 
-  <article>
-    <header>Orders History (by Ticket)</header>
-    <form class="grid" style="align-items:end;" @submit.prevent="searchOrders">
-      <label>
-        Ticket
-        <input v-model="ordersTicket" type="number" required placeholder="Order ticket">
-      </label>
-      <button type="submit">Search</button>
-    </form>
-    <p v-if="ordersLoading" aria-busy="true">Searching...</p>
-    <p v-else-if="ordersError">{{ ordersError }}</p>
-    <figure v-else-if="orders">
-      <table>
-        <thead><tr><th v-for="k in orderKeys" :key="k">{{ k }}</th></tr></thead>
-        <tbody>
-          <tr v-for="(o, i) in orders" :key="i">
-            <td v-for="k in orderKeys" :key="k">{{ o[k] ?? '' }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </figure>
-  </article>
+    <!-- Deals History Section -->
+    <div v-if="activeSection === 'deals'" class="section-card tp-card">
+      <div class="card-inner">
+        <h3 class="section-title">
+          <span class="material-symbols-outlined" style="color:var(--tp-primary)">swap_horiz</span>
+          Deals History (by Position)
+        </h3>
+        <form class="search-form" @submit.prevent="searchDeals">
+          <div class="form-row">
+            <div class="field">
+              <label class="tp-label">From</label>
+              <input v-model="fromDate" type="datetime-local" class="tp-input" />
+            </div>
+            <div class="field">
+              <label class="tp-label">To</label>
+              <input v-model="toDate" type="datetime-local" class="tp-input" />
+            </div>
+            <div class="field">
+              <label class="tp-label">Position Ticket</label>
+              <input v-model="dealsPosition" type="number" required placeholder="Position ticket" class="tp-input" />
+            </div>
+            <div class="field field-btn">
+              <button type="submit" class="tp-btn tp-btn-primary search-btn">
+                <span class="material-symbols-outlined" style="font-size:18px">search</span>
+                Search
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <!-- Loading -->
+        <div v-if="dealsLoading" class="loading-msg">
+          <span class="material-symbols-outlined spinning">hourglass_empty</span> Searching...
+        </div>
+        <div v-else-if="dealsError" class="error-msg">
+          <span class="material-symbols-outlined" style="font-size:16px">error</span>
+          {{ dealsError }}
+        </div>
+
+        <!-- Deals Table -->
+        <div v-else-if="deals" class="table-wrapper">
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th v-for="k in dealKeys" :key="k">{{ k }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(d, i) in deals" :key="i">
+                <td v-for="k in dealKeys" :key="k">{{ d[k] ?? '' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Orders History Section -->
+    <div v-if="activeSection === 'orders'" class="section-card tp-card">
+      <div class="card-inner">
+        <h3 class="section-title">
+          <span class="material-symbols-outlined" style="color:var(--tp-primary)">receipt_long</span>
+          Orders History (by Ticket)
+        </h3>
+        <form class="search-form" @submit.prevent="searchOrders">
+          <div class="form-row">
+            <div class="field">
+              <label class="tp-label">Order Ticket</label>
+              <input v-model="ordersTicket" type="number" required placeholder="Order ticket" class="tp-input" />
+            </div>
+            <div class="field field-btn">
+              <button type="submit" class="tp-btn tp-btn-primary search-btn">
+                <span class="material-symbols-outlined" style="font-size:18px">search</span>
+                Search
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div v-if="ordersLoading" class="loading-msg">
+          <span class="material-symbols-outlined spinning">hourglass_empty</span> Searching...
+        </div>
+        <div v-else-if="ordersError" class="error-msg">
+          <span class="material-symbols-outlined" style="font-size:16px">error</span>
+          {{ ordersError }}
+        </div>
+
+        <!-- Orders Table -->
+        <div v-else-if="orders" class="table-wrapper">
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th v-for="k in orderKeys" :key="k">{{ k }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(o, i) in orders" :key="i">
+                <td v-for="k in orderKeys" :key="k">{{ o[k] ?? '' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
+
+<style scoped>
+.history-page {
+  padding: 2rem 1rem;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 2rem;
+}
+.page-header h1 {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.35rem;
+}
+.section-card {
+  margin-bottom: 1.5rem;
+}
+.card-inner {
+  padding: 1.5rem;
+}
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 1.25rem;
+}
+.search-form {
+  margin-bottom: 1.25rem;
+}
+.form-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.form-row .field {
+  flex: 1;
+  min-width: 140px;
+}
+.field-btn {
+  max-width: 140px;
+  padding-bottom: 0;
+}
+.search-btn {
+  height: 2.75rem;
+  width: 100%;
+}
+.table-wrapper {
+  overflow-x: auto;
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-radius-sm);
+}
+.result-block {
+  margin-top: 1rem;
+}
+.result-pre {
+  background: var(--tp-bg-surface);
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-radius-sm);
+  padding: 1rem;
+  font-size: 0.8rem;
+  color: var(--tp-text-muted);
+  overflow-x: auto;
+  margin: 0;
+}
+.error-msg {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.75rem 1rem;
+  background: rgba(239,68,68,0.05);
+  border: 1px solid rgba(239,68,68,0.2);
+  border-radius: var(--tp-radius-sm);
+  color: var(--tp-danger);
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+}
+.loading-msg {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  color: var(--tp-text-muted);
+  font-size: 0.9rem;
+}
+.tab-icon {
+  font-size: 18px;
+  margin-right: 0.25rem;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spinning {
+  animation: spin 1.5s linear infinite;
+}
+</style>

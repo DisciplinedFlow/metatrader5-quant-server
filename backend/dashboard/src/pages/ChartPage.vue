@@ -111,31 +111,50 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <SectionNav :links="forexLinks" />
-  <h2>Chart</h2>
-  <form class="grid" style="align-items:end;" @submit.prevent="loadChart">
-    <label>
-      Symbol
-      <SymbolSelect v-model="symbol" />
-    </label>
-    <label>
-      Timeframe
-      <select v-model="timeframe">
-        <option value="M1">M1</option>
-        <option value="M5">M5</option>
-        <option value="M15">M15</option>
-        <option value="M30">M30</option>
-        <option value="H1">H1</option>
-        <option value="H4">H4</option>
-        <option value="D1">D1</option>
-        <option value="W1">W1</option>
-      </select>
-    </label>
-    <label>
-      Bars
-      <input v-model.number="numBars" type="number" min="10" max="1000">
-    </label>
-    <button type="submit">Load</button>
-  </form>
-  <div ref="chartEl" class="chart-container"></div>
+  <div class="tp-page">
+    <SectionNav :links="forexLinks" />
+    
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem;">
+      <div>
+        <h1 style="font-size: 2.25rem; font-weight: 900; letter-spacing: -0.02em;">Live Charts</h1>
+        <p style="color: var(--tp-text-muted); margin-top: 0.25rem;">Market Analysis</p>
+      </div>
+    </div>
+
+    <div class="tp-card" style="margin-bottom: 1.5rem; padding: 1.5rem;">
+      <form style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end;" @submit.prevent="loadChart">
+        <div style="flex: 1; min-width: 150px;">
+          <label class="tp-label">Symbol</label>
+          <SymbolSelect v-model="symbol" class="tp-select" />
+        </div>
+        <div style="flex: 1; min-width: 120px;">
+          <label class="tp-label">Timeframe</label>
+          <select v-model="timeframe" class="tp-select">
+            <option value="M1">M1</option>
+            <option value="M5">M5</option>
+            <option value="M15">M15</option>
+            <option value="M30">M30</option>
+            <option value="H1">H1</option>
+            <option value="H4">H4</option>
+            <option value="D1">D1</option>
+            <option value="W1">W1</option>
+          </select>
+        </div>
+        <div style="flex: 1; min-width: 120px;">
+          <label class="tp-label">Bars</label>
+          <input v-model.number="numBars" type="number" min="10" max="1000" class="tp-input">
+        </div>
+        <div style="flex: 0 0 auto;">
+          <button type="submit" class="tp-btn tp-btn-primary" style="height: 2.75rem;">
+            <span class="material-symbols-outlined" style="font-size:18px">show_chart</span>
+            Load Chart
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <div class="tp-card" style="padding: 0; overflow: hidden; border-radius: var(--tp-radius);">
+      <div ref="chartEl" style="width: 100%; height: 500px;"></div>
+    </div>
+  </div>
 </template>

@@ -9,7 +9,7 @@ def sync_markets():
     from app.polymarket.models import PolyMarket
     from .client import get_markets
 
-    raw_markets = get_markets(limit=100, active=True)
+    raw_markets = get_markets()
     created, updated = 0, 0
 
     for m in raw_markets:

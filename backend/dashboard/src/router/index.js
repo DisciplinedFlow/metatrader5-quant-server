@@ -60,6 +60,10 @@ const routes = [
     component: () => import('@/pages/polymarket/PolyPositionsPage.vue'),
   },
   {
+    path: '/polymarket/logs',
+    component: () => import('@/pages/polymarket/PolyLogsPage.vue'),
+  },
+  {
     path: '/polymarket/strategy',
     component: () => import('@/pages/polymarket/PolyStrategyPage.vue'),
   },
@@ -72,6 +76,10 @@ const routes = [
   {
     path: '/crypto/positions',
     component: () => import('@/pages/crypto/CryptoPositionsPage.vue'),
+  },
+  {
+    path: '/crypto/logs',
+    component: () => import('@/pages/crypto/CryptoLogsPage.vue'),
   },
   {
     path: '/crypto/strategy',

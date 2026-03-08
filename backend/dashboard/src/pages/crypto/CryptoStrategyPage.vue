@@ -7,6 +7,7 @@ import SectionNav from '@/components/SectionNav.vue'
 const cryptoLinks = [
   { to: '/crypto', label: 'Dashboard' },
   { to: '/crypto/positions', label: 'Positions' },
+  { to: '/crypto/logs', label: 'Logs' },
   { to: '/crypto/strategy', label: 'Strategy' },
 ]
 
@@ -79,163 +80,200 @@ usePolling(refresh, 15000)
 </script>
 
 <template>
-  <SectionNav :links="cryptoLinks" />
-  <h2>Crypto Strategy</h2>
-
-  <div class="grid">
-    <article>
-      <header>Strategy Configuration</header>
-      <label>
-        Pairs (comma-separated)
-        <input v-model="config.pairs" type="text" />
-      </label>
-      <label>
-        Capital (USD)
-        <input v-model.number="config.capital_usd" type="number" step="1" min="0" />
-      </label>
-      <label>
-        Max Positions
-        <input v-model.number="config.max_positions" type="number" step="1" min="1" />
-      </label>
-      <label>
-        Leverage
-        <input v-model.number="config.leverage" type="number" step="1" min="1" max="20" />
-      </label>
-      <label>
-        Fast MA
-        <input v-model.number="config.fast_ma" type="number" step="1" min="5" />
-      </label>
-      <label>
-        Slow MA
-        <input v-model.number="config.slow_ma" type="number" step="1" min="10" />
-      </label>
-      <label>
-        Max Position %
-        <input v-model.number="config.max_position_pct" type="number" step="0.01" min="0.01" max="1" />
-      </label>
-      <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
-        <button :aria-busy="configLoading" @click="saveConfig" style="margin-bottom: 0;">Save</button>
+  <div class="tp-page">
+    <SectionNav :links="cryptoLinks" />
+    
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem;">
+      <div>
+        <h1 style="font-size: 2.25rem; font-weight: 900; letter-spacing: -0.02em;">Crypto Strategy</h1>
+        <p style="color: var(--tp-text-muted); margin-top: 0.25rem;">Trading Pro Platform</p>
       </div>
-    </article>
+      <div>
+        <button class="tp-btn tp-btn-primary" :disabled="backtestLoading" @click="runBacktest">
+          <span class="material-symbols-outlined">play_arrow</span>
+          Run Backtest
+        </button>
+      </div>
+    </div>
 
-    <article>
-      <header>Latest Backtest</header>
-      <template v-if="latestBacktest">
-        <dl>
-          <dt>Symbol</dt>
-          <dd>{{ latestBacktest.symbol }}</dd>
-          <dt>Status</dt>
-          <dd>
-            <mark :class="latestBacktest.passed ? '' : 'secondary'">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-bottom: 1.5rem;">
+      <!-- Strategy Configuration -->
+      <div class="tp-card" style="padding: 1.5rem;">
+        <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 1rem;">Configuration</h3>
+        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+          <label class="tp-label">
+            Pairs (comma-separated)
+            <input class="tp-input" v-model="config.pairs" type="text" />
+          </label>
+          <label class="tp-label">
+            Capital (USD)
+            <input class="tp-input" v-model.number="config.capital_usd" type="number" step="1" min="0" />
+          </label>
+          <label class="tp-label">
+            Max Positions
+            <input class="tp-input" v-model.number="config.max_positions" type="number" step="1" min="1" />
+          </label>
+          <label class="tp-label">
+            Leverage
+            <input class="tp-input" v-model.number="config.leverage" type="number" step="1" min="1" max="20" />
+          </label>
+          <label class="tp-label">
+            Fast MA
+            <input class="tp-input" v-model.number="config.fast_ma" type="number" step="1" min="5" />
+          </label>
+          <label class="tp-label">
+            Slow MA
+            <input class="tp-input" v-model.number="config.slow_ma" type="number" step="1" min="10" />
+          </label>
+          <label class="tp-label">
+            Max Position %
+            <input class="tp-input" v-model.number="config.max_position_pct" type="number" step="0.01" min="0.01" max="1" />
+          </label>
+        </div>
+        <div style="margin-top: 1.25rem;">
+          <button class="tp-btn" :class="configLoading ? 'tp-btn-outline' : 'tp-btn-success'" :disabled="configLoading" @click="saveConfig" style="width: 100%;">
+            <span class="material-symbols-outlined">save</span>
+            Save Config
+          </button>
+        </div>
+      </div>
+
+      <!-- Latest Backtest Result -->
+      <div class="tp-card" style="padding: 1.5rem;">
+        <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 1rem;">Latest Backtest</h3>
+        <div v-if="latestBacktest" style="display: flex; flex-direction: column; gap: 0.75rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.5rem;">
+            <span class="tp-label" style="margin: 0;">Symbol</span>
+            <span style="font-weight: 600;">{{ latestBacktest.symbol }}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.5rem;">
+            <span class="tp-label" style="margin: 0;">Status</span>
+            <span class="tp-badge" :class="latestBacktest.passed ? 'tp-badge-success' : 'tp-badge-danger'">
               {{ latestBacktest.passed ? 'PASS' : 'FAIL' }}
-            </mark>
-          </dd>
-          <dt>Total Trades</dt>
-          <dd>{{ latestBacktest.total_trades ?? 'N/A' }}</dd>
-          <dt>Win Rate</dt>
-          <dd>{{ fmtPct(latestBacktest.win_rate) }}</dd>
-          <dt>Winning / Losing</dt>
-          <dd>{{ latestBacktest.winning_trades ?? '-' }} / {{ latestBacktest.losing_trades ?? '-' }}</dd>
-          <dt>Total P&amp;L</dt>
-          <dd>
-            <strong :style="{ color: Number(latestBacktest.total_pnl ?? 0) >= 0 ? 'var(--ins-color)' : 'var(--del-color)' }">
-              ${{ fmt(latestBacktest.total_pnl) }}
-            </strong>
-          </dd>
-          <dt>Avg Win / Avg Loss</dt>
-          <dd>${{ fmt(latestBacktest.avg_win) }} / ${{ fmt(latestBacktest.avg_loss) }}</dd>
-          <dt>Profit Factor</dt>
-          <dd>{{ fmt(latestBacktest.profit_factor) }}</dd>
-          <dt>Max Drawdown</dt>
-          <dd>{{ fmtPct(latestBacktest.max_drawdown) }}</dd>
-          <dt>Run Time</dt>
-          <dd>{{ fmtDate(latestBacktest.run_time) }}</dd>
-        </dl>
-      </template>
-      <p v-else>No backtest results yet.</p>
-    </article>
+            </span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.5rem;">
+            <span class="tp-label" style="margin: 0;">Total Trades</span>
+            <span style="font-weight: 600;">{{ latestBacktest.total_trades ?? '0' }}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.5rem;">
+            <span class="tp-label" style="margin: 0;">Win Rate</span>
+            <span style="font-weight: 600;">{{ fmtPct(latestBacktest.win_rate) }}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.5rem;">
+            <span class="tp-label" style="margin: 0;">Total P&amp;L</span>
+            <span style="font-weight: 700;" :style="{ color: Number(latestBacktest.total_pnl ?? 0) >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
+              {{ Number(latestBacktest.total_pnl ?? 0) >= 0 ? '+' : '' }}${{ fmt(latestBacktest.total_pnl) }}
+            </span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.5rem;">
+            <span class="tp-label" style="margin: 0;">Win / Loss Ratio</span>
+            <span style="font-weight: 600; font-size: 0.85rem;">{{ latestBacktest.winning_trades ?? '-' }}W / {{ latestBacktest.losing_trades ?? '-' }}L</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.5rem;">
+            <span class="tp-label" style="margin: 0;">Profit Factor</span>
+            <span style="font-weight: 600;">{{ fmt(latestBacktest.profit_factor) }}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.5rem;">
+            <span class="tp-label" style="margin: 0;">Max Drawdown</span>
+            <span style="font-weight: 600;">{{ fmtPct(latestBacktest.max_drawdown) }}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span class="tp-label" style="margin: 0;">Run Time</span>
+            <span style="font-weight: 500; font-size: 0.8rem; color: var(--tp-text-dim);">{{ fmtDate(latestBacktest.run_time) }}</span>
+          </div>
+        </div>
+        <div v-else style="color: var(--tp-text-dim); font-size: 0.9rem;">
+          No backtests available for this strategy.
+        </div>
+      </div>
+    </div>
+
+    <!-- Trade Details -->
+    <div v-if="latestBacktest && latestBacktest.trades && latestBacktest.trades.length" class="tp-card" style="margin-bottom: 1.5rem; padding: 0;">
+      <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--tp-border); display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none;" @click="showTrades = !showTrades">
+        <h3 style="font-size: 1.1rem; font-weight: 700; margin: 0;">Trade Details ({{ latestBacktest.trades.length }})</h3>
+        <span class="material-symbols-outlined" style="color: var(--tp-text-dim);">
+          {{ showTrades ? 'expand_less' : 'expand_more' }}
+        </span>
+      </div>
+      <div v-if="showTrades" style="overflow-x: auto;">
+        <table class="tp-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Size</th>
+              <th>P&amp;L</th>
+              <th>Reason</th>
+              <th>Cum. P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(t, i) in latestBacktest.trades" :key="i">
+              <td style="color: var(--tp-text-dim); font-size: 0.8rem;">{{ i + 1 }}</td>
+              <td style="font-weight: 500;">{{ t.symbol ?? '-' }}</td>
+              <td>
+                <span class="tp-badge" :class="t.side === 'LONG' ? 'tp-badge-success' : t.side === 'SHORT' ? 'tp-badge-danger' : 'tp-badge-neutral'">
+                  {{ t.side ?? '-' }}
+                </span>
+              </td>
+              <td style="font-weight: 500;">${{ fmt(t.entry_price) }}</td>
+              <td style="font-weight: 500;">${{ fmt(t.exit_price) }}</td>
+              <td style="font-weight: 500;">{{ fmt(t.size) }}</td>
+              <td>
+                <span style="font-weight: 700;" :style="{ color: Number(t.pnl ?? 0) >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
+                  {{ Number(t.pnl ?? 0) >= 0 ? '+' : '' }}${{ fmt(t.pnl) }}
+                </span>
+              </td>
+              <td style="font-size: 0.8rem; color: var(--tp-text-dim);">{{ t.reason ?? '-' }}</td>
+              <td style="font-weight: 700;">${{ fmt(t.cumulative_pnl) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Backtest History -->
+    <div v-if="backtests.length > 1" class="tp-card" style="padding: 0;">
+      <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--tp-border);">
+        <h3 style="font-size: 1.1rem; font-weight: 700; margin: 0;">Backtest History</h3>
+      </div>
+      <div style="overflow-x: auto;">
+        <table class="tp-table">
+          <thead>
+            <tr>
+              <th>Run Time</th>
+              <th>Symbol</th>
+              <th>Total Trades</th>
+              <th>Win Rate</th>
+              <th>P&amp;L</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="bt in backtests" :key="bt.id">
+              <td style="font-size: 0.8rem; color: var(--tp-text-dim);">{{ fmtDate(bt.run_time) }}</td>
+              <td style="font-weight: 500;">{{ bt.symbol }}</td>
+              <td style="font-weight: 500;">{{ bt.total_trades ?? '-' }}</td>
+              <td style="font-weight: 500;">{{ fmtPct(bt.win_rate) }}</td>
+              <td>
+                <span style="font-weight: 700;" :style="{ color: Number(bt.total_pnl ?? 0) >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
+                  {{ Number(bt.total_pnl ?? 0) >= 0 ? '+' : '' }}${{ fmt(bt.total_pnl) }}
+                </span>
+              </td>
+              <td>
+                <span class="tp-badge" :class="bt.passed ? 'tp-badge-success' : 'tp-badge-danger'">
+                  {{ bt.passed ? 'PASS' : 'FAIL' }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
-
-  <div style="margin-bottom: 1.5rem;">
-    <button :aria-busy="backtestLoading" @click="runBacktest" style="width: auto;">Run Backtest</button>
-  </div>
-
-  <article v-if="latestBacktest && latestBacktest.trades && latestBacktest.trades.length">
-    <header>
-      <label style="cursor: pointer; margin-bottom: 0;">
-        <input v-model="showTrades" type="checkbox" role="switch" />
-        Trade Details ({{ latestBacktest.trades.length }} trades)
-      </label>
-    </header>
-    <figure v-if="showTrades">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Symbol</th>
-            <th>Side</th>
-            <th>Entry</th>
-            <th>Exit</th>
-            <th>Size</th>
-            <th>P&amp;L</th>
-            <th>Reason</th>
-            <th>Cumulative</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(t, i) in latestBacktest.trades" :key="i">
-            <td>{{ i + 1 }}</td>
-            <td>{{ t.symbol ?? '-' }}</td>
-            <td>{{ t.side ?? '-' }}</td>
-            <td>${{ fmt(t.entry_price) }}</td>
-            <td>${{ fmt(t.exit_price) }}</td>
-            <td>{{ fmt(t.size) }}</td>
-            <td>
-              <strong :style="{ color: Number(t.pnl ?? 0) >= 0 ? 'var(--ins-color)' : 'var(--del-color)' }">
-                ${{ fmt(t.pnl) }}
-              </strong>
-            </td>
-            <td>{{ t.reason ?? '-' }}</td>
-            <td>${{ fmt(t.cumulative_pnl) }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </figure>
-  </article>
-
-  <article v-if="backtests.length">
-    <header>Backtest History</header>
-    <figure>
-      <table>
-        <thead>
-          <tr>
-            <th>Run Time</th>
-            <th>Symbol</th>
-            <th>Total Trades</th>
-            <th>Win Rate</th>
-            <th>P&amp;L</th>
-            <th>Result</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="bt in backtests" :key="bt.id">
-            <td>{{ fmtDate(bt.run_time) }}</td>
-            <td>{{ bt.symbol }}</td>
-            <td>{{ bt.total_trades ?? '-' }}</td>
-            <td>{{ fmtPct(bt.win_rate) }}</td>
-            <td>
-              <strong :style="{ color: Number(bt.total_pnl ?? 0) >= 0 ? 'var(--ins-color)' : 'var(--del-color)' }">
-                ${{ fmt(bt.total_pnl) }}
-              </strong>
-            </td>
-            <td>
-              <mark :class="bt.passed ? '' : 'secondary'">
-                {{ bt.passed ? 'PASS' : 'FAIL' }}
-              </mark>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </figure>
-  </article>
 </template>

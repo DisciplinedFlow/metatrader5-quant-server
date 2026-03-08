@@ -95,3 +95,6 @@ logs
 
 # MT5/Wine large binaries (exceed GitHub 100MB limit)
 config/.wine/
+
+# MCP config (contains API keys)
+.mcp.json

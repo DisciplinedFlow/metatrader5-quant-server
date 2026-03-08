@@ -32,12 +32,11 @@ def get_client():
     return _client
 
 
-def get_markets(limit=100, active=True):
-    """Fetch markets from Polymarket CLOB API."""
+def get_markets(next_cursor="MA=="):
+    """Fetch markets from Polymarket CLOB API using cursor-based pagination."""
     client = get_client()
     try:
-        params = {"limit": limit, "active": active}
-        response = client.get_markets(**params)
+        response = client.get_markets(next_cursor=next_cursor)
         return response if isinstance(response, list) else response.get('data', [])
     except Exception as e:
         logger.error(f"Error fetching markets: {e}")

@@ -4,14 +4,11 @@ import { usePolling } from '@/composables/usePolling'
 import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
 
-const forexLinks = [
-  { to: '/forex', label: 'Overview' },
-  { to: '/forex/positions', label: 'Positions' },
-  { to: '/forex/order', label: 'Order' },
-  { to: '/forex/history', label: 'History' },
-  { to: '/forex/chart', label: 'Chart' },
-  { to: '/forex/logs', label: 'Logs' },
-  { to: '/forex/strategy', label: 'Strategies' },
+const cryptoLinks = [
+  { to: '/crypto', label: 'Dashboard' },
+  { to: '/crypto/positions', label: 'Positions' },
+  { to: '/crypto/logs', label: 'Logs' },
+  { to: '/crypto/strategy', label: 'Strategy' },
 ]
 
 const lines = ref('200')
@@ -27,7 +24,7 @@ const sessionId = ref(Math.floor(Math.random() * 90000) + 10000)
 
 async function refresh() {
   try {
-    const data = await api.django(`v1/logs/?lines=${lines.value}`)
+    const data = await api.getCryptoLogs(parseInt(lines.value))
     if (!data.logs || data.logs.length === 0) {
       logs.value = []
       status.value = 'Empty log'
@@ -51,8 +48,6 @@ watch(logs, async () => {
 
 function parseLogLine(line) {
   const trimmed = line.trimEnd()
-  // Try to extract timestamp, level, and message
-  // Common formats: "2024-01-01 12:00:00 INFO message" or "INFO message"
   const timestampMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(.*)/)
   let timestamp = ''
   let rest = trimmed
@@ -90,11 +85,9 @@ const parsedLogs = computed(() => logs.value.map(parseLogLine))
 
 const filteredLogs = computed(() => {
   return parsedLogs.value.filter(entry => {
-    // Level filter
     if (entry.level === 'info' && !showInfo.value) return false
     if (entry.level === 'warning' && !showWarning.value) return false
     if (entry.level === 'error' && !showError.value) return false
-    // Search filter
     if (searchQuery.value) {
       const q = searchQuery.value.toLowerCase()
       return entry.message.toLowerCase().includes(q) ||
@@ -113,7 +106,7 @@ const levelCounts = computed(() => ({
 </script>
 
 <template>
-  <SectionNav :links="forexLinks" />
+  <SectionNav :links="cryptoLinks" />
 
   <div class="tp-page">
     <!-- Header -->
@@ -126,7 +119,7 @@ const levelCounts = computed(() => ({
             Bot Running
           </div>
         </div>
-        <p class="logs-subtitle">Real-time system diagnostics and execution history for Forex Trading Bot</p>
+        <p class="logs-subtitle">Real-time system diagnostics and execution history for Crypto Trading Bot</p>
       </div>
       <div class="logs-header-actions">
         <button class="tp-btn tp-btn-primary" @click="refresh">
@@ -145,7 +138,6 @@ const levelCounts = computed(() => ({
       <!-- Sidebar -->
       <aside class="logs-sidebar">
         <div class="logs-sidebar-card">
-          <!-- Search -->
           <div>
             <h3>Search &amp; Filter</h3>
             <div class="logs-search-wrap" style="margin-top:0.75rem;">
@@ -154,7 +146,6 @@ const levelCounts = computed(() => ({
             </div>
           </div>
 
-          <!-- Log Level -->
           <div>
             <h3>Log Level</h3>
             <div class="logs-level-list" style="margin-top:0.5rem;">
@@ -182,7 +173,6 @@ const levelCounts = computed(() => ({
             </div>
           </div>
 
-          <!-- Lines select -->
           <div>
             <h3>Display Lines</h3>
             <select v-model="lines" @change="refresh" class="tp-select" style="margin-top:0.5rem;">
@@ -193,7 +183,6 @@ const levelCounts = computed(() => ({
             </select>
           </div>
 
-          <!-- Auto-scroll -->
           <div class="logs-toggle-row">
             <span>Auto-scroll</span>
             <label class="logs-toggle-switch">
@@ -203,7 +192,6 @@ const levelCounts = computed(() => ({
           </div>
         </div>
 
-        <!-- Quick Insight -->
         <div class="logs-insight-card">
           <div class="insight-header">
             <span class="material-symbols-outlined">info</span>

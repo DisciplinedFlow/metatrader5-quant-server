@@ -82,25 +82,41 @@ async function handleModifySubmit({ ticket, sl, tp }) {
 </script>
 
 <template>
-  <SectionNav :links="forexLinks" />
-  <h2>Active Positions</h2>
-  <div style="display:flex;gap:.5rem;margin-bottom:1rem;">
-    <button class="outline" @click="refresh">Refresh</button>
-    <button class="outline secondary" @click="handleCloseAll">Close All</button>
+  <div class="tp-page">
+    <SectionNav :links="forexLinks" />
+    
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem;">
+      <div>
+        <h1 style="font-size: 2.25rem; font-weight: 900; letter-spacing: -0.02em;">Active Positions</h1>
+        <p style="color: var(--tp-text-muted); margin-top: 0.25rem;">Forex &amp; CFD Trading</p>
+      </div>
+      <div style="display: flex; gap: 0.75rem;">
+        <button class="tp-btn tp-btn-outline" @click="refresh">
+          <span class="material-symbols-outlined" style="font-size:18px">refresh</span>
+          Refresh
+        </button>
+        <button class="tp-btn tp-btn-danger" @click="handleCloseAll">
+          <span class="material-symbols-outlined" style="font-size:18px">close</span>
+          Close All
+        </button>
+      </div>
+    </div>
+
+    <div class="tp-card" style="padding: 0;">
+      <PositionsTable
+        :positions="positionsStore.positions"
+        :show-actions="true"
+        @close="handleClose"
+        @modify="handleModify"
+      />
+    </div>
+
+    <ModifyDialog
+      v-model:show="showModify"
+      :ticket="modifyTicket"
+      :current-sl="modifySl"
+      :current-tp="modifyTp"
+      @submit="handleModifySubmit"
+    />
   </div>
-
-  <PositionsTable
-    :positions="positionsStore.positions"
-    :show-actions="true"
-    @close="handleClose"
-    @modify="handleModify"
-  />
-
-  <ModifyDialog
-    v-model:show="showModify"
-    :ticket="modifyTicket"
-    :current-sl="modifySl"
-    :current-tp="modifyTp"
-    @submit="handleModifySubmit"
-  />
 </template>
