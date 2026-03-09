@@ -102,8 +102,11 @@ def convert_lots_to_usd(symbol, lots, price_open):
     
     contract_size = symbol_info_data.get('trade_contract_size', 100000)
     
-    # Calculate the USD amount using the opening price
-    usd_amount = lots * contract_size * price_open
+    # For USD-base pairs (USDJPY, USDCHF, USDCAD), 1 lot = 100,000 USD
+    if symbol.startswith('USD') and symbol != 'USDX':
+        usd_amount = lots * contract_size
+    else:
+        usd_amount = lots * contract_size * price_open
     
     return usd_amount
 
@@ -137,7 +140,16 @@ def convert_usd_to_lots(symbol: str, usd_amount: float, type: str) -> float:
             contract_size = float(contract_size.iloc[0])
         else:
             contract_size = float(contract_size)
-        lots = usd_amount / (contract_size * price_dict[type])
+
+        # For USD-base pairs (USDJPY, USDCHF, USDCAD), 1 lot = 100,000 USD
+        # so lots = usd_amount / contract_size (no price conversion needed).
+        # For non-USD-base pairs (EURUSD, GBPUSD), 1 lot = 100,000 base currency
+        # so lots = usd_amount / (contract_size * price).
+        price = price_dict[type]
+        if symbol.startswith('USD') and symbol != 'USDX':
+            lots = usd_amount / contract_size
+        else:
+            lots = usd_amount / (contract_size * price)
 
         # Round to the nearest lot step
         lot_step = symbol_info_data.get('volume_step', 0.01)
