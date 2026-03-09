@@ -1,6 +1,6 @@
 import traceback
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from time import sleep
 
 import pandas as pd
@@ -52,26 +52,36 @@ def close_algorithm():
             try:
                 # Retrieve the closed order and deal details
                 closed_order = get_order_from_ticket(ticket)
-                closed_deal = get_deal_from_ticket(ticket)
+                now = datetime.now(TIMEZONE)
+                closed_deal = get_deal_from_ticket(ticket, now - timedelta(hours=24), now)
 
-                if closed_deal is None:
-                    error_msg = f"Failed to retrieve deal for closed ticket {ticket}."
-                    logger.error({
-                        "error": error_msg,
-                        "ticket": ticket,
-                        "position": position.to_dict() if hasattr(position, 'to_dict') else position
-                    })
-                    continue
-
-                # Extract closing details
-                close_time = closed_deal.get('time', current_time)
-                close_price = closed_deal.get('price', position.price_current)
-                pnl = closed_deal.get('profit', position.profit)
-                pnl_excluding_commission = pnl - closed_deal.get('commission', 0)
-                closing_reason = closed_deal.get('reason', 'CLOSED')
+                if closed_deal is not None:
+                    close_time = closed_deal.get('time', current_time)
+                    close_price = closed_deal.get('price', position.price_current)
+                    pnl = closed_deal.get('profit', position.profit)
+                    pnl_excluding_commission = pnl - closed_deal.get('commission', 0)
+                    closing_reason = closed_deal.get('reason', 'CLOSED')
+                else:
+                    # Fallback: use cached position data when deal history is unavailable
+                    logger.warning(f"No deal history for ticket {ticket}, using cached position data.")
+                    close_time = current_time
+                    close_price = position.price_current
+                    pnl = position.profit
+                    pnl_excluding_commission = pnl
+                    closing_reason = 'SL/TP'
+                    closed_deal = {}
 
                 # Update the Trade record in the database
                 closed_trade = close_trade(position.ticket, close_time, close_price, pnl, pnl_excluding_commission, closing_reason, closed_deal)
+
+                # Release PairLock for this ticket
+                try:
+                    from app.nexus.models import PairLock
+                    deleted_count, _ = PairLock.objects.filter(ticket=ticket).delete()
+                    if deleted_count:
+                        logger.info(f"PairLock released for ticket {ticket}")
+                except Exception as e:
+                    logger.warning(f"Error releasing PairLock for ticket {ticket}: {e}")
 
                 if closed_trade is not None:
                     logger.info({
@@ -87,6 +97,9 @@ def close_algorithm():
                 error_msg = f"Error processing closed ticket {ticket}: {e}\n{traceback.format_exc()}"
                 logger.error({"error": error_msg, "ticket": ticket})
 
+        # Clean up stale PairLocks
+        _cleanup_stale_locks(positions)
+
         # Update cached_positions with current open positions
         for index, position in positions.iterrows():
             cached_positions[position.ticket] = position
@@ -94,3 +107,26 @@ def close_algorithm():
     except Exception as e:
         error_msg = f"Exception in close_algorithm: {e}\n{traceback.format_exc()}"
         logger.error({"error": error_msg})
+
+
+def _cleanup_stale_locks(positions):
+    """Remove PairLocks for positions that no longer exist on MT5.
+
+    Handles edge cases like crashes or missed close events where a PairLock
+    lingers without a corresponding MT5 position.
+    """
+    try:
+        from app.nexus.models import PairLock
+
+        current_tickets = set()
+        if positions is not None and not positions.empty:
+            current_tickets = set(positions['ticket'].values)
+
+        # Find PairLocks with non-zero tickets that aren't in current positions
+        stale = PairLock.objects.exclude(ticket__in=current_tickets).exclude(ticket=0)
+        if stale.exists():
+            count = stale.count()
+            logger.info(f"Cleaning {count} stale PairLocks")
+            stale.delete()
+    except Exception as e:
+        logger.warning(f"Error cleaning stale PairLocks: {e}")

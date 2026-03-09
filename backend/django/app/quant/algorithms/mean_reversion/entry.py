@@ -94,7 +94,7 @@ def entry_algorithm():
                     order_type=order_type,
                     sl=round(sl_including_commission, price_decimals),
                     deviation=DEVIATION,
-                    type_filling="ORDER_FILLING_FOK",
+                    type_filling="ORDER_FILLING_IOC",
                     position_size_usd=order_size_usd,
                     commission=commission,
                     capital=order_capital,

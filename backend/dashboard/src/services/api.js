@@ -327,6 +327,29 @@ const api = {
   getCryptoWallet() {
     return this.django('v1/crypto/wallet/')
   },
+
+  // --- AI Brain API ---
+
+  getAIBrainStatus() {
+    return this.django('v1/ai-brain/')
+  },
+
+  setAIBrainEnabled(enabled, runNow = false) {
+    return this.django('v1/ai-brain/', {
+      method: 'POST',
+      body: JSON.stringify({ enabled, run_now: runNow }),
+    })
+  },
+
+  getAIBrainLogs(lines = 200) {
+    return this.django(`v1/ai-brain/logs/?lines=${lines}`)
+  },
+
+  // --- Market Pulse API ---
+
+  getMarketPulse() {
+    return this.django('v1/market-pulse/')
+  },
 }
 
 export default api

@@ -58,6 +58,18 @@ class Trade(models.Model):
     market_type = models.CharField(max_length=50, choices=MARKET_TYPE_CHOICES)
     timeframe = models.CharField(max_length=50, choices=TIMEFRAME_CHOICES)
 
+    # Adaptive trading engine fields
+    strategy_config = models.ForeignKey(
+        'StrategyConfig', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='trades',
+    )
+    breakeven_moved = models.BooleanField(default=False)
+    partial_closed = models.BooleanField(default=False)
+    partial_close_volume = models.FloatField(null=True, blank=True)
+    partial_close_price = models.FloatField(null=True, blank=True)
+    entry_timeframe = models.CharField(max_length=10, blank=True, default='M15')
+    entry_atr = models.FloatField(null=True, blank=True)  # ATR at time of entry, for breakeven/trail calculations
+
     def __str__(self):
         return f"{self.type} {self.symbol} at {self.entry_price}"
 
@@ -81,10 +93,25 @@ class TradeClosePricesMutation(models.Model):
 
 
 class StrategyConfig(models.Model):
+    REGIME_CHOICES = [
+        ('', 'Any'),
+        ('TRENDING_UP', 'Trending Up'),
+        ('TRENDING_DOWN', 'Trending Down'),
+        ('RANGING', 'Ranging'),
+        ('VOLATILE', 'Volatile'),
+    ]
+
     name = models.CharField(max_length=50, unique=True)
     is_active = models.BooleanField(default=False)
     description = models.TextField(blank=True)
     last_activated = models.DateTimeField(null=True, blank=True)
+    priority = models.IntegerField(default=10)  # Lower = higher priority for pair conflict resolution
+    max_positions = models.IntegerField(default=3)  # Per-strategy position cap
+    capital_allocation_pct = models.FloatField(default=0.33)  # % of total capital
+    regime_filter = models.CharField(
+        max_length=20, blank=True, default='',
+        choices=REGIME_CHOICES,
+    )
 
     def __str__(self):
         return f"{self.name} ({'active' if self.is_active else 'inactive'})"
@@ -137,3 +164,42 @@ class CustomStrategy(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.domain})"
+
+
+class PairLock(models.Model):
+    """Prevents two strategies from opening positions on the same pair."""
+    symbol = models.CharField(max_length=20, unique=True)
+    strategy = models.ForeignKey(StrategyConfig, on_delete=models.CASCADE, related_name='pair_locks')
+    ticket = models.BigIntegerField()  # MT5 position ticket
+    locked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['symbol'])]
+
+    def __str__(self):
+        return f"{self.symbol} locked by {self.strategy.name} (ticket={self.ticket})"
+
+
+class MarketRegime(models.Model):
+    REGIME_CHOICES = [
+        ('TRENDING_UP', 'Trending Up'),
+        ('TRENDING_DOWN', 'Trending Down'),
+        ('RANGING', 'Ranging'),
+        ('VOLATILE', 'Volatile'),
+        ('UNKNOWN', 'Unknown'),
+    ]
+
+    symbol = models.CharField(max_length=20)
+    timeframe = models.CharField(max_length=10, default='H1')
+    regime = models.CharField(max_length=20, choices=REGIME_CHOICES, default='UNKNOWN')
+    adx = models.FloatField(default=0)
+    bb_width = models.FloatField(default=0)
+    atr_ratio = models.FloatField(default=0)
+    confidence = models.FloatField(default=0)
+    computed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('symbol', 'timeframe')
+
+    def __str__(self):
+        return f"{self.symbol} {self.timeframe}: {self.regime} (ADX={self.adx:.1f})"

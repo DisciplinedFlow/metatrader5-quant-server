@@ -2,6 +2,7 @@ import os
 from collections import deque
 
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework import viewsets, status, views
 from rest_framework.decorators import action
@@ -131,11 +132,11 @@ class StrategyViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='activate')
     def activate(self, request, pk=None):
-        """Activate a strategy (deactivates all others)."""
+        """Toggle a strategy's active state."""
         strategy = self.get_object()
-        StrategyConfig.objects.update(is_active=False)
-        strategy.is_active = True
-        strategy.last_activated = timezone.now()
+        strategy.is_active = not strategy.is_active
+        if strategy.is_active:
+            strategy.last_activated = timezone.now()
         strategy.save()
         return Response(StrategyConfigSerializer(strategy).data)
 
@@ -172,6 +173,40 @@ class BotControlView(views.APIView):
         paused = request.data.get('paused', True)
         set_bot_paused(paused)
         return Response({'paused': paused})
+
+
+class AIBrainControlView(views.APIView):
+    """Toggle the AI Brain on/off and retrieve latest analysis."""
+
+    def get(self, request):
+        from app.quant.ai_bot_control import get_ai_brain_status
+        return Response(get_ai_brain_status())
+
+    def post(self, request):
+        from app.quant.ai_bot_control import set_ai_brain_enabled, get_ai_brain_status
+        enabled = request.data.get('enabled', False)
+        set_ai_brain_enabled(enabled)
+        # Optionally trigger an immediate analysis
+        if enabled and request.data.get('run_now', False):
+            from app.quant.tasks import run_ai_brain
+            run_ai_brain.delay()
+        return Response(get_ai_brain_status())
+
+
+class AIBrainLogsView(views.APIView):
+    """Return AI Brain log file."""
+
+    LOG_FILE = os.path.join(settings.BASE_DIR, 'logs', 'ai_brain.log')
+
+    def get(self, request):
+        lines = min(int(request.query_params.get('lines', 200)), 2000)
+        try:
+            with open(self.LOG_FILE, 'r') as f:
+                from collections import deque
+                tail = deque(f, maxlen=lines)
+            return Response({'logs': list(tail)})
+        except FileNotFoundError:
+            return Response({'logs': []})
 
 
 class YahooDataView(views.APIView):
@@ -217,12 +252,22 @@ class CustomStrategyViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='activate')
     def activate(self, request, pk=None):
-        """Activate a custom strategy by writing its params to the platform's Redis config."""
+        """Activate a custom strategy — FOREX sets StrategyConfig, others write to Redis."""
         import redis
         import json
         custom = self.get_object()
         domain = custom.domain
         definition = custom.definition or {}
+
+        if domain == 'FOREX':
+            if not custom.strategy_config:
+                return Response({'error': 'No StrategyConfig linked to this custom strategy'}, status=status.HTTP_400_BAD_REQUEST)
+            custom.strategy_config.is_active = not custom.strategy_config.is_active
+            if custom.strategy_config.is_active:
+                custom.strategy_config.last_activated = timezone.now()
+            custom.strategy_config.save()
+            status_label = 'activated' if custom.strategy_config.is_active else 'deactivated'
+            return Response({'status': status_label, 'domain': domain, 'strategy': custom.name})
 
         r = redis.Redis.from_url(settings.CACHES.get('default', {}).get('LOCATION', 'redis://redis:6379/0'))
 
@@ -249,3 +294,55 @@ class CustomStrategyViewSet(viewsets.ModelViewSet):
             return Response({'error': f'Activation not supported for domain: {domain}'}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({'status': 'activated', 'domain': domain})
+
+
+class MarketPulseView(views.APIView):
+    """Serve cached market pulse data (news + economic calendar)."""
+
+    def get(self, request):
+        news = cache.get('market_pulse:news', [])
+        calendar = cache.get('market_pulse:calendar', [])
+        return Response({
+            'news': news,
+            'calendar': calendar,
+        })
+
+
+class MarketRegimeView(views.APIView):
+    """Return current market regime classification for all pairs."""
+
+    def get(self, request):
+        from .models import MarketRegime
+        regimes = MarketRegime.objects.all().order_by('symbol')
+        data = [
+            {
+                'symbol': r.symbol,
+                'timeframe': r.timeframe,
+                'regime': r.regime,
+                'adx': r.adx,
+                'bb_width': r.bb_width,
+                'atr_ratio': r.atr_ratio,
+                'confidence': r.confidence,
+                'computed_at': r.computed_at.isoformat() if r.computed_at else None,
+            }
+            for r in regimes
+        ]
+        return Response(data)
+
+
+class PairLocksView(views.APIView):
+    """Return current pair locks (which pairs are locked by which strategies)."""
+
+    def get(self, request):
+        from .models import PairLock
+        locks = PairLock.objects.select_related('strategy').all()
+        data = [
+            {
+                'symbol': lock.symbol,
+                'strategy': lock.strategy.name,
+                'ticket': lock.ticket,
+                'locked_at': lock.locked_at.isoformat() if lock.locked_at else None,
+            }
+            for lock in locks
+        ]
+        return Response(data)

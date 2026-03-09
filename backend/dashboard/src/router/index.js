@@ -86,6 +86,12 @@ const routes = [
     component: () => import('@/pages/crypto/CryptoStrategyPage.vue'),
   },
 
+  // --- AI Brain ---
+  {
+    path: '/ai-brain',
+    component: () => import('@/pages/AIBrainPage.vue'),
+  },
+
   // Catch-all
   {
     path: '/:pathMatch(.*)*',

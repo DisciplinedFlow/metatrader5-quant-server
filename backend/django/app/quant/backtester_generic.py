@@ -9,6 +9,11 @@ from app.utils.api.yahoo import fetch_yahoo_data
 from app.quant.indicators.scalping import ema_crossover, rsi, atr
 from app.quant.indicators.mean_reversion import mean_reversion
 from app.quant.indicators.cvd import cvd_divergence, cvd_raw, cvd_leading, cvd_extremes, cvd_mtf, cvd_cross_market
+from app.quant.indicators.momentum import ema_ribbon_pullback
+from app.quant.indicators.smc import (
+    market_structure, fair_value_gap, order_block,
+    liquidity_sweep, smc_confluence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +30,15 @@ INDICATOR_REGISTRY = {
     'CVD_EXTREMES': lambda df, params: cvd_extremes(df, lookback=params.get('lookback', 50), swing_lookback=params.get('swing_lookback', 5), strength=params.get('strength', 3)),
     'CVD_MTF': lambda df, params: cvd_mtf(df, lookback=params.get('lookback', 20), swing_lookback=params.get('swing_lookback', 5)),
     'CVD_CROSS_MARKET': lambda df, params: cvd_cross_market(df, lookback=params.get('lookback', 20), swing_lookback=params.get('swing_lookback', 5)),
+    'EMA_RIBBON_PULLBACK': lambda df, params: ema_ribbon_pullback(df, params),
     # SWING_DETECTOR is used by Extremes Scanner — CVD_EXTREMES handles swing detection internally
     'SWING_DETECTOR': lambda df, params: pd.Series(0, index=df.index),
+    # Smart Money Concepts (ICT / TJR-style price action)
+    'MARKET_STRUCTURE': lambda df, params: market_structure(df, params),
+    'FAIR_VALUE_GAP': lambda df, params: fair_value_gap(df, params),
+    'ORDER_BLOCK': lambda df, params: order_block(df, params),
+    'LIQUIDITY_SWEEP': lambda df, params: liquidity_sweep(df, params),
+    'SMC_CONFLUENCE': lambda df, params: smc_confluence(df, params),
 }
 
 CONDITION_OPS = {
@@ -43,6 +55,13 @@ CONDITION_OPS = {
     'cross_market_divergence': lambda a, b: isinstance(a, str) and b in a,
     'cross_side_divergence': lambda a, b: isinstance(a, str) and b in a,
     'leading_volume': lambda a, b: isinstance(a, str) and b in a,
+    'pullback': lambda a, b: isinstance(a, str) and b in a,
+    # Smart Money Concepts conditions
+    'structure_break': lambda a, b: isinstance(a, str) and b in a,
+    'fvg_fill': lambda a, b: isinstance(a, str) and b in a,
+    'ob_retest': lambda a, b: isinstance(a, str) and b in a,
+    'sweep': lambda a, b: isinstance(a, str) and b in a,
+    'confluence': lambda a, b: isinstance(a, str) and b in a,
 }
 
 TIMEFRAME_YAHOO_INTERVAL = {

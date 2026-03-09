@@ -22,13 +22,14 @@ def close_position(position, deviation=20, magic=0, comment='', type_filling=mt5
         logger.error("Position dictionary missing 'type' or 'ticket' keys.")
         return None
 
-    order_type_dict = {
-        0: mt5.ORDER_TYPE_BUY,
-        1: mt5.ORDER_TYPE_SELL
+    # To close a position, send the OPPOSITE order type
+    close_type_dict = {
+        0: mt5.ORDER_TYPE_SELL,   # Close BUY → sell
+        1: mt5.ORDER_TYPE_BUY     # Close SELL → buy
     }
 
     position_type = position['type']
-    if position_type not in order_type_dict:
+    if position_type not in close_type_dict:
         logger.error(f"Unknown position type: {position_type}")
         return None
 
@@ -37,12 +38,12 @@ def close_position(position, deviation=20, magic=0, comment='', type_filling=mt5
         logger.error(f"Failed to get tick for symbol: {position['symbol']}")
         return None
 
-    price_dict = {
-        0: tick.ask,  # Buy order uses Ask price
-        1: tick.bid   # Sell order uses Bid price
+    close_price_dict = {
+        0: tick.bid,  # Close BUY → sell at bid
+        1: tick.ask   # Close SELL → buy at ask
     }
 
-    price = price_dict[position_type]
+    price = close_price_dict[position_type]
     if price == 0.0:
         logger.error(f"Invalid price retrieved for symbol: {position['symbol']}")
         return None
@@ -52,7 +53,7 @@ def close_position(position, deviation=20, magic=0, comment='', type_filling=mt5
         "position": position['ticket'],  # select the position you want to close
         "symbol": position['symbol'],
         "volume": position['volume'],  # FLOAT
-        "type": order_type_dict[position_type],
+        "type": close_type_dict[position_type],
         "price": price,
         "deviation": deviation,  # INTEGER
         "magic": magic,          # INTEGER

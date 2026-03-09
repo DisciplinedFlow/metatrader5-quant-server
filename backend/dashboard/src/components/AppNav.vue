@@ -10,12 +10,14 @@ const sections = [
   { path: '/forex', label: 'Forex' },
   { path: '/polymarket', label: 'Polymarket' },
   { path: '/crypto', label: 'Crypto' },
+  { path: '/ai-brain', label: 'AI Brain' },
 ]
 
 const activeSection = computed(() => {
   const p = route.path
   if (p.startsWith('/polymarket')) return '/polymarket'
   if (p.startsWith('/crypto')) return '/crypto'
+  if (p.startsWith('/ai-brain')) return '/ai-brain'
   return '/forex'
 })
 </script>

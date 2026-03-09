@@ -26,6 +26,7 @@ const tickError = ref(false)
 const posError = ref(false)
 const botPaused = ref(false)
 const botStatusLoading = ref(false)
+const marketPulse = ref({ news: [], calendar: [] })
 
 async function refresh() {
   const [posResult, tickResult, botResult] = await Promise.allSettled([
@@ -57,7 +58,28 @@ async function toggleBot() {
   botStatusLoading.value = false
 }
 
+async function fetchMarketPulse() {
+  try {
+    marketPulse.value = await api.getMarketPulse()
+  } catch (err) {
+    console.error('Market pulse fetch error:', err)
+  }
+}
+
+function formatNewsTime(unixTimestamp) {
+  if (!unixTimestamp) return ''
+  const d = new Date(unixTimestamp * 1000)
+  const now = new Date()
+  const diffMs = now - d
+  const diffMins = Math.floor(diffMs / 60000)
+  if (diffMins < 60) return `${diffMins}m ago`
+  const diffHours = Math.floor(diffMins / 60)
+  if (diffHours < 24) return `${diffHours}h ago`
+  return d.toLocaleDateString()
+}
+
 usePolling(refresh, 5000)
+usePolling(fetchMarketPulse, 120000)
 </script>
 
 <template>
@@ -236,17 +258,23 @@ usePolling(refresh, 5000)
             <span class="material-symbols-outlined" style="font-size:20px;color:var(--tp-text-dim)">rss_feed</span>
           </div>
           <div class="news-list">
-            <div class="news-item news-item-featured">
+            <!-- Economic Calendar Events -->
+            <div v-for="event in marketPulse.calendar.slice(0, 3)" :key="'cal-' + event.event"
+                 class="news-item" :class="{ 'news-item-featured': event.impact === 'high' || event.impact === 3 }">
+              <p class="news-time">{{ event.country || 'ECON' }}</p>
+              <p class="news-text">{{ event.event }}</p>
+            </div>
+            <!-- News Articles -->
+            <div v-for="item in marketPulse.news.slice(0, 5)" :key="item.id" class="news-item">
+              <p class="news-time">{{ formatNewsTime(item.datetime) }}</p>
+              <p class="news-text">
+                <a :href="item.url" target="_blank" rel="noopener" class="news-link">{{ item.headline }}</a>
+              </p>
+            </div>
+            <!-- Fallback when no data -->
+            <div v-if="!marketPulse.news.length && !marketPulse.calendar.length" class="news-item news-item-featured">
               <p class="news-time">Live</p>
-              <p class="news-text">Connect a news feed to receive real-time market updates.</p>
-            </div>
-            <div class="news-item">
-              <p class="news-time">Tip</p>
-              <p class="news-text">Monitor your positions and bot status from this dashboard.</p>
-            </div>
-            <div class="news-item">
-              <p class="news-time">Tip</p>
-              <p class="news-text">Use the Strategy Builder to create and backtest custom trading strategies.</p>
+              <p class="news-text">Loading market news...</p>
             </div>
           </div>
         </div>
@@ -650,5 +678,13 @@ usePolling(refresh, 5000)
   font-weight: 500;
   color: var(--tp-text) !important;
   line-height: 1.4;
+}
+.news-link {
+  color: var(--tp-text);
+  text-decoration: none;
+}
+.news-link:hover {
+  color: var(--tp-primary);
+  text-decoration: underline;
 }
 </style>

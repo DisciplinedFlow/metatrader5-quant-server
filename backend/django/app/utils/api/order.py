@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.getenv('MT5_API_URL')
 
 def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp: float = None,
-                      deviation: int = 20, comment: str = 'From Django Server', magic: int = 234000, type_filling: str = 'ORDER_FILLING_FOK', position_size_usd: float = None, commission: float = None, capital: float = None, leverage: int = 500
+                      deviation: int = 20, comment: str = 'From Django Server', magic: int = 234000, type_filling: str = 'ORDER_FILLING_IOC', position_size_usd: float = None, commission: float = None, capital: float = None, leverage: int = 500
  ) -> Dict:
     try:
         order_type_str = order_type if isinstance(order_type, str) else order_type.name
-        
-        if order_type_str not in ['BUY', 'SELL']:
+
+        if order_type_str not in ('BUY', 'SELL'):
             error_msg = f"Invalid order type: {order_type_str}. Must be 'BUY' or 'SELL'"
             logger.error(error_msg)
             return None
@@ -31,7 +31,7 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
         request = {
             "symbol": symbol,
             "volume": float(volume),
-            "order_type": order_type_str,
+            "type": order_type_str,
             "sl": float(sl),
             "deviation": int(deviation),
             "magic": int(magic),
@@ -44,19 +44,21 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
 
         logger.info(f"Sending market order: {request}")
 
-        url = f"{BASE_URL}/send_market_order"
+        url = f"{BASE_URL}/order"
         response = requests.post(url, json=request, timeout=10)
         response.raise_for_status()
 
         response_data = response.json()
-        
-        if not response_data.get('success'):
+
+        if 'error' in response_data:
             error_msg = response_data.get('error', 'Unknown error')
-            details = response_data.get('details', '')
-            print(f"Order failed: {error_msg} {details}")
+            logger.error(f"Order failed: {error_msg}")
             return None
-            
-        order = response_data['order_result']
+
+        order = response_data.get('result')
+        if order is None:
+            logger.error("Order response missing 'result' field")
+            return None
 
         return order
         
@@ -75,9 +77,8 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
 def modify_sl_tp(position, sl: float, tp: float = None) -> Dict:
     try:
         request = {
-            "ticket": position.ticket,
+            "position": position.ticket,
             "symbol": position.symbol,
-            'type': position.type,
             "sl": float(sl),
         }
 
@@ -92,10 +93,9 @@ def modify_sl_tp(position, sl: float, tp: float = None) -> Dict:
 
         response_data = response.json()
 
-        if not response_data.get('success'):
+        if 'error' in response_data:
             error_msg = response_data.get('error', 'Unknown error')
-            details = response_data.get('details', '')
-            logger.error(f"Modify SL/TP failed: {error_msg} {details}")
+            logger.error(f"Modify SL/TP failed: {error_msg}")
             return None
 
         result = response_data.get('result')
@@ -117,4 +117,120 @@ def modify_sl_tp(position, sl: float, tp: float = None) -> Dict:
     
     except Exception as e:
         error_msg = f"Exception sending modify SL/TP for {position.ticket}: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+
+
+def close_partial(ticket, symbol, order_type, volume):
+    """
+    Close a partial volume of an open MT5 position.
+
+    The MT5 Flask API's close_position endpoint supports partial closes
+    by specifying a volume smaller than the full position size.
+
+    Args:
+        ticket: MT5 position ticket number.
+        order_type: Position type as int (0=BUY, 1=SELL).
+        symbol: Trading symbol (e.g. 'GBPUSD').
+        volume: Lot volume to close (must be >= 0.01).
+    """
+    try:
+        request = {
+            "position": {
+                "type": int(order_type),
+                "ticket": int(ticket),
+                "symbol": symbol,
+                "volume": float(volume),
+            }
+        }
+
+        logger.info(f"Sending partial close: ticket={ticket} symbol={symbol} volume={volume}")
+
+        url = f"{BASE_URL}/close_position"
+        response = requests.post(url, json=request, timeout=10)
+        response.raise_for_status()
+
+        response_data = response.json()
+
+        if 'error' in response_data:
+            error_msg = response_data.get('error', 'Unknown error')
+            logger.error(f"Partial close failed: {error_msg}")
+            return None
+
+        result = response_data.get('result')
+        if result:
+            logger.info(f"Partial close successful: {result}")
+            return result
+        else:
+            logger.error("No result returned from close_position endpoint.")
+            return None
+
+    except requests.exceptions.HTTPError as e:
+        error_msg = f"HTTP error sending partial close for {ticket}: {e.response.text}"
+        logger.error(error_msg)
+
+    except requests.exceptions.Timeout:
+        error_msg = f"Timeout sending partial close for {ticket}"
+        logger.error(error_msg)
+        return None
+
+    except Exception as e:
+        error_msg = f"Exception sending partial close for {ticket}: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+
+
+def close_full(ticket, symbol, order_type, volume):
+    """
+    Close the full volume of an open MT5 position.
+
+    Convenience wrapper around close_position endpoint that closes
+    the entire remaining position volume.
+
+    Args:
+        ticket: MT5 position ticket number.
+        symbol: Trading symbol (e.g. 'GBPUSD').
+        order_type: Position type as int (0=BUY, 1=SELL).
+        volume: Full remaining lot volume of the position.
+    """
+    try:
+        request = {
+            "position": {
+                "type": int(order_type),
+                "ticket": int(ticket),
+                "symbol": symbol,
+                "volume": float(volume),
+            }
+        }
+
+        logger.info(f"Sending full close: ticket={ticket} symbol={symbol} volume={volume}")
+
+        url = f"{BASE_URL}/close_position"
+        response = requests.post(url, json=request, timeout=10)
+        response.raise_for_status()
+
+        response_data = response.json()
+
+        if 'error' in response_data:
+            error_msg = response_data.get('error', 'Unknown error')
+            logger.error(f"Full close failed: {error_msg}")
+            return None
+
+        result = response_data.get('result')
+        if result:
+            logger.info(f"Full close successful: {result}")
+            return result
+        else:
+            logger.error("No result returned from close_position endpoint.")
+            return None
+
+    except requests.exceptions.HTTPError as e:
+        error_msg = f"HTTP error sending full close for {ticket}: {e.response.text}"
+        logger.error(error_msg)
+
+    except requests.exceptions.Timeout:
+        error_msg = f"Timeout sending full close for {ticket}"
+        logger.error(error_msg)
+        return None
+
+    except Exception as e:
+        error_msg = f"Exception sending full close for {ticket}: {str(e)}\n{traceback.format_exc()}"
         logger.error(error_msg)

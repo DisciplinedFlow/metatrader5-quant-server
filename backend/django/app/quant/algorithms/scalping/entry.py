@@ -212,7 +212,7 @@ def entry_algorithm():
                 sl=round(sl_price, price_decimals),
                 tp=round(tp_price, price_decimals),
                 deviation=DEVIATION,
-                type_filling="ORDER_FILLING_FOK",
+                type_filling="ORDER_FILLING_IOC",
                 position_size_usd=order_size_usd,
                 commission=commission,
                 capital=order_capital,

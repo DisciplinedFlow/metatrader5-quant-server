@@ -75,6 +75,11 @@ LOGGING = {
             'filename': os.path.join(BASE_DIR, 'logs/crypto.log'),
             'formatter': 'verbose',
         },
+        'ai_brain_file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs/ai_brain.log'),
+            'formatter': 'verbose',
+        },
     },
     'loggers': {
         'app.quant': {
@@ -89,6 +94,11 @@ LOGGING = {
         },
         'app.crypto': {
             'handlers': ['console', 'crypto_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'app.quant.ai_brain': {
+            'handlers': ['console', 'ai_brain_file'],
             'level': 'INFO',
             'propagate': False,
         },
@@ -225,6 +235,17 @@ STATICFILES_DIRS = [
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Finnhub API key for Market Pulse news feed
+FINNHUB_API_KEY = os.environ.get('FINNHUB_API_KEY', '')
+
+# Redis cache (used by Market Pulse and other cached views)
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0').replace('/0', '/1'),
+    }
+}
+
 CELERY_BROKER_CONNECTION_RETRY = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True  # To retain existing behavior
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
@@ -269,5 +290,25 @@ CELERY_BEAT_SCHEDULE = {
     'run-crypto-exit': {
         'task': 'crypto.tasks.run_crypto_exit',
         'schedule': 30.0,  # every 30 seconds
+    },
+    'run-macro-analysis': {
+        'task': 'quant.tasks.run_macro_analysis',
+        'schedule': 60.0 * 30,  # every 30 minutes
+    },
+    'run-strategy-evolution': {
+        'task': 'quant.tasks.run_strategy_evolution',
+        'schedule': 60.0 * 60 * 6,  # every 6 hours
+    },
+    'run-ai-brain': {
+        'task': 'quant.tasks.run_ai_brain',
+        'schedule': 60.0 * 5,  # every 5 minutes
+    },
+    'fetch-market-pulse': {
+        'task': 'quant.tasks.fetch_market_pulse',
+        'schedule': 120.0,  # every 2 minutes
+    },
+    'run-regime-scan': {
+        'task': 'quant.tasks.run_regime_scan',
+        'schedule': 300.0,  # every 5 minutes
     },
 }

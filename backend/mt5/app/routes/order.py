@@ -75,17 +75,34 @@ def send_market_order_endpoint():
         if not all(field in data for field in required_fields):
             return jsonify({"error": "Missing required fields"}), 400
 
+        # Convert string order type to MT5 constant
+        order_type_str = data['type']
+        if order_type_str == 'BUY':
+            order_type_mt5 = mt5.ORDER_TYPE_BUY
+        elif order_type_str == 'SELL':
+            order_type_mt5 = mt5.ORDER_TYPE_SELL
+        else:
+            return jsonify({"error": f"Invalid order type: {order_type_str}"}), 400
+
+        # Convert string type_filling to MT5 constant
+        filling_map = {
+            'ORDER_FILLING_IOC': mt5.ORDER_FILLING_IOC,
+            'ORDER_FILLING_FOK': mt5.ORDER_FILLING_FOK,
+            'ORDER_FILLING_RETURN': mt5.ORDER_FILLING_RETURN,
+        }
+        type_filling = filling_map.get(data.get('type_filling', 'ORDER_FILLING_IOC'), mt5.ORDER_FILLING_IOC)
+
         # Prepare the order request
         request_data = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": data['symbol'],
             "volume": float(data['volume']),
-            "type": data['type'],
+            "type": order_type_mt5,
             "deviation": data.get('deviation', 20),
             "magic": data.get('magic', 0),
             "comment": data.get('comment', ''),
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": data.get('type_filling', mt5.ORDER_FILLING_IOC),
+            "type_filling": type_filling,
         }
 
         # Get current price
@@ -94,12 +111,10 @@ def send_market_order_endpoint():
             return jsonify({"error": "Failed to get symbol price"}), 400
 
         # Set price based on order type
-        if data['type'] == mt5.ORDER_TYPE_BUY:
+        if order_type_mt5 == mt5.ORDER_TYPE_BUY:
             request_data["price"] = tick.ask
-        elif data['type'] == mt5.ORDER_TYPE_SELL:
+        elif order_type_mt5 == mt5.ORDER_TYPE_SELL:
             request_data["price"] = tick.bid
-        else:
-            return jsonify({"error": "Invalid order type"}), 400
 
         # Add optional SL/TP if provided
         if 'sl' in data:

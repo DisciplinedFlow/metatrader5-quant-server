@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView
+from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView
 
 router = DefaultRouter()
 router.register(r'trades', TradeViewSet)
@@ -13,5 +13,10 @@ urlpatterns = [
     path('modify_sl_tp/', ModifySLTPView.as_view(), name='modify_sl_tp'),
     path('logs/', LogsView.as_view(), name='logs'),
     path('bot/status/', BotControlView.as_view(), name='bot-status'),
+    path('ai-brain/', AIBrainControlView.as_view(), name='ai-brain'),
+    path('ai-brain/logs/', AIBrainLogsView.as_view(), name='ai-brain-logs'),
     path('yahoo-data/', YahooDataView.as_view(), name='yahoo-data'),
+    path('market-pulse/', MarketPulseView.as_view(), name='market-pulse'),
+    path('market-regime/', MarketRegimeView.as_view(), name='market-regime'),
+    path('pair-locks/', PairLocksView.as_view(), name='pair-locks'),
 ]

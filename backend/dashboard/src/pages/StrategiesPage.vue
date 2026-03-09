@@ -122,6 +122,18 @@ async function runCustomBacktest(id) {
   loadingBtn.value[`cbacktest-${id}`] = false
 }
 
+async function activateCustom(id) {
+  loadingBtn.value[`cactivate-${id}`] = true
+  try {
+    await api.activateCustomStrategy(id)
+    toast.success('Custom strategy activated')
+    await Promise.all([refresh(), refreshCustom()])
+  } catch (err) {
+    toast.error(`Activation failed: ${err.message}`)
+  }
+  loadingBtn.value[`cactivate-${id}`] = false
+}
+
 async function deleteCustom(id) {
   try {
     await api.deleteCustomStrategy(id)
@@ -217,8 +229,8 @@ function getColor(index) {
       <div class="tp-stat-card">
         <div class="stat-label">Active Strategies</div>
         <div>
-          <span class="stat-value">{{ strategies.filter(s => s.is_active).length }}</span>
-          <span class="stat-change positive"> / {{ strategies.length }}</span>
+          <span class="stat-value">{{ strategies.filter(s => s.is_active).length + customStrategies.filter(c => c.is_active).length }}</span>
+          <span class="stat-change positive"> / {{ strategies.length + customStrategies.length }}</span>
         </div>
       </div>
       <div class="tp-stat-card">
@@ -400,18 +412,21 @@ function getColor(index) {
         <p style="font-size:0.85rem;">Create one using the Strategy Builder above.</p>
       </div>
       <div v-else class="strategy-grid">
-        <div v-for="(cs, idx) in customStrategies" :key="'c'+cs.id" class="tp-card strategy-card">
+        <div v-for="(cs, idx) in customStrategies" :key="'c'+cs.id" class="tp-card strategy-card" :class="{ 'card-active': cs.is_active }">
           <div class="card-top">
             <div class="card-title-row">
-              <div class="strat-icon" style="background:rgba(139,92,246,0.15);color:#8b5cf6;">
-                <span class="material-symbols-outlined" style="font-size:24px">code</span>
+              <div class="strat-icon" :style="cs.is_active ? 'background:rgba(34,197,94,0.15);color:#22c55e;' : 'background:rgba(139,92,246,0.15);color:#8b5cf6;'">
+                <span class="material-symbols-outlined" style="font-size:24px">{{ cs.is_active ? 'bolt' : 'code' }}</span>
               </div>
               <div>
                 <h3 class="strat-name">{{ cs.name }}</h3>
                 <p class="strat-desc">{{ cs.description || 'Custom strategy' }}</p>
               </div>
             </div>
-            <span class="tp-badge tp-badge-primary">Custom</span>
+            <span class="tp-badge" :class="cs.is_active ? 'tp-badge-success' : 'tp-badge-primary'">
+              <span class="pulse-dot" v-if="cs.is_active"></span>
+              {{ cs.is_active ? 'Active' : 'Custom' }}
+            </span>
           </div>
 
           <!-- Definition (expandable) -->
@@ -486,6 +501,20 @@ function getColor(index) {
           </div>
 
           <div class="card-actions">
+            <button
+              v-if="!cs.is_active"
+              class="tp-btn tp-btn-primary"
+              style="flex:1;"
+              :aria-busy="loadingBtn[`cactivate-${cs.id}`]"
+              @click="activateCustom(cs.id)"
+            >
+              <span class="material-symbols-outlined" style="font-size:16px">power_settings_new</span>
+              Activate
+            </button>
+            <span v-else class="tp-btn tp-btn-dark" style="flex:1;cursor:default;text-align:center;">
+              <span class="material-symbols-outlined" style="font-size:16px">check_circle</span>
+              Currently Active
+            </span>
             <button
               class="tp-btn tp-btn-outline"
               style="flex:1;"
@@ -564,6 +593,10 @@ function getColor(index) {
 }
 .strategy-card.card-inactive {
   opacity: 0.7;
+}
+.strategy-card.card-active {
+  border: 1px solid rgba(34,197,94,0.3);
+  box-shadow: 0 0 12px rgba(34,197,94,0.08);
 }
 .card-top {
   display: flex;

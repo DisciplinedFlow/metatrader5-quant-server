@@ -47,12 +47,8 @@ def history_orders_get(ticket: int) -> Dict:
         logger.error(error_msg)
 
 def get_deal_from_ticket(ticket: int, from_date: datetime, to_date: datetime) -> Dict:
-    # Convert datetime to MT5 time (integer)
-    from_timestamp = int(from_date.timestamp())
-    to_timestamp = int(to_date.timestamp())
-
-    # Retrieve deals using the specified date range and position
-    deals = history_deals_get(from_timestamp, to_timestamp, position=ticket)
+    # Pass datetime objects directly — history_deals_get sends them as ISO strings
+    deals = history_deals_get(from_date, to_date, position=ticket)
     if not deals:
         error_msg = f"No deal history found for position ticket {ticket} between {from_date} and {to_date}."
         logger.error(error_msg)
