@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePositionsStore } from '@/stores/positions'
 import { usePolling } from '@/composables/usePolling'
@@ -21,27 +21,80 @@ const forexLinks = [
 ]
 
 const positionsStore = usePositionsStore()
-const tick = ref(null)
-const tickError = ref(false)
 const posError = ref(false)
 const botPaused = ref(false)
 const botStatusLoading = ref(false)
 const marketPulse = ref({ news: [], calendar: [] })
+const trades = ref([])
+
+// P&L chart data
+const closedTrades = computed(() =>
+  trades.value.filter(t => t.close_time && t.pnl != null).sort((a, b) => new Date(a.close_time) - new Date(b.close_time))
+)
+
+const equityCurve = computed(() => {
+  let cumulative = 0
+  return closedTrades.value.map(t => {
+    cumulative += t.pnl
+    return { pnl: t.pnl, cumulative, symbol: t.symbol, time: t.close_time }
+  })
+})
+
+const pnlStats = computed(() => {
+  const ct = closedTrades.value
+  const wins = ct.filter(t => t.pnl > 0)
+  const losses = ct.filter(t => t.pnl <= 0)
+  const totalPnl = ct.reduce((s, t) => s + t.pnl, 0)
+  const winRate = ct.length ? (wins.length / ct.length * 100) : 0
+  const bestTrade = ct.length ? Math.max(...ct.map(t => t.pnl)) : 0
+  const worstTrade = ct.length ? Math.min(...ct.map(t => t.pnl)) : 0
+  return { total: ct.length, wins: wins.length, losses: losses.length, totalPnl, winRate, bestTrade, worstTrade }
+})
+
+// SVG equity curve path
+const chartPath = computed(() => {
+  const pts = equityCurve.value
+  if (pts.length < 2) return ''
+  const w = 280, h = 80, pad = 4
+  const vals = pts.map(p => p.cumulative)
+  const minV = Math.min(0, ...vals)
+  const maxV = Math.max(0, ...vals)
+  const range = maxV - minV || 1
+  const scaleX = i => pad + (i / (pts.length - 1)) * (w - pad * 2)
+  const scaleY = v => pad + (1 - (v - minV) / range) * (h - pad * 2)
+  return pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${scaleX(i).toFixed(1)} ${scaleY(p.cumulative).toFixed(1)}`).join(' ')
+})
+
+const chartFill = computed(() => {
+  const pts = equityCurve.value
+  if (pts.length < 2) return ''
+  const w = 280, h = 80, pad = 4
+  const vals = pts.map(p => p.cumulative)
+  const minV = Math.min(0, ...vals)
+  const maxV = Math.max(0, ...vals)
+  const range = maxV - minV || 1
+  const scaleX = i => pad + (i / (pts.length - 1)) * (w - pad * 2)
+  const scaleY = v => pad + (1 - (v - minV) / range) * (h - pad * 2)
+  const lineParts = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${scaleX(i).toFixed(1)} ${scaleY(p.cumulative).toFixed(1)}`).join(' ')
+  return `${lineParts} L${scaleX(pts.length - 1).toFixed(1)} ${h} L${scaleX(0).toFixed(1)} ${h} Z`
+})
+
+const zeroLineY = computed(() => {
+  const pts = equityCurve.value
+  if (pts.length < 2) return 40
+  const vals = pts.map(p => p.cumulative)
+  const minV = Math.min(0, ...vals)
+  const maxV = Math.max(0, ...vals)
+  const range = maxV - minV || 1
+  return 4 + (1 - (0 - minV) / range) * 72
+})
 
 async function refresh() {
-  const [posResult, tickResult, botResult] = await Promise.allSettled([
+  const [posResult, botResult] = await Promise.allSettled([
     positionsStore.fetchPositions(),
-    api.symbolInfoTick('EURUSD'),
     api.getBotStatus(),
   ])
-
   posError.value = posResult.status === 'rejected'
-  if (tickResult.status === 'fulfilled') {
-    tick.value = tickResult.value
-    tickError.value = false
-  } else {
-    tickError.value = true
-  }
   if (botResult.status === 'fulfilled') {
     botPaused.value = botResult.value.paused
   }
@@ -66,6 +119,15 @@ async function fetchMarketPulse() {
   }
 }
 
+async function fetchTrades() {
+  try {
+    const data = await api.getForexTrades()
+    trades.value = data.results || data || []
+  } catch (err) {
+    console.error('Trades fetch error:', err)
+  }
+}
+
 function formatNewsTime(unixTimestamp) {
   if (!unixTimestamp) return ''
   const d = new Date(unixTimestamp * 1000)
@@ -78,8 +140,10 @@ function formatNewsTime(unixTimestamp) {
   return d.toLocaleDateString()
 }
 
+onMounted(fetchTrades)
 usePolling(refresh, 5000)
 usePolling(fetchMarketPulse, 120000)
+usePolling(fetchTrades, 30000)
 </script>
 
 <template>
@@ -183,72 +247,65 @@ usePolling(fetchMarketPulse, 120000)
       <!-- ===== RIGHT COLUMN ===== -->
       <div class="right-col">
 
-        <!-- Market Tick Card -->
-        <div class="tp-card tick-card">
-          <div class="tick-bg-accent"></div>
-          <div class="tick-header">
-            <div class="tick-pair">
-              <div class="pair-icons">
-                <div class="pair-icon"><span class="material-symbols-outlined" style="font-size:14px">euro</span></div>
-                <div class="pair-icon pair-icon-2"><span class="material-symbols-outlined" style="font-size:14px">attach_money</span></div>
-              </div>
-              <div>
-                <h4 class="pair-name">EURUSD</h4>
-                <p class="pair-desc">Euro / US Dollar</p>
-              </div>
+        <!-- P&L Performance Card -->
+        <div class="tp-card pnl-card">
+          <div class="pnl-header">
+            <div>
+              <h3 class="pnl-title">Performance</h3>
+              <p class="pnl-subtitle">{{ pnlStats.total }} trades</p>
             </div>
-            <span class="tp-badge tp-badge-success" style="font-size:0.6rem">
-              <span class="pulse-dot"></span> LIVE
-            </span>
+            <div class="pnl-total" :class="pnlStats.totalPnl >= 0 ? 'text-success' : 'text-danger'">
+              {{ pnlStats.totalPnl >= 0 ? '+' : '' }}${{ pnlStats.totalPnl.toFixed(2) }}
+            </div>
           </div>
 
-          <template v-if="tick && !tickError">
-            <!-- Bid / Ask -->
-            <div class="bid-ask-row">
-              <div>
-                <p class="micro-label">Bid</p>
-                <p class="tick-price">{{ tick.bid }}</p>
-              </div>
-              <div style="text-align:right">
-                <p class="micro-label">Ask</p>
-                <p class="tick-price">{{ tick.ask }}</p>
-              </div>
-            </div>
-
-            <!-- Spread / Last -->
-            <div class="tick-details">
-              <div class="tick-detail-row">
-                <span>Spread</span>
-                <span class="tick-detail-value">{{ ((tick.ask - tick.bid) * 100000).toFixed(1) }} pips</span>
-              </div>
-              <div class="tick-detail-row">
-                <span>Last Trade</span>
-                <span class="tick-detail-value">{{ tick.last || 'N/A' }}</span>
-              </div>
-            </div>
-
-            <!-- Mini Chart Visual -->
-            <div class="mini-chart">
-              <div class="mini-chart-grid"></div>
-              <svg class="mini-chart-line" preserveAspectRatio="none" viewBox="0 0 100 20">
-                <path d="M0 20 L0 15 Q 10 5, 20 12 T 40 8 T 60 14 T 80 5 T 100 12 L 100 20 Z" fill="currentColor" fill-opacity="0.1" stroke="currentColor" stroke-width="0.5"></path>
-              </svg>
-            </div>
-
-            <!-- Buy / Sell Buttons -->
-            <div class="trade-btns">
-              <button class="tp-btn tp-btn-success trade-btn" @click="router.push('/forex/order')">BUY</button>
-              <button class="tp-btn tp-btn-danger trade-btn" @click="router.push('/forex/order')">SELL</button>
-            </div>
-          </template>
-
-          <div v-else-if="tickError" class="tick-error">
-            <span class="material-symbols-outlined" style="font-size:2rem;color:var(--tp-text-dim)">signal_wifi_off</span>
-            <p>Failed to load market data</p>
+          <!-- Equity Curve -->
+          <div class="equity-chart" v-if="equityCurve.length >= 2">
+            <svg viewBox="0 0 280 80" preserveAspectRatio="none" class="equity-svg">
+              <line x1="4" :y1="zeroLineY" x2="276" :y2="zeroLineY" stroke="var(--tp-border)" stroke-width="0.5" stroke-dasharray="4 2" />
+              <path :d="chartFill" :fill="pnlStats.totalPnl >= 0 ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)'" />
+              <path :d="chartPath" fill="none" :stroke="pnlStats.totalPnl >= 0 ? '#22c55e' : '#ef4444'" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
           </div>
-          <div v-else class="tick-loading">
-            <p style="color:var(--tp-text-dim);font-size:0.85rem;">Loading tick data...</p>
+          <div v-else class="equity-empty">
+            <span class="material-symbols-outlined" style="font-size:1.5rem;color:var(--tp-text-dim)">show_chart</span>
+            <p>Waiting for closed trades...</p>
           </div>
+
+          <!-- Trade Bars -->
+          <div class="trade-bars" v-if="closedTrades.length">
+            <div v-for="(t, i) in closedTrades.slice(-20)" :key="i"
+                 class="trade-bar"
+                 :class="t.pnl >= 0 ? 'bar-win' : 'bar-loss'"
+                 :style="{ height: Math.min(100, Math.max(8, Math.abs(t.pnl) * 3)) + '%' }"
+                 :title="`${t.symbol} ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`"
+            ></div>
+          </div>
+
+          <!-- Stats Grid -->
+          <div class="pnl-stats-grid">
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">Win Rate</span>
+              <span class="pnl-stat-value">{{ pnlStats.winRate.toFixed(0) }}%</span>
+            </div>
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">W / L</span>
+              <span class="pnl-stat-value">{{ pnlStats.wins }} / {{ pnlStats.losses }}</span>
+            </div>
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">Best</span>
+              <span class="pnl-stat-value text-success">+${{ pnlStats.bestTrade.toFixed(2) }}</span>
+            </div>
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">Worst</span>
+              <span class="pnl-stat-value text-danger">${{ pnlStats.worstTrade.toFixed(2) }}</span>
+            </div>
+          </div>
+
+          <button class="tp-btn tp-btn-outline pnl-history-btn" @click="router.push('/forex/history')">
+            <span class="material-symbols-outlined" style="font-size:16px">history</span>
+            View Full History
+          </button>
         </div>
 
         <!-- Market Pulse / News Card -->
@@ -491,153 +548,98 @@ usePolling(fetchMarketPulse, 120000)
   color: var(--tp-text-dim) !important;
 }
 
-/* ===== Right Column: Tick Card ===== */
-.tick-card {
-  padding: 1.5rem;
-  position: relative;
-  overflow: hidden;
+/* ===== Right Column: P&L Card ===== */
+.pnl-card {
+  padding: 1.25rem;
 }
-.tick-bg-accent {
-  position: absolute;
-  top: -3rem; right: -3rem;
-  width: 8rem; height: 8rem;
-  background: rgba(13,127,242,0.05);
-  border-radius: 50%;
-  filter: blur(40px);
-  pointer-events: none;
-}
-.tick-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1.5rem;
-  position: relative;
-}
-.tick-pair {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-.pair-icons {
-  display: flex;
-  position: relative;
-}
-.pair-icon {
-  width: 2rem; height: 2rem;
-  border-radius: 50%;
-  background: var(--tp-bg-surface);
-  border: 2px solid var(--tp-bg-dark);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--tp-text);
-}
-.pair-icon-2 {
-  margin-left: -0.5rem;
-}
-.pair-name {
-  font-size: 1rem;
-  font-weight: 800;
-  color: var(--tp-text);
-  margin: 0;
-  line-height: 1.2;
-}
-.pair-desc {
-  font-size: 0.6rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 600;
-  color: var(--tp-text-dim) !important;
-  margin: 0;
-}
-
-/* Bid/Ask */
-.bid-ask-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-.tick-price {
-  font-size: 1.35rem;
-  font-weight: 800;
-  color: var(--tp-text);
-  margin: 0;
-  font-family: 'Inter', monospace;
-  letter-spacing: -0.01em;
-}
-
-/* Tick Details */
-.tick-details {
-  border-top: 1px solid var(--tp-border);
-  padding-top: 0.75rem;
-  margin-bottom: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.tick-detail-row {
+.pnl-header {
   display: flex;
   justify-content: space-between;
-  font-size: 0.8rem;
-  color: var(--tp-text-dim);
+  align-items: flex-start;
+  margin-bottom: 1rem;
 }
-.tick-detail-value {
+.pnl-title {
+  font-size: 0.95rem;
   font-weight: 700;
-  color: var(--tp-text);
+  margin: 0;
+}
+.pnl-subtitle {
+  font-size: 0.7rem;
+  color: var(--tp-text-dim);
+  margin: 0.15rem 0 0;
+}
+.pnl-total {
+  font-size: 1.5rem;
+  font-weight: 800;
   font-family: 'Inter', monospace;
 }
 
-/* Mini Chart */
-.mini-chart {
-  height: 5rem;
+/* Equity Curve */
+.equity-chart {
   width: 100%;
+  height: 5rem;
+  margin-bottom: 0.75rem;
   background: var(--tp-bg-surface);
   border-radius: var(--tp-radius-sm);
   overflow: hidden;
-  position: relative;
-  margin-bottom: 1rem;
 }
-.mini-chart-grid {
-  position: absolute;
-  inset: 0;
-  opacity: 0.15;
-  background-image:
-    linear-gradient(90deg, transparent 49%, var(--tp-primary) 50%, transparent 51%),
-    linear-gradient(0deg, transparent 49%, var(--tp-primary) 50%, transparent 51%);
-  background-size: 20px 20px;
-}
-.mini-chart-line {
-  position: absolute;
-  bottom: 0;
+.equity-svg {
   width: 100%;
-  height: 3.5rem;
-  color: var(--tp-primary);
+  height: 100%;
 }
-
-/* Trade Buttons */
-.trade-btns {
-  display: flex;
-  gap: 0.75rem;
-}
-.trade-btn {
-  flex: 1;
-  height: 2.5rem;
-  font-size: 0.85rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-}
-
-/* Tick error/loading */
-.tick-error, .tick-loading {
+.equity-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
-  padding: 2rem 1rem;
-  text-align: center;
+  gap: 0.35rem;
+  padding: 1.5rem;
   color: var(--tp-text-dim);
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* Trade Bars (mini bar chart of last 20 trades) */
+.trade-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 2.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0 2px;
+}
+.trade-bar {
+  flex: 1;
+  border-radius: 2px 2px 0 0;
+  min-height: 3px;
+  transition: opacity 0.15s;
+  cursor: default;
+}
+.trade-bar:hover { opacity: 0.7; }
+.bar-win { background: #22c55e; }
+.bar-loss { background: #ef4444; }
+
+/* Stats Grid */
+.pnl-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.pnl-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--tp-border);
+  font-size: 0.78rem;
+}
+.pnl-stat-label { color: var(--tp-text-dim); }
+.pnl-stat-value { font-weight: 700; font-family: 'Inter', monospace; }
+
+.pnl-history-btn {
+  width: 100%;
+  justify-content: center;
+  font-size: 0.8rem;
 }
 
 /* ===== News Card ===== */

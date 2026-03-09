@@ -95,7 +95,7 @@ def _check_live_performance(strategy_config):
             else:
                 break
 
-        if consecutive_losses >= 5:
+        if consecutive_losses >= 8:
             strategy_config.is_active = False
             strategy_config.save(update_fields=['is_active'])
             logger.warning(
@@ -106,7 +106,7 @@ def _check_live_performance(strategy_config):
 
         # Kill switch 2: cumulative drawdown
         total_pnl = sum(p for p in recent_pnls if p is not None)
-        if total_pnl < -50:
+        if total_pnl < -100:
             strategy_config.is_active = False
             strategy_config.save(update_fields=['is_active'])
             logger.warning(
@@ -421,17 +421,26 @@ def fetch_market_pulse():
     except Exception as e:
         logger.error(f'Market pulse news fetch failed: {e}')
 
-    # Fetch economic calendar
-    try:
-        today = date.today().isoformat()
-        resp = requests.get(
-            'https://finnhub.io/api/v1/calendar/economic',
-            params={'from': today, 'to': today, 'token': api_key},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        calendar = resp.json().get('economicCalendar', [])[:10]
-        cache.set('market_pulse:calendar', calendar, timeout=300)
-        logger.info(f'Market pulse: fetched {len(calendar)} calendar events')
-    except Exception as e:
-        logger.error(f'Market pulse calendar fetch failed: {e}')
+    # Fetch economic calendar (skip if previously got 403 — requires paid Finnhub plan)
+    if cache.get('market_pulse:calendar_disabled'):
+        pass
+    else:
+        try:
+            today = date.today().isoformat()
+            resp = requests.get(
+                'https://finnhub.io/api/v1/calendar/economic',
+                params={'from': today, 'to': today, 'token': api_key},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            calendar = resp.json().get('economicCalendar', [])[:10]
+            cache.set('market_pulse:calendar', calendar, timeout=300)
+            logger.info(f'Market pulse: fetched {len(calendar)} calendar events')
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 403:
+                cache.set('market_pulse:calendar_disabled', True, timeout=3600)
+                logger.warning('Market pulse: calendar endpoint returned 403 (paid plan required), disabled for 1 hour')
+            else:
+                logger.error(f'Market pulse calendar fetch failed: {e}')
+        except Exception as e:
+            logger.error(f'Market pulse calendar fetch failed: {e}')

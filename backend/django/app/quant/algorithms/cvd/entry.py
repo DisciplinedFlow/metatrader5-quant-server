@@ -281,22 +281,22 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     logger.info(f"CVD: Signal found at bar offset {offset} for {pair}")
                     break
 
-            if atr_val is None:
-                logger.info(f"CVD: Skipping {pair} — ATR not ready across lookback window.")
-                continue
-
             if order_type is None:
-                logger.info(f"CVD: No signal for {pair}.")
+                logger.debug(f"CVD ({custom.name}): No signal for {pair} on last {SIGNAL_LOOKBACK} bars.")
                 continue
 
-            # Macro context gate — check if news/geopolitics support this trade
+            if atr_val is None:
+                logger.info(f"CVD ({custom.name}): Signal found for {pair} but ATR not valid.")
+                continue
+
+            # Macro context — advisory only, does NOT block trades
             try:
                 from app.quant.macro_analyst import check_macro_for_trade
                 macro_ok, macro_reason = check_macro_for_trade(pair, order_type)
                 if not macro_ok:
-                    logger.info(f"CVD: Skipping {pair} {order_type} — {macro_reason}")
-                    continue
-                logger.info(f"CVD: {pair} {order_type} — {macro_reason}")
+                    logger.info(f"CVD: MACRO WARNING {pair} {order_type} — {macro_reason} (proceeding anyway)")
+                else:
+                    logger.info(f"CVD: {pair} {order_type} — {macro_reason}")
             except Exception as e:
                 logger.debug(f"Macro check unavailable: {e}")
 

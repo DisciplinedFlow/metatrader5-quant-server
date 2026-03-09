@@ -1,0 +1,35 @@
+<!-- Lighter.xyz Signer Proxy — persistent macOS service via launchd.
+     Install:
+       cp com.lighter.proxy.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.lighter.proxy.plist
+     Uninstall:
+       launchctl unload ~/Library/LaunchAgents/com.lighter.proxy.plist && rm ~/Library/LaunchAgents/com.lighter.proxy.plist
+-->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.lighter.proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>python3</string>
+        <string>proxy.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/rosaria/Desktop/metatrader5-quant-server-python/backend/lighter-proxy</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/lighter-proxy-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/lighter-proxy-stderr.log</string>
+</dict>
+</plist>

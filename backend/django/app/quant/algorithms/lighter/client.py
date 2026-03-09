@@ -1,54 +1,31 @@
 """
-Lighter.xyz DEX client — async wrapper for the zk-powered orderbook.
+Lighter.xyz DEX client — read ops via ApiClient (pure Python, Docker-safe),
+write ops via signer proxy (HTTP to native macOS process).
 
-Provides account info, market data, order placement, and position management
-via the Lighter Python SDK (SignerClient + ApiClient).
+The SignerClient uses a Go native library that crashes under QEMU emulation
+in Docker on arm64 Mac. Write operations go through a lightweight HTTP proxy
+running natively on the host.
+
+Note: The Lighter ApiClient uses aiohttp, which requires construction inside
+an async context. All API calls create fresh clients per-request.
 """
 import asyncio
+import datetime
 import logging
-from typing import Optional
+import requests
 
 import lighter
 
 from .config import (
     LIGHTER_API_URL,
-    LIGHTER_PRIVATE_KEY,
-    LIGHTER_API_KEY_INDEX,
     LIGHTER_ACCOUNT_INDEX,
+    LIGHTER_SIGNER_PROXY_URL,
     LIGHTER_MARKETS,
+    LIGHTER_MAX_SLIPPAGE,
+    get_market_id,
 )
 
 logger = logging.getLogger('app.lighter')
-
-_signer: Optional[lighter.SignerClient] = None
-_api: Optional[lighter.ApiClient] = None
-
-
-def _get_api() -> lighter.ApiClient:
-    global _api
-    if _api is None:
-        _api = lighter.ApiClient(
-            configuration=lighter.Configuration(host=LIGHTER_API_URL)
-        )
-    return _api
-
-
-def _get_signer() -> lighter.SignerClient:
-    global _signer
-    if _signer is None:
-        if not LIGHTER_PRIVATE_KEY:
-            raise ValueError("LIGHTER_PRIVATE_KEY not set")
-        _signer = lighter.SignerClient(
-            url=LIGHTER_API_URL,
-            api_private_keys={LIGHTER_API_KEY_INDEX: LIGHTER_PRIVATE_KEY},
-            account_index=LIGHTER_ACCOUNT_INDEX,
-        )
-        err = _signer.check_client()
-        if err is not None:
-            _signer = None
-            raise ConnectionError(f"Lighter SignerClient check failed: {err}")
-        logger.info("Lighter SignerClient initialized (account=%s, key_index=%s)", LIGHTER_ACCOUNT_INDEX, LIGHTER_API_KEY_INDEX)
-    return _signer
 
 
 def _run(coro):
@@ -66,116 +43,209 @@ def _run(coro):
         return asyncio.run(coro)
 
 
-# ── Read APIs ──────────────────────────────────────────────
+# ── Read APIs (pure Python, Docker-safe) ─────────────────
 
 def get_account_info() -> dict:
-    api = _get_api()
-    account_api = lighter.AccountApi(api)
-    return _run(account_api.account(by="index", value=str(LIGHTER_ACCOUNT_INDEX)))
-
-
-def get_orderbooks() -> dict:
-    api = _get_api()
-    order_api = lighter.OrderApi(api)
-    return _run(order_api.order_books())
+    async def _fetch():
+        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        try:
+            account_api = lighter.AccountApi(api)
+            return await account_api.account(by="index", value=str(LIGHTER_ACCOUNT_INDEX))
+        finally:
+            await api.close()
+    return _run(_fetch())
 
 
 def get_orderbook_detail(market_id: int = 0) -> dict:
-    api = _get_api()
-    order_api = lighter.OrderApi(api)
-    return _run(order_api.order_book_details(market_id=market_id))
+    async def _fetch():
+        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        try:
+            order_api = lighter.OrderApi(api)
+            return await order_api.order_book_details(market_id=market_id)
+        finally:
+            await api.close()
+    return _run(_fetch())
 
 
 def get_recent_trades(market_id: int = 0, limit: int = 20) -> dict:
-    api = _get_api()
-    order_api = lighter.OrderApi(api)
-    return _run(order_api.recent_trades(market_id=market_id, limit=limit))
+    async def _fetch():
+        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        try:
+            order_api = lighter.OrderApi(api)
+            return await order_api.recent_trades(market_id=market_id, limit=limit)
+        finally:
+            await api.close()
+    return _run(_fetch())
 
 
-def get_candles(market_id: int = 0, resolution: str = '1h', count_back: int = 100) -> dict:
-    import datetime
-    api = _get_api()
-    candle_api = lighter.CandlestickApi(api)
-    now = int(datetime.datetime.now().timestamp())
-    start = now - (count_back * 3600)  # rough estimate
-    return _run(candle_api.candles(
-        market_id=market_id,
-        resolution=resolution,
-        start_timestamp=start,
-        end_timestamp=now,
-        count_back=count_back,
-    ))
+def get_candles(symbol: str, resolution: str = '1h', count_back: int = 100) -> list:
+    """Fetch candle data for a symbol. Returns list of candle dicts.
+
+    Note: The SDK's Pydantic model has a bug where OHLC fields return None
+    (field name collision between Candle.c and Candles.c). We parse raw JSON.
+    """
+    import json
+    market_id = get_market_id(symbol)
+
+    async def _fetch():
+        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        try:
+            candle_api = lighter.CandlestickApi(api)
+            now = int(datetime.datetime.now().timestamp())
+            resolution_seconds = {
+                '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
+                '1h': 3600, '4h': 14400, '1d': 86400,
+            }
+            secs = resolution_seconds.get(resolution, 3600)
+            start = now - (count_back * secs)
+            # Use raw response to work around SDK Pydantic parsing bug
+            resp = await candle_api.candles_without_preload_content(
+                market_id=market_id,
+                resolution=resolution,
+                start_timestamp=start,
+                end_timestamp=now,
+                count_back=count_back,
+            )
+            body = await resp.read()
+            data = json.loads(body.decode())
+            candles = data.get('c', [])
+            return [{'t': c['t'], 'o': c['o'], 'h': c['h'], 'l': c['l'], 'c': c['c'], 'v': c.get('V', c.get('v', 0))}
+                    for c in candles if c.get('o') is not None]
+        finally:
+            await api.close()
+
+    return _run(_fetch())
+
+
+def get_best_bid_ask(symbol: str) -> dict:
+    """Get current best bid/ask from orderbook + last trade price from details."""
+    market_id = get_market_id(symbol)
+
+    async def _fetch():
+        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        try:
+            order_api = lighter.OrderApi(api)
+            # Get top-of-book bid/ask
+            ob = await order_api.order_book_orders(market_id=market_id, limit=1)
+            best_bid = float(ob.bids[0].price) if hasattr(ob, 'bids') and ob.bids else None
+            best_ask = float(ob.asks[0].price) if hasattr(ob, 'asks') and ob.asks else None
+
+            # Get last trade price from details
+            details = await order_api.order_book_details(market_id=market_id)
+            last_price = None
+            if details.order_book_details:
+                detail = details.order_book_details[0]
+                last_price = float(detail.last_trade_price) if hasattr(detail, 'last_trade_price') else None
+
+            mid = (best_bid + best_ask) / 2 if best_bid and best_ask else last_price
+            return {'bid': best_bid, 'ask': best_ask, 'mid': mid, 'last': last_price}
+        finally:
+            await api.close()
+
+    return _run(_fetch())
 
 
 def get_exchange_stats() -> dict:
-    api = _get_api()
-    order_api = lighter.OrderApi(api)
-    return _run(order_api.exchange_stats())
+    async def _fetch():
+        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        try:
+            order_api = lighter.OrderApi(api)
+            return await order_api.exchange_stats()
+        finally:
+            await api.close()
+    return _run(_fetch())
 
 
-# ── Trade APIs ─────────────────────────────────────────────
+# ── Write APIs (via signer proxy) ────────────────────────
 
-def place_market_order(symbol: str, is_buy: bool, base_amount: int, max_price_cents: int):
-    """Place a market order on Lighter.
+def _proxy_post(endpoint: str, data: dict) -> dict:
+    """Send a trading request to the native signer proxy."""
+    url = f"{LIGHTER_SIGNER_PROXY_URL}{endpoint}"
+    try:
+        resp = requests.post(url, json=data, timeout=15)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get('error'):
+            logger.error("Lighter proxy error on %s: %s", endpoint, result['error'])
+        return result
+    except requests.ConnectionError:
+        logger.error("Lighter signer proxy not reachable at %s. Is it running?", LIGHTER_SIGNER_PROXY_URL)
+        return {'error': 'Signer proxy not reachable'}
+    except requests.HTTPError as e:
+        try:
+            result = e.response.json()
+        except Exception:
+            result = {'error': str(e)}
+        logger.error("Lighter proxy HTTP error on %s: %s", endpoint, result.get('error', str(e)))
+        return result
+    except Exception as e:
+        logger.error("Lighter proxy request failed: %s", e)
+        return {'error': str(e)}
 
-    Args:
-        symbol: e.g. 'ETH', 'BTC'
-        is_buy: True for buy, False for sell
-        base_amount: amount in smallest units (1000 = 0.1 ETH)
-        max_price_cents: worst acceptable price in cents (4000_00 = $4000)
-    """
-    market_index = LIGHTER_MARKETS.get(symbol)
-    if market_index is None:
-        raise ValueError(f"Unknown symbol: {symbol}. Available: {list(LIGHTER_MARKETS.keys())}")
 
-    signer = _get_signer()
-
-    async def _place():
-        tx, tx_hash, err = await signer.create_market_order(
-            market_index=market_index,
-            client_order_index=0,
-            base_amount=base_amount,
-            avg_execution_price=max_price_cents,
-            is_ask=not is_buy,  # is_ask=True means SELL
-        )
-        return {'tx': tx, 'tx_hash': tx_hash, 'error': str(err) if err else None}
-
-    result = _run(_place())
-    if result['error']:
-        logger.error("Lighter order failed: %s %s %s — %s", symbol, 'BUY' if is_buy else 'SELL', base_amount, result['error'])
+def place_market_order_usd(symbol: str, is_buy: bool, quote_amount_usd: float) -> dict:
+    """Place a market order by USD amount. Routes through signer proxy."""
+    result = _proxy_post('/order/market', {
+        'symbol': symbol,
+        'is_buy': is_buy,
+        'quote_amount_usd': quote_amount_usd,
+        'max_slippage': LIGHTER_MAX_SLIPPAGE,
+    })
+    action = 'BUY' if is_buy else 'SELL'
+    if result.get('error'):
+        logger.error("Lighter order failed: %s %s $%.2f — %s", symbol, action, quote_amount_usd, result['error'])
     else:
-        logger.info("Lighter order placed: %s %s base_amount=%s tx_hash=%s", symbol, 'BUY' if is_buy else 'SELL', base_amount, result['tx_hash'])
+        logger.info("Lighter order placed: %s %s $%.2f tx=%s", symbol, action, quote_amount_usd, result.get('tx_hash', '?'))
     return result
 
 
-def update_leverage(symbol: str, leverage: int, cross: bool = True):
-    """Update leverage for a market."""
-    market_index = LIGHTER_MARKETS.get(symbol)
-    if market_index is None:
-        raise ValueError(f"Unknown symbol: {symbol}")
-
-    signer = _get_signer()
-
-    async def _update():
-        margin_mode = signer.CROSS_MARGIN_MODE if cross else signer.ISOLATED_MARGIN_MODE
-        tx, tx_hash, err = await signer.update_leverage(
-            market_index=market_index,
-            leverage=leverage,
-            margin_mode=margin_mode,
-        )
-        return {'tx': tx, 'tx_hash': tx_hash, 'error': str(err) if err else None}
-
-    result = _run(_update())
-    logger.info("Lighter leverage update: %s %dx cross=%s — %s", symbol, leverage, cross, result.get('error') or 'OK')
-    return result
+def place_limit_order(symbol: str, is_buy: bool, base_amount: float, price: float) -> dict:
+    """Place a limit order. Routes through signer proxy."""
+    return _proxy_post('/order/limit', {
+        'symbol': symbol,
+        'is_buy': is_buy,
+        'base_amount': base_amount,
+        'price': price,
+    })
 
 
-async def close_client():
-    """Clean up connections."""
-    global _signer, _api
-    if _signer:
-        await _signer.close()
-        _signer = None
-    if _api:
-        await _api.close()
-        _api = None
+def place_stop_loss(symbol: str, is_buy: bool, base_amount: float, trigger_price: float) -> dict:
+    """Place a stop-loss order. Routes through signer proxy."""
+    return _proxy_post('/order/stop-loss', {
+        'symbol': symbol,
+        'is_buy': is_buy,
+        'base_amount': base_amount,
+        'trigger_price': trigger_price,
+    })
+
+
+def place_take_profit(symbol: str, is_buy: bool, base_amount: float, trigger_price: float) -> dict:
+    """Place a take-profit order. Routes through signer proxy."""
+    return _proxy_post('/order/take-profit', {
+        'symbol': symbol,
+        'is_buy': is_buy,
+        'base_amount': base_amount,
+        'trigger_price': trigger_price,
+    })
+
+
+def close_position(symbol: str) -> dict:
+    """Close entire position for a symbol. Routes through signer proxy."""
+    return _proxy_post('/position/close', {'symbol': symbol})
+
+
+def update_leverage(symbol: str, leverage: int, cross: bool = True) -> dict:
+    """Update leverage for a market. Routes through signer proxy."""
+    return _proxy_post('/leverage', {
+        'symbol': symbol,
+        'leverage': leverage,
+        'cross': cross,
+    })
+
+
+def cancel_all_orders(symbol: str = None) -> dict:
+    """Cancel all open orders (optionally for a specific symbol)."""
+    data = {}
+    if symbol:
+        data['symbol'] = symbol
+    return _proxy_post('/orders/cancel-all', data)

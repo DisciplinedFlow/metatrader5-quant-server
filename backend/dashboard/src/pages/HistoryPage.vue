@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
 
@@ -13,238 +13,169 @@ const forexLinks = [
   { to: '/forex/strategy', label: 'Strategies' },
 ]
 
-const now = new Date()
-const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-const fmtDate = (d) => d.toISOString().slice(0, 16)
+const trades = ref([])
+const loading = ref(true)
+const error = ref('')
 
-const ticketNum = ref('')
-const lookupType = ref('deal')
-const ticketResult = ref(null)
-const ticketError = ref('')
+// Stats
+const stats = computed(() => {
+  const closed = trades.value.filter(t => t.close_time)
+  const wins = closed.filter(t => t.pnl > 0)
+  const losses = closed.filter(t => t.pnl <= 0)
+  const totalPnl = closed.reduce((sum, t) => sum + (t.pnl || 0), 0)
+  const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0
+  const winRate = closed.length ? (wins.length / closed.length * 100) : 0
+  const openTrades = trades.value.filter(t => !t.close_time)
+  return { total: closed.length, wins: wins.length, losses: losses.length, totalPnl, avgWin, avgLoss, winRate, openCount: openTrades.length }
+})
 
-const fromDate = ref(fmtDate(weekAgo))
-const toDate = ref(fmtDate(now))
-const dealsPosition = ref('')
-const deals = ref(null)
-const dealsLoading = ref(false)
-const dealsError = ref('')
-
-const ordersTicket = ref('')
-const orders = ref(null)
-const ordersLoading = ref(false)
-const ordersError = ref('')
-
-const dealKeys = computed(() => deals.value?.length ? Object.keys(deals.value[0]) : [])
-const orderKeys = computed(() => orders.value?.length ? Object.keys(orders.value[0]) : [])
-
-// Active section tab
-const activeSection = ref('ticket')
-
-async function lookupTicket() {
-  ticketError.value = ''
+async function fetchTrades() {
+  loading.value = true
+  error.value = ''
   try {
-    const data = lookupType.value === 'deal'
-      ? await api.getDealFromTicket(ticketNum.value)
-      : await api.getOrderFromTicket(ticketNum.value)
-    ticketResult.value = data
+    const data = await api.getForexTrades()
+    trades.value = data.results || data || []
   } catch (err) {
-    ticketError.value = err.message
-    ticketResult.value = null
+    error.value = err.message
   }
+  loading.value = false
 }
 
-async function searchDeals() {
-  dealsLoading.value = true
-  dealsError.value = ''
-  try {
-    const from = new Date(fromDate.value).toISOString()
-    const to = new Date(toDate.value).toISOString()
-    const result = await api.historyDealsGet(from, to, dealsPosition.value)
-    deals.value = result && result.length ? result : null
-    if (!deals.value) dealsError.value = 'No deals found'
-  } catch (err) {
-    dealsError.value = err.message
-    deals.value = null
-  }
-  dealsLoading.value = false
+function formatTime(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
 }
 
-async function searchOrders() {
-  ordersLoading.value = true
-  ordersError.value = ''
-  try {
-    const result = await api.historyOrdersGet(ordersTicket.value)
-    orders.value = result && result.length ? result : null
-    if (!orders.value) ordersError.value = 'No orders found'
-  } catch (err) {
-    ordersError.value = err.message
-    orders.value = null
-  }
-  ordersLoading.value = false
+function formatPnl(val) {
+  if (val == null) return '—'
+  return (val >= 0 ? '+' : '') + val.toFixed(2)
 }
+
+function duration(entry, close) {
+  if (!entry || !close) return '—'
+  const ms = new Date(close) - new Date(entry)
+  const mins = Math.floor(ms / 60000)
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  const rm = mins % 60
+  if (hrs < 24) return `${hrs}h ${rm}m`
+  return `${Math.floor(hrs / 24)}d ${hrs % 24}h`
+}
+
+onMounted(fetchTrades)
 </script>
 
 <template>
   <SectionNav :links="forexLinks" />
   <div class="tp-page history-page">
-    <!-- Page Header -->
     <div class="page-header">
       <div>
         <h1>Trade History</h1>
-        <p>Manage and search your past trading activity across all markets.</p>
+        <p>All forex trades tracked by the bot — updated automatically.</p>
+      </div>
+      <button class="tp-btn tp-btn-secondary" @click="fetchTrades" :disabled="loading">
+        <span class="material-symbols-outlined" style="font-size:18px">refresh</span>
+        Refresh
+      </button>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="stats-row" v-if="!loading && trades.length">
+      <div class="stat-card">
+        <div class="stat-value">{{ stats.total }}</div>
+        <div class="stat-label">Closed Trades</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" :class="stats.totalPnl >= 0 ? 'pnl-pos' : 'pnl-neg'">${{ stats.totalPnl.toFixed(2) }}</div>
+        <div class="stat-label">Total P&L</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">{{ stats.winRate.toFixed(1) }}%</div>
+        <div class="stat-label">Win Rate ({{ stats.wins }}W / {{ stats.losses }}L)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value pnl-pos">${{ stats.avgWin.toFixed(2) }}</div>
+        <div class="stat-label">Avg Win</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value pnl-neg">${{ stats.avgLoss.toFixed(2) }}</div>
+        <div class="stat-label">Avg Loss</div>
+      </div>
+      <div class="stat-card" v-if="stats.openCount">
+        <div class="stat-value" style="color:var(--tp-primary)">{{ stats.openCount }}</div>
+        <div class="stat-label">Open Now</div>
       </div>
     </div>
 
-    <!-- Search Type Tabs -->
-    <div class="tp-tabs">
-      <button :class="{ active: activeSection === 'ticket' }" @click="activeSection = 'ticket'">
-        <span class="material-symbols-outlined tab-icon">confirmation_number</span> Lookup by Ticket
-      </button>
-      <button :class="{ active: activeSection === 'deals' }" @click="activeSection = 'deals'">
-        <span class="material-symbols-outlined tab-icon">swap_horiz</span> Deals History
-      </button>
-      <button :class="{ active: activeSection === 'orders' }" @click="activeSection = 'orders'">
-        <span class="material-symbols-outlined tab-icon">receipt_long</span> Orders History
-      </button>
+    <!-- Loading -->
+    <div v-if="loading" class="loading-msg">
+      <span class="material-symbols-outlined spinning">hourglass_empty</span> Loading trades...
     </div>
 
-    <!-- Ticket Lookup Section -->
-    <div v-if="activeSection === 'ticket'" class="section-card tp-card">
+    <!-- Error -->
+    <div v-else-if="error" class="error-msg">
+      <span class="material-symbols-outlined" style="font-size:16px">error</span>
+      {{ error }}
+    </div>
+
+    <!-- Empty -->
+    <div v-else-if="!trades.length" class="empty-state tp-card">
       <div class="card-inner">
-        <h3 class="section-title">
-          <span class="material-symbols-outlined" style="color:var(--tp-primary)">search</span>
-          Lookup by Ticket
-        </h3>
-        <form class="search-form" @submit.prevent="lookupTicket">
-          <div class="form-row">
-            <div class="field">
-              <label class="tp-label">Ticket Number</label>
-              <input v-model="ticketNum" type="number" required placeholder="Order/Deal ticket" class="tp-input" />
-            </div>
-            <div class="field" style="max-width: 160px;">
-              <label class="tp-label">Type</label>
-              <select v-model="lookupType" class="tp-select">
-                <option value="deal">Deal</option>
-                <option value="order">Order</option>
-              </select>
-            </div>
-            <div class="field field-btn">
-              <button type="submit" class="tp-btn tp-btn-primary search-btn">
-                <span class="material-symbols-outlined" style="font-size:18px">search</span>
-                Lookup
-              </button>
-            </div>
-          </div>
-        </form>
-        <!-- Result -->
-        <div v-if="ticketResult" class="result-block">
-          <pre class="result-pre">{{ JSON.stringify(ticketResult, null, 2) }}</pre>
-        </div>
-        <div v-if="ticketError" class="error-msg">
-          <span class="material-symbols-outlined" style="font-size:16px">error</span>
-          {{ ticketError }}
-        </div>
+        <span class="material-symbols-outlined" style="font-size:48px;color:var(--tp-text-muted)">inbox</span>
+        <p>No trades recorded yet.</p>
       </div>
     </div>
 
-    <!-- Deals History Section -->
-    <div v-if="activeSection === 'deals'" class="section-card tp-card">
-      <div class="card-inner">
-        <h3 class="section-title">
-          <span class="material-symbols-outlined" style="color:var(--tp-primary)">swap_horiz</span>
-          Deals History (by Position)
-        </h3>
-        <form class="search-form" @submit.prevent="searchDeals">
-          <div class="form-row">
-            <div class="field">
-              <label class="tp-label">From</label>
-              <input v-model="fromDate" type="datetime-local" class="tp-input" />
-            </div>
-            <div class="field">
-              <label class="tp-label">To</label>
-              <input v-model="toDate" type="datetime-local" class="tp-input" />
-            </div>
-            <div class="field">
-              <label class="tp-label">Position Ticket</label>
-              <input v-model="dealsPosition" type="number" required placeholder="Position ticket" class="tp-input" />
-            </div>
-            <div class="field field-btn">
-              <button type="submit" class="tp-btn tp-btn-primary search-btn">
-                <span class="material-symbols-outlined" style="font-size:18px">search</span>
-                Search
-              </button>
-            </div>
-          </div>
-        </form>
-
-        <!-- Loading -->
-        <div v-if="dealsLoading" class="loading-msg">
-          <span class="material-symbols-outlined spinning">hourglass_empty</span> Searching...
-        </div>
-        <div v-else-if="dealsError" class="error-msg">
-          <span class="material-symbols-outlined" style="font-size:16px">error</span>
-          {{ dealsError }}
-        </div>
-
-        <!-- Deals Table -->
-        <div v-else-if="deals" class="table-wrapper">
-          <table class="tp-table">
+    <!-- Trades Table -->
+    <div v-else class="tp-card">
+      <div class="card-inner" style="padding:0">
+        <div class="table-wrapper">
+          <table class="tp-table trades-table">
             <thead>
               <tr>
-                <th v-for="k in dealKeys" :key="k">{{ k }}</th>
+                <th>Time</th>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Entry</th>
+                <th>Close</th>
+                <th>Duration</th>
+                <th>Strategy</th>
+                <th>P&L</th>
+                <th>Peak</th>
+                <th>Reason</th>
+                <th>BE</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(d, i) in deals" :key="i">
-                <td v-for="k in dealKeys" :key="k">{{ d[k] ?? '' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- Orders History Section -->
-    <div v-if="activeSection === 'orders'" class="section-card tp-card">
-      <div class="card-inner">
-        <h3 class="section-title">
-          <span class="material-symbols-outlined" style="color:var(--tp-primary)">receipt_long</span>
-          Orders History (by Ticket)
-        </h3>
-        <form class="search-form" @submit.prevent="searchOrders">
-          <div class="form-row">
-            <div class="field">
-              <label class="tp-label">Order Ticket</label>
-              <input v-model="ordersTicket" type="number" required placeholder="Order ticket" class="tp-input" />
-            </div>
-            <div class="field field-btn">
-              <button type="submit" class="tp-btn tp-btn-primary search-btn">
-                <span class="material-symbols-outlined" style="font-size:18px">search</span>
-                Search
-              </button>
-            </div>
-          </div>
-        </form>
-
-        <div v-if="ordersLoading" class="loading-msg">
-          <span class="material-symbols-outlined spinning">hourglass_empty</span> Searching...
-        </div>
-        <div v-else-if="ordersError" class="error-msg">
-          <span class="material-symbols-outlined" style="font-size:16px">error</span>
-          {{ ordersError }}
-        </div>
-
-        <!-- Orders Table -->
-        <div v-else-if="orders" class="table-wrapper">
-          <table class="tp-table">
-            <thead>
-              <tr>
-                <th v-for="k in orderKeys" :key="k">{{ k }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(o, i) in orders" :key="i">
-                <td v-for="k in orderKeys" :key="k">{{ o[k] ?? '' }}</td>
+              <tr v-for="t in trades" :key="t.id" :class="{ 'row-open': !t.close_time }">
+                <td class="td-time">{{ formatTime(t.entry_time) }}</td>
+                <td class="td-symbol">{{ t.symbol }}</td>
+                <td>
+                  <span class="side-badge" :class="t.type === 'SELL' ? 'sell' : 'buy'">
+                    {{ t.type || 'BUY' }}
+                  </span>
+                </td>
+                <td class="td-price">{{ t.entry_price ? Number(t.entry_price).toFixed(5) : '—' }}</td>
+                <td class="td-price">{{ t.close_price ? Number(t.close_price).toFixed(5) : '—' }}</td>
+                <td class="td-duration">{{ duration(t.entry_time, t.close_time) }}</td>
+                <td class="td-strategy">{{ t.strategy_config_name || t.strategy || '—' }}</td>
+                <td class="td-pnl" :class="t.pnl > 0 ? 'pnl-pos' : t.pnl < 0 ? 'pnl-neg' : ''">
+                  <template v-if="t.close_time">{{ formatPnl(t.pnl) }}</template>
+                  <span v-else class="open-badge">OPEN</span>
+                </td>
+                <td class="td-peak">
+                  <span v-if="t.max_profit != null" class="pnl-pos">${{ t.max_profit.toFixed(2) }}</span>
+                  <span v-else>—</span>
+                </td>
+                <td class="td-reason">{{ t.closing_reason || '—' }}</td>
+                <td class="td-be">
+                  <span v-if="t.breakeven_moved" class="be-yes">
+                    <span class="material-symbols-outlined" style="font-size:14px">check_circle</span>
+                  </span>
+                  <span v-else class="be-no">—</span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -262,7 +193,7 @@ async function searchOrders() {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 2rem;
+  margin-bottom: 1.5rem;
 }
 .page-header h1 {
   font-size: 2rem;
@@ -270,59 +201,134 @@ async function searchOrders() {
   letter-spacing: -0.02em;
   margin-bottom: 0.35rem;
 }
-.section-card {
+
+/* Stats Row */
+.stats-row {
+  display: flex;
+  gap: 0.75rem;
   margin-bottom: 1.5rem;
-}
-.card-inner {
-  padding: 1.5rem;
-}
-.section-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 1rem;
-  font-weight: 700;
-  margin-bottom: 1.25rem;
-}
-.search-form {
-  margin-bottom: 1.25rem;
-}
-.form-row {
-  display: flex;
-  gap: 1rem;
-  align-items: flex-end;
   flex-wrap: wrap;
 }
-.form-row .field {
+.stat-card {
   flex: 1;
-  min-width: 140px;
-}
-.field-btn {
-  max-width: 140px;
-  padding-bottom: 0;
-}
-.search-btn {
-  height: 2.75rem;
-  width: 100%;
-}
-.table-wrapper {
-  overflow-x: auto;
-  border: 1px solid var(--tp-border);
-  border-radius: var(--tp-radius-sm);
-}
-.result-block {
-  margin-top: 1rem;
-}
-.result-pre {
+  min-width: 110px;
   background: var(--tp-bg-surface);
   border: 1px solid var(--tp-border);
   border-radius: var(--tp-radius-sm);
   padding: 1rem;
-  font-size: 0.8rem;
-  color: var(--tp-text-muted);
-  overflow-x: auto;
-  margin: 0;
+  text-align: center;
 }
+.stat-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--tp-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Table */
+.table-wrapper {
+  overflow-x: auto;
+}
+.trades-table {
+  width: 100%;
+  font-size: 0.82rem;
+}
+.trades-table th {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tp-text-muted);
+  white-space: nowrap;
+}
+.trades-table td {
+  white-space: nowrap;
+  padding: 0.6rem 0.75rem;
+}
+.row-open {
+  background: rgba(59, 130, 246, 0.04);
+}
+.td-symbol {
+  font-weight: 600;
+}
+.td-price {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.78rem;
+  color: var(--tp-text-muted);
+}
+.td-time {
+  color: var(--tp-text-muted);
+  font-size: 0.78rem;
+}
+.td-duration {
+  color: var(--tp-text-muted);
+  font-size: 0.78rem;
+}
+.td-strategy {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.75rem;
+  color: var(--tp-text-muted);
+}
+.td-pnl {
+  font-weight: 700;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.td-peak {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.78rem;
+}
+.td-reason {
+  font-size: 0.75rem;
+  color: var(--tp-text-muted);
+}
+.pnl-pos { color: #22c55e; }
+.pnl-neg { color: #ef4444; }
+
+.side-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.side-badge.buy {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+}
+.side-badge.sell {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+.open-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+.be-yes { color: #22c55e; }
+.be-no { color: var(--tp-text-muted); }
+
+.empty-state {
+  text-align: center;
+  padding: 3rem;
+}
+.empty-state .card-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .error-msg {
   display: flex;
   align-items: center;
@@ -333,26 +339,18 @@ async function searchOrders() {
   border-radius: var(--tp-radius-sm);
   color: var(--tp-danger);
   font-size: 0.85rem;
-  margin-top: 0.75rem;
 }
 .loading-msg {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 1rem;
+  padding: 2rem;
   color: var(--tp-text-muted);
-  font-size: 0.9rem;
+  justify-content: center;
 }
-.tab-icon {
-  font-size: 18px;
-  margin-right: 0.25rem;
-}
-
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
-.spinning {
-  animation: spin 1.5s linear infinite;
-}
+.spinning { animation: spin 1.5s linear infinite; }
 </style>

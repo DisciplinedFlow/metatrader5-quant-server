@@ -104,6 +104,10 @@ const api = {
     return this._fetch(`/api/django/${path}`, options)
   },
 
+  getForexTrades(params = '') {
+    return this.django(`v1/trades/?market_type=FOREX&ordering=-entry_time${params}`)
+  },
+
   djangoSendMarketOrder(orderData) {
     return this.django('v1/send_market_order/', {
       method: 'POST',

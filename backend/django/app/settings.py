@@ -75,6 +75,11 @@ LOGGING = {
             'filename': os.path.join(BASE_DIR, 'logs/crypto.log'),
             'formatter': 'verbose',
         },
+        'lighter_file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs/lighter.log'),
+            'formatter': 'verbose',
+        },
         'ai_brain_file': {
             'class': 'logging.FileHandler',
             'filename': os.path.join(BASE_DIR, 'logs/ai_brain.log'),
@@ -94,6 +99,11 @@ LOGGING = {
         },
         'app.crypto': {
             'handlers': ['console', 'crypto_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'app.lighter': {
+            'handlers': ['console', 'lighter_file'],
             'level': 'INFO',
             'propagate': False,
         },
@@ -289,6 +299,14 @@ CELERY_BEAT_SCHEDULE = {
     },
     'run-crypto-exit': {
         'task': 'crypto.tasks.run_crypto_exit',
+        'schedule': 30.0,  # every 30 seconds
+    },
+    'run-lighter-entry': {
+        'task': 'crypto.tasks.run_lighter_entry',
+        'schedule': 60.0,  # every 1 minute
+    },
+    'run-lighter-exit': {
+        'task': 'crypto.tasks.run_lighter_exit',
         'schedule': 30.0,  # every 30 seconds
     },
     'run-macro-analysis': {

@@ -14,6 +14,8 @@ class CryptoPosition(models.Model):
         SIGNAL_REVERSAL = 'SIGNAL_REVERSAL', 'Signal Reversal'
         STOP_LOSS = 'STOP_LOSS', 'Stop Loss'
         TAKE_PROFIT = 'TAKE_PROFIT', 'Take Profit'
+        PROFIT_PROTECTION = 'PROFIT_PROTECTION', 'Profit Protection'
+        TIME_EXIT = 'TIME_EXIT', 'Time Exit'
         MANUAL = 'MANUAL', 'Manual'
 
     symbol = models.CharField(max_length=20)
@@ -28,6 +30,7 @@ class CryptoPosition(models.Model):
     close_price = models.FloatField(null=True, blank=True)
     pnl_usd = models.FloatField(null=True, blank=True)
     close_reason = models.CharField(max_length=20, choices=CloseReason.choices, null=True, blank=True)
+    peak_profit_usd = models.FloatField(null=True, blank=True, help_text="Peak unrealized PnL in USD, tracked for profit protection")
     opened_at = models.DateTimeField(auto_now_add=True)
     closed_at = models.DateTimeField(null=True, blank=True)
 

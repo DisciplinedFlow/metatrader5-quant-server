@@ -38,6 +38,10 @@ TIME_EXIT_BAR_THRESHOLD = 20
 TIME_EXIT_ATR_THRESHOLD = 0.5
 ATR_PERIOD = 14
 
+# -- Profit protection thresholds --
+PROFIT_PROTECT_MIN_USD = 5.0    # Only activate after peak profit exceeds this
+PROFIT_PROTECT_GIVEBACK = 0.40  # Close if profit drops below 40% of peak
+
 # -- Timeframe mapping from Trade.entry_timeframe to MT5Timeframe --
 TIMEFRAME_MAP = {
     'M1': MT5Timeframe.M1,
@@ -139,11 +143,69 @@ def _manage_single_position(position):
         if not pd.isna(latest_atr) and latest_atr > 0:
             current_atr = latest_atr
 
-    # 6. Apply management phases in order
+    # 6. Track max profit / max drawdown on every tick
+    current_pnl = position.profit
+    _update_profit_tracking(trade, current_pnl)
+
+    # 7. Profit protection — close if giving back too much from peak
+    if _check_profit_protection(position, trade, current_pnl):
+        return  # Trade was closed, skip remaining phases
+
+    # 8. Apply management phases in order
     _check_breakeven(position, trade, profit_distance, current_atr)
     _check_partial_close(position, trade, profit_distance)
     _check_swing_trail(position, trade, df, current_atr)
     _check_time_exit(position, trade, df, current_atr, profit_distance)
+
+
+# ---------------------------------------------------------------------------
+# Profit Tracking & Protection
+# ---------------------------------------------------------------------------
+
+def _update_profit_tracking(trade, current_pnl):
+    """Update max_profit and max_drawdown on every tick."""
+    updates = []
+
+    if trade.max_profit is None or current_pnl > trade.max_profit:
+        trade.max_profit = current_pnl
+        updates.append('max_profit')
+
+    if trade.max_drawdown is None or current_pnl < trade.max_drawdown:
+        trade.max_drawdown = current_pnl
+        updates.append('max_drawdown')
+
+    if updates:
+        trade.save(update_fields=updates)
+
+
+def _check_profit_protection(position, trade, current_pnl):
+    """Close trade if profit drops too far from peak.
+
+    Example: peak was $40, current is $15 → gave back 62.5% → close.
+    Only activates after peak exceeds PROFIT_PROTECT_MIN_USD.
+
+    Returns True if trade was closed.
+    """
+    if trade.max_profit is None or trade.max_profit < PROFIT_PROTECT_MIN_USD:
+        return False
+
+    # Still profitable but gave back too much
+    threshold = trade.max_profit * PROFIT_PROTECT_GIVEBACK
+    if current_pnl > threshold:
+        return False
+
+    # Close the trade — protecting remaining profit
+    result = close_full(position.ticket, position.symbol, position.type, position.volume)
+    if result is not None:
+        logger.info(
+            f"PROFIT PROTECTION: {position.symbol} ticket={position.ticket} "
+            f"peak=${trade.max_profit:.2f} → current=${current_pnl:.2f} "
+            f"(gave back {((trade.max_profit - current_pnl) / trade.max_profit * 100):.0f}%) — CLOSED"
+        )
+        return True
+    else:
+        logger.warning(f"PROFIT PROTECTION: Failed to close {position.symbol} ticket={position.ticket}")
+        return False
 
 
 # ---------------------------------------------------------------------------

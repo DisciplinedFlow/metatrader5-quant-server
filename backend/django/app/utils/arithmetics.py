@@ -131,19 +131,27 @@ def convert_usd_to_lots(symbol: str, usd_amount: float, type: str) -> float:
             'SELL': bid_price
         }
         
-        # Get the contract size and calculate lots
+        # Get the contract size and calculate lots (extract scalar from Series)
         contract_size = symbol_info_data.get('trade_contract_size', 100000)
+        if isinstance(contract_size, pd.Series):
+            contract_size = float(contract_size.iloc[0])
+        else:
+            contract_size = float(contract_size)
         lots = usd_amount / (contract_size * price_dict[type])
-        
+
         # Round to the nearest lot step
         lot_step = symbol_info_data.get('volume_step', 0.01)
+        if isinstance(lot_step, pd.Series):
+            lot_step = float(lot_step.iloc[0])
+        else:
+            lot_step = float(lot_step)
         lots = round(lots / lot_step) * lot_step
         
         symbol_info_dict = {
-            'ask': float(symbol_info_data.ask),
-            'bid': float(symbol_info_data.bid),
-            'spread': float(symbol_info_data.spread),
-            'volume': float(symbol_info_data.volume),
+            'ask': float(ask_price),
+            'bid': float(bid_price),
+            'spread': float(symbol_info_data.spread.iloc[0]) if isinstance(symbol_info_data.spread, pd.Series) else float(symbol_info_data.spread),
+            'volume': float(symbol_info_data.volume.iloc[0]) if isinstance(symbol_info_data.volume, pd.Series) else float(symbol_info_data.volume),
             'trade_contract_size': contract_size,
             'volume_step': lot_step
         }
