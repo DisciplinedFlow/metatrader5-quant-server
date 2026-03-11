@@ -206,6 +206,9 @@ def _is_trading_session():
     # Only trade 07:00-17:00 UTC (London open → London close)
     if now.hour < 7 or now.hour >= 17:
         return False
+    # Block 09:00 UTC (10am CET) — London open chaos: -$743 in 10 trades historically
+    if now.hour == 9:
+        return False
     return True
 
 

@@ -36,9 +36,9 @@ SELL = 1
 # -- MFE Acceleration (Phase 0) — data-driven from MFE/MAE analysis --
 MFE_PROFIT_THRESHOLD = 5.0     # Lock profit once trade hits $5+ (92% of wins reach this)
 MFE_LOCK_MINUTES = 15          # Within first 15 min = fast mover, lock it
-MFE_LOCK_FRACTION = 0.60       # Lock in 60% of current profit via SL
-FLAT_TRADE_MINUTES = 20        # Close trades going nowhere after 20 min
-FLAT_TRADE_MIN_PROFIT = 2.0    # "Going nowhere" = less than $2 profit
+MFE_LOCK_FRACTION = 0.40       # Lock in 40% (was 60%) — give winners room to breathe
+FLAT_TRADE_MINUTES = 15        # Kill flat trades at 15min (was 20) — losers linger, cut faster
+FLAT_TRADE_MIN_PROFIT = 1.5    # "Going nowhere" = less than $1.50 profit (was $2)
 
 # -- Phase thresholds (in ATR multiples) --
 BREAKEVEN_ATR_THRESHOLD = 1.0
@@ -46,13 +46,13 @@ PARTIAL_CLOSE_ATR_THRESHOLD = 2.0
 PARTIAL_CLOSE_FRACTION = 0.33   # Reduced from 0.5: keep 2/3 riding for big moves (Livermore "sit tight")
 SWING_TRAIL_LOOKBACK = 3       # bars on each side for swing detection
 SWING_TRAIL_ATR_BUFFER = 0.2   # ATR fraction for buffer beyond swing point
-TIME_EXIT_MINUTES = 45         # Extended from 30: let winners develop (Livermore "sit tight")
-TIME_EXIT_MIN_PROFIT = 3.0     # Raised from 2.0: higher bar to kill developing trades (Livermore "sit tight")
+TIME_EXIT_MINUTES = 30         # Back to 30min — data shows losers average 70min, cut them
+TIME_EXIT_MIN_PROFIT = 3.0     # Need $3+ to justify holding past 30 min
 ATR_PERIOD = 14
 
 # -- Profit protection thresholds --
-PROFIT_PROTECT_MIN_USD = 5.0    # Only activate after peak profit exceeds this
-PROFIT_PROTECT_GIVEBACK = 0.50  # Relaxed from 0.40: allow 50% giveback, pullbacks often recover (Livermore "sit tight")
+PROFIT_PROTECT_MIN_USD = 4.0    # Activate earlier — protect any meaningful gain
+PROFIT_PROTECT_GIVEBACK = 0.40  # Tighter: close if giving back 40%+ from peak (was 50%)
 
 # -- Livermore Scale-In ("feeling-out bet") --
 SCALE_IN_ATR_THRESHOLD = 1.0   # Add remaining size after +1x ATR confirmation
