@@ -38,3 +38,5 @@ def close_trade(ticket, close_time, close_price, pnl, pnl_excluding_commission, 
             "pnl_excluding_commission": str(trade.pnl_excluding_commission),
             "closing_reason": trade.closing_reason,
         })
+
+        return trade

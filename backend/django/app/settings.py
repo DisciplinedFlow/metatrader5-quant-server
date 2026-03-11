@@ -329,4 +329,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.run_regime_scan',
         'schedule': 300.0,  # every 5 minutes
     },
+    'run-ai-brain-executor': {
+        'task': 'quant.tasks.run_ai_brain_executor',
+        'schedule': 300.0,  # every 5 minutes
+    },
+    'run-ml-retrain': {
+        'task': 'quant.tasks.run_ml_retrain',
+        'schedule': 60.0 * 30,  # every 30 minutes
+    },
 }

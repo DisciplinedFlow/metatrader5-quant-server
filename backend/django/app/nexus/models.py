@@ -203,3 +203,57 @@ class MarketRegime(models.Model):
 
     def __str__(self):
         return f"{self.symbol} {self.timeframe}: {self.regime} (ADX={self.adx:.1f})"
+
+
+class TradeFeature(models.Model):
+    """Stores ML features extracted at trade entry and outcome after close.
+
+    Each trade gets one TradeFeature row. At entry, features_json is populated.
+    When the trade closes, actual_win is set and LLM training data is generated.
+    """
+    trade = models.OneToOneField(Trade, on_delete=models.CASCADE, related_name='ml_features')
+    features_json = models.JSONField(default=dict)
+    ml_score = models.FloatField(null=True, blank=True)  # Score at entry (0-1)
+    ml_accepted = models.BooleanField(null=True, blank=True)  # Whether ML accepted the trade
+    actual_win = models.BooleanField(null=True, blank=True)  # Set after trade closes
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['actual_win']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        outcome = 'WIN' if self.actual_win else 'LOSS' if self.actual_win is not None else 'OPEN'
+        return f"Features for Trade #{self.trade_id} — {outcome}"
+
+
+class MLModel(models.Model):
+    """Tracks each trained ML model version and its performance metrics.
+
+    The dashboard reads this to show learning curves, feature importance,
+    and model progression over time.
+    """
+    version = models.IntegerField(unique=True)
+    model_type = models.CharField(max_length=50)  # RandomForest or GradientBoosting
+    trade_count = models.IntegerField()  # How many trades were used for training
+    accuracy = models.FloatField()
+    cv_accuracy = models.FloatField(default=0)  # Cross-validated accuracy
+    cv_std = models.FloatField(default=0)  # CV standard deviation
+    precision = models.FloatField(default=0)
+    recall = models.FloatField(default=0)
+    f1_score = models.FloatField(default=0)
+    feature_importance = models.JSONField(default=dict)
+    learning_curve = models.JSONField(default=list)  # [{trades: N, accuracy: X}, ...]
+    win_rate_baseline = models.FloatField(default=0.5)  # Naive baseline WR
+    model_path = models.CharField(max_length=200)  # Path to joblib file
+    is_active = models.BooleanField(default=False)
+    trained_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-version']
+
+    def __str__(self):
+        return f"ML v{self.version} ({self.model_type}) — {self.accuracy:.1%} acc, {self.trade_count} trades"

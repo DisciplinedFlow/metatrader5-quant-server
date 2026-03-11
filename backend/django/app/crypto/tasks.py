@@ -26,6 +26,10 @@ def run_crypto_entry():
     if is_crypto_bot_paused():
         logger.info("Crypto bot is paused, skipping entry algorithm.")
         return
+    from app.quant.tasks import _check_global_daily_halt
+    if _check_global_daily_halt():
+        logger.warning("Global daily halt active — skipping crypto entry.")
+        return
     try:
         from app.quant.algorithms.crypto.entry import entry_algorithm
         entry_algorithm()
@@ -66,6 +70,10 @@ def run_crypto_backtest():
 @shared_task(name='crypto.tasks.run_lighter_entry', max_retries=3, soft_time_limit=60)
 def run_lighter_entry():
     if is_crypto_bot_paused():
+        return
+    from app.quant.tasks import _check_global_daily_halt
+    if _check_global_daily_halt():
+        logger.warning("Global daily halt active — skipping lighter entry.")
         return
     try:
         from app.quant.algorithms.lighter.entry import entry_algorithm

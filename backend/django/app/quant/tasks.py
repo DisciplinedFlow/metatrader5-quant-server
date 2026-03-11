@@ -19,6 +19,47 @@ from app.utils.bot_control import is_bot_paused
 logger = logging.getLogger(__name__)
 
 GLOBAL_MAX = 10
+DAILY_MAX_LOSS_USD = 75.0  # Hard daily loss limit across ALL strategies
+
+
+def _check_global_daily_halt():
+    """Account-level daily hard stop. Returns True if trading should be halted.
+
+    Checks all closed trades in the last 24 hours across ALL strategies.
+    If cumulative loss exceeds DAILY_MAX_LOSS_USD, halts all trading for 24h.
+    """
+    from django.core.cache import cache
+
+    # Fast path: check Redis cache first
+    cached = cache.get('global_daily_halt')
+    if cached is not None:
+        logger.warning(f"GLOBAL DAILY HALT active (cached PnL: ${cached}). All trading suspended.")
+        return True
+
+    try:
+        from datetime import timedelta
+        from django.utils import timezone
+        from app.nexus.models import Trade
+
+        cutoff = timezone.now() - timedelta(hours=24)
+        closed_trades = Trade.objects.filter(
+            close_time__gte=cutoff,
+            pnl__isnull=False,
+        )
+        total_pnl = sum(t.pnl for t in closed_trades)
+
+        if total_pnl < -DAILY_MAX_LOSS_USD:
+            cache.set('global_daily_halt', round(total_pnl, 2), timeout=86400)
+            logger.critical(
+                f"GLOBAL DAILY HALT: Total 24h loss ${total_pnl:.2f} exceeds "
+                f"-${DAILY_MAX_LOSS_USD} limit. All trading suspended."
+            )
+            return True
+
+        return False
+    except Exception as e:
+        logger.error(f"Global daily halt check error: {e}")
+        return False  # Fail open — don't block trading on check errors
 
 
 def get_active_strategy():
@@ -95,7 +136,7 @@ def _check_live_performance(strategy_config):
             else:
                 break
 
-        if consecutive_losses >= 8:
+        if consecutive_losses >= 5:
             strategy_config.is_active = False
             strategy_config.save(update_fields=['is_active'])
             logger.warning(
@@ -106,7 +147,7 @@ def _check_live_performance(strategy_config):
 
         # Kill switch 2: cumulative drawdown
         total_pnl = sum(p for p in recent_pnls if p is not None)
-        if total_pnl < -100:
+        if total_pnl < -50:
             strategy_config.is_active = False
             strategy_config.save(update_fields=['is_active'])
             logger.warning(
@@ -144,6 +185,9 @@ def run_quant_entry_algorithm():
     """Multi-strategy entry dispatcher. Runs all active strategies in priority order."""
     if is_bot_paused():
         logger.info("Bot is paused, skipping entry algorithm.")
+        return
+    if _check_global_daily_halt():
+        logger.warning("Global daily halt active — skipping all entry algorithms.")
         return
     try:
         from app.nexus.models import StrategyConfig, PairLock
@@ -444,3 +488,57 @@ def fetch_market_pulse():
                 logger.error(f'Market pulse calendar fetch failed: {e}')
         except Exception as e:
             logger.error(f'Market pulse calendar fetch failed: {e}')
+
+    # Update high-impact event guards (scans calendar for imminent NFP, FOMC, CPI, etc.)
+    try:
+        from app.quant.macro_analyst import update_event_guards
+        update_event_guards()
+    except Exception as e:
+        logger.error(f'Event guard update failed: {e}')
+
+
+@shared_task(name='quant.tasks.run_ai_brain_executor', max_retries=1, soft_time_limit=60)
+def run_ai_brain_executor():
+    """Execute AI Brain recommendations — the critical feedback loop.
+
+    Reads cached analysis from Redis and acts on it:
+    - Close/tighten/scale positions per AI recommendation
+    - Auto-pause strategies with poor health scores
+    - Auto-pause strategies exceeding loss thresholds
+    """
+    if is_bot_paused():
+        return
+    try:
+        from app.quant.ai_brain_executor import execute_ai_brain_recommendations
+        result = execute_ai_brain_recommendations()
+        total = sum(result.values())
+        if total > 0:
+            logger.info(f"AI Brain Executor: {result}")
+    except SoftTimeLimitExceeded:
+        logger.error("AI Brain Executor task timed out.")
+    except Exception as e:
+        logger.error(f"AI Brain Executor error: {e}")
+
+
+@shared_task(name='quant.tasks.run_ml_retrain', max_retries=1, soft_time_limit=120)
+def run_ml_retrain():
+    """Periodic ML model retraining check.
+
+    Checks if enough new labeled trades have accumulated since the last
+    training run, and retrains the signal scorer if so.
+    """
+    try:
+        from app.quant.ml.trainer import should_retrain, train_model
+        if should_retrain():
+            result = train_model()
+            if result:
+                logger.info(
+                    f"ML retrained: v{result['version']} {result['model_type']} "
+                    f"accuracy={result['accuracy']:.1%} trades={result['trade_count']}"
+                )
+            else:
+                logger.info("ML retrain: not enough data yet")
+        else:
+            logger.debug("ML retrain: not enough new trades since last training")
+    except Exception as e:
+        logger.error(f"ML retrain error: {e}")

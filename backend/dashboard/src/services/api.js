@@ -354,6 +354,16 @@ const api = {
   getMarketPulse() {
     return this.django('v1/market-pulse/')
   },
+
+  // --- ML Learning Pipeline API ---
+
+  getMLStatus() {
+    return this.django('v1/ml/status/')
+  },
+
+  getMLPredictions(limit = 50) {
+    return this.django(`v1/ml/predictions/?limit=${limit}`)
+  },
 }
 
 export default api

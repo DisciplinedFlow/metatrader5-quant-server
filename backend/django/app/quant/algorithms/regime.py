@@ -229,6 +229,13 @@ def scan_all_pairs():
         except Exception as e:
             logger.error(f"Regime scan failed for {pair}: {e}")
 
+    # HMM regime scan (data-driven, runs alongside rule-based)
+    try:
+        from app.quant.ml.regime_hmm import scan_all_hmm_regimes
+        scan_all_hmm_regimes(FOREX_PAIRS, fetch_data_pos, MT5Timeframe.H1)
+    except Exception as e:
+        logger.debug(f"HMM regime scan skipped: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Query helpers

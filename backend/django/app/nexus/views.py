@@ -346,3 +346,101 @@ class PairLocksView(views.APIView):
             for lock in locks
         ]
         return Response(data)
+
+
+class MLStatusView(views.APIView):
+    """ML learning pipeline status — model info, training data stats, predictions."""
+
+    def get(self, request):
+        from .models import MLModel, TradeFeature
+
+        # Active model info
+        active_model = MLModel.objects.filter(is_active=True).first()
+        model_info = None
+        if active_model:
+            # Separate SHAP summary from feature importance dict
+            fi = active_model.feature_importance or {}
+            shap_summary = fi.pop('_shap_summary', [])
+            model_info = {
+                'version': active_model.version,
+                'model_type': active_model.model_type,
+                'trade_count': active_model.trade_count,
+                'accuracy': active_model.accuracy,
+                'cv_accuracy': active_model.cv_accuracy,
+                'cv_std': active_model.cv_std,
+                'precision': active_model.precision,
+                'recall': active_model.recall,
+                'f1_score': active_model.f1_score,
+                'feature_importance': fi,
+                'shap_summary': shap_summary,
+                'learning_curve': active_model.learning_curve,
+                'win_rate_baseline': active_model.win_rate_baseline,
+                'trained_at': active_model.trained_at.isoformat() if active_model.trained_at else None,
+            }
+
+        # Feature stats
+        total_features = TradeFeature.objects.count()
+        labeled = TradeFeature.objects.filter(actual_win__isnull=False).count()
+        wins = TradeFeature.objects.filter(actual_win=True).count()
+        losses = TradeFeature.objects.filter(actual_win=False).count()
+        ml_rejected = TradeFeature.objects.filter(ml_accepted=False).count()
+
+        # LLM training data stats
+        from app.quant.ml.data_collector import get_training_data_stats
+        llm_stats = get_training_data_stats()
+
+        # Model history
+        all_models = MLModel.objects.all()[:10]
+        model_history = [
+            {
+                'version': m.version,
+                'model_type': m.model_type,
+                'trade_count': m.trade_count,
+                'accuracy': m.accuracy,
+                'cv_accuracy': m.cv_accuracy,
+                'trained_at': m.trained_at.isoformat() if m.trained_at else None,
+                'is_active': m.is_active,
+            }
+            for m in all_models
+        ]
+
+        return Response({
+            'active_model': model_info,
+            'features': {
+                'total': total_features,
+                'labeled': labeled,
+                'wins': wins,
+                'losses': losses,
+                'ml_rejected': ml_rejected,
+                'unlabeled': total_features - labeled,
+            },
+            'llm_training_data': llm_stats,
+            'model_history': model_history,
+        })
+
+
+class MLPredictionsView(views.APIView):
+    """Recent ML predictions with outcomes."""
+
+    def get(self, request):
+        from .models import TradeFeature
+        limit = int(request.query_params.get('limit', 50))
+
+        features = TradeFeature.objects.select_related('trade').order_by('-created_at')[:limit]
+        data = []
+        for tf in features:
+            trade = tf.trade
+            data.append({
+                'trade_id': trade.id,
+                'symbol': trade.symbol,
+                'type': trade.type,
+                'ml_score': tf.ml_score,
+                'ml_accepted': tf.ml_accepted,
+                'actual_win': tf.actual_win,
+                'pnl': trade.pnl,
+                'entry_time': trade.entry_time.isoformat() if trade.entry_time else None,
+                'close_time': trade.close_time.isoformat() if trade.close_time else None,
+                'strategy': trade.strategy,
+            })
+
+        return Response(data)

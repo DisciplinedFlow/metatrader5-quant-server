@@ -10,7 +10,7 @@ Think of this as the "morning briefing" a human trader reads before trading.
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone as tz
 
 from django.core.cache import cache
 
@@ -20,6 +20,96 @@ MACRO_MODEL = os.getenv('MACRO_ANALYST_MODEL', 'claude-haiku-4-5-20251001')
 MACRO_MAX_TOKENS = 2048
 CACHE_KEY = 'macro:analysis'
 CACHE_TTL = 60 * 30  # 30 minutes
+
+# --- High-impact economic event guard ---
+EVENT_BLOCK_CACHE_KEY = 'high_impact_event_block'
+EVENT_GUARD_PRE_MINUTES = 30   # Block entries this many minutes BEFORE event
+EVENT_GUARD_POST_MINUTES = 15  # Block entries this many minutes AFTER event
+
+# Keywords that identify high-impact events (case-insensitive match)
+HIGH_IMPACT_KEYWORDS = [
+    'non-farm payroll', 'nonfarm payroll', 'nfp',
+    'fomc', 'federal reserve', 'interest rate decision',
+    'ecb', 'european central bank',
+    'boe', 'bank of england',
+    'cpi', 'consumer price index',
+    'gdp', 'gross domestic product',
+    'unemployment rate',
+]
+
+
+def update_event_guards():
+    """Scan cached economic calendar for imminent high-impact events and set Redis block.
+
+    Called from fetch_market_pulse (every 2 minutes). Reads the Finnhub economic
+    calendar cached at 'market_pulse:calendar' and checks each event against:
+    - impact == "high" (Finnhub field) OR event name matches HIGH_IMPACT_KEYWORDS
+    - Event is within the next EVENT_GUARD_PRE_MINUTES or happened in the last
+      EVENT_GUARD_POST_MINUTES
+
+    If a qualifying event is found, sets Redis key 'high_impact_event_block' with
+    the event name as value and a timeout that auto-expires EVENT_GUARD_POST_MINUTES
+    after the event time.
+    """
+    calendar = cache.get('market_pulse:calendar', [])
+    if not calendar:
+        return
+
+    now = datetime.now(tz.utc)
+
+    for event in calendar:
+        event_name = event.get('event', '')
+        impact = event.get('impact', '').lower()
+        event_time_str = event.get('time', '')
+
+        # Determine if this is a high-impact event
+        is_high_impact = impact == 'high'
+        if not is_high_impact:
+            name_lower = event_name.lower()
+            is_high_impact = any(kw in name_lower for kw in HIGH_IMPACT_KEYWORDS)
+
+        if not is_high_impact:
+            continue
+
+        # Parse the event time. Finnhub returns time as "HH:MM:SS" or "HH:MM".
+        # We combine with today's date in UTC.
+        if not event_time_str:
+            continue
+
+        try:
+            # Handle both "HH:MM:SS" and "HH:MM" formats
+            time_parts = event_time_str.strip().split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+            second = int(time_parts[2]) if len(time_parts) > 2 else 0
+            event_dt = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
+        except (ValueError, IndexError):
+            logger.debug(f"Event guard: could not parse time '{event_time_str}' for '{event_name}'")
+            continue
+
+        # Check if event is within the guard window
+        minutes_until = (event_dt - now).total_seconds() / 60.0
+        minutes_since = -minutes_until  # positive if event is in the past
+
+        # Block if: event is in the next PRE minutes OR happened in the last POST minutes
+        if minutes_until <= EVENT_GUARD_PRE_MINUTES and minutes_since <= EVENT_GUARD_POST_MINUTES:
+            # Calculate timeout: expire EVENT_GUARD_POST_MINUTES after the event
+            if minutes_until > 0:
+                # Event hasn't happened yet
+                timeout_seconds = int((minutes_until + EVENT_GUARD_POST_MINUTES) * 60)
+            else:
+                # Event already happened, expire POST minutes after it
+                remaining_post = EVENT_GUARD_POST_MINUTES - minutes_since
+                timeout_seconds = max(int(remaining_post * 60), 60)  # At least 1 minute
+
+            cache.set(EVENT_BLOCK_CACHE_KEY, event_name, timeout=timeout_seconds)
+            logger.warning(
+                f"Event guard ACTIVE: '{event_name}' at {event_time_str} UTC "
+                f"(in {minutes_until:.0f}min), block expires in {timeout_seconds // 60}min"
+            )
+            return  # One block is enough — first matching event wins
+
+    logger.debug("Event guard: no imminent high-impact events")
 
 
 SYSTEM_PROMPT = """You are a senior forex macro analyst and trader with 20+ years of experience.

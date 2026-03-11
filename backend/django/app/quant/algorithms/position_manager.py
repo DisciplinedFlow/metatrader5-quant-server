@@ -1,12 +1,17 @@
 """
-Adaptive Position Manager
-Replaces static trailing stop with dynamic, price-aware position management.
+Adaptive Position Manager — MFE-optimized for maximum profit capture.
 
 Phases per position (applied in order):
+S. SCALE-IN: Livermore "feeling-out bet" — add remaining 40% after +1x ATR confirmation (within 10min)
+0. MFE ACCELERATION: Lock in 60% of profit when $5+ within 15min; kill flat trades at 20min
 1. BREAKEVEN: Move SL to entry price after 1x ATR profit
-2. PARTIAL CLOSE: Close 50% at 2x ATR profit, lock in gains
-3. SWING TRAIL: Trail SL using swing lows (longs) or swing highs (shorts)
-4. TIME EXIT: Close stale positions after 20+ bars with < 0.5 ATR profit
+2. PARTIAL CLOSE: Close 33% at 2x ATR profit, lock in gains
+3. SWING TRAIL: Trail SL using multi-TF S/R levels
+4. TIME EXIT: Close stale positions after 45 min with < $3 profit
+5. PROFIT PROTECTION: Close if giving back 50%+ from peak
+
+MFE/MAE data shows: winners move in 5-15 min (avg 26 min), losers linger 70 min.
+92% of wins hit $5+ profit. Optimized to capture fast moves and cut lingering losers.
 """
 
 import traceback
@@ -17,7 +22,7 @@ from datetime import datetime
 
 from app.utils.api.positions import get_positions
 from app.utils.api.data import fetch_data_pos
-from app.utils.api.order import modify_sl_tp, close_partial, close_full
+from app.utils.api.order import modify_sl_tp, close_partial, close_full, send_market_order
 from app.utils.db.get import get_trade_with_mutations
 from app.utils.constants import MT5Timeframe
 from app.quant.indicators.scalping import atr
@@ -28,19 +33,30 @@ logger = logging.getLogger('position_manager')
 BUY = 0
 SELL = 1
 
+# -- MFE Acceleration (Phase 0) — data-driven from MFE/MAE analysis --
+MFE_PROFIT_THRESHOLD = 5.0     # Lock profit once trade hits $5+ (92% of wins reach this)
+MFE_LOCK_MINUTES = 15          # Within first 15 min = fast mover, lock it
+MFE_LOCK_FRACTION = 0.60       # Lock in 60% of current profit via SL
+FLAT_TRADE_MINUTES = 20        # Close trades going nowhere after 20 min
+FLAT_TRADE_MIN_PROFIT = 2.0    # "Going nowhere" = less than $2 profit
+
 # -- Phase thresholds (in ATR multiples) --
 BREAKEVEN_ATR_THRESHOLD = 1.0
 PARTIAL_CLOSE_ATR_THRESHOLD = 2.0
-PARTIAL_CLOSE_FRACTION = 0.5
+PARTIAL_CLOSE_FRACTION = 0.33   # Reduced from 0.5: keep 2/3 riding for big moves (Livermore "sit tight")
 SWING_TRAIL_LOOKBACK = 3       # bars on each side for swing detection
 SWING_TRAIL_ATR_BUFFER = 0.2   # ATR fraction for buffer beyond swing point
-TIME_EXIT_BAR_THRESHOLD = 20
-TIME_EXIT_ATR_THRESHOLD = 0.5
+TIME_EXIT_MINUTES = 45         # Extended from 30: let winners develop (Livermore "sit tight")
+TIME_EXIT_MIN_PROFIT = 3.0     # Raised from 2.0: higher bar to kill developing trades (Livermore "sit tight")
 ATR_PERIOD = 14
 
 # -- Profit protection thresholds --
 PROFIT_PROTECT_MIN_USD = 5.0    # Only activate after peak profit exceeds this
-PROFIT_PROTECT_GIVEBACK = 0.40  # Close if profit drops below 40% of peak
+PROFIT_PROTECT_GIVEBACK = 0.50  # Relaxed from 0.40: allow 50% giveback, pullbacks often recover (Livermore "sit tight")
+
+# -- Livermore Scale-In ("feeling-out bet") --
+SCALE_IN_ATR_THRESHOLD = 1.0   # Add remaining size after +1x ATR confirmation
+SCALE_IN_MAX_MINUTES = 10      # Must confirm within 10 minutes
 
 # -- Timeframe mapping from Trade.entry_timeframe to MT5Timeframe --
 TIMEFRAME_MAP = {
@@ -147,15 +163,25 @@ def _manage_single_position(position):
     current_pnl = position.profit
     _update_profit_tracking(trade, current_pnl)
 
-    # 7. Profit protection — close if giving back too much from peak
-    if _check_profit_protection(position, trade, current_pnl):
-        return  # Trade was closed, skip remaining phases
+    # 7. Compute minutes in trade (used by multiple phases)
+    minutes_in_trade = _get_minutes_in_trade(trade)
 
-    # 8. Apply management phases in order
+    # Scale-in check (Livermore "feeling-out bet") — add remaining 40% on confirmation
+    _check_scale_in(position, trade, profit_distance, minutes_in_trade)
+
+    # Phase 0: MFE Acceleration — lock fast profits, kill flat trades
+    if _check_mfe_acceleration(position, trade, current_pnl, minutes_in_trade, current_atr):
+        return  # Trade was closed or SL locked, skip remaining phases
+
+    # Profit protection — close if giving back too much from peak
+    if _check_profit_protection(position, trade, current_pnl):
+        return
+
+    # Apply management phases in order
     _check_breakeven(position, trade, profit_distance, current_atr)
     _check_partial_close(position, trade, profit_distance)
     _check_swing_trail(position, trade, df, current_atr)
-    _check_time_exit(position, trade, df, current_atr, profit_distance)
+    _check_time_exit(position, trade, current_pnl, minutes_in_trade)
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +232,197 @@ def _check_profit_protection(position, trade, current_pnl):
     else:
         logger.warning(f"PROFIT PROTECTION: Failed to close {position.symbol} ticket={position.ticket}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Scale-In: Livermore "feeling-out bet"
+# ---------------------------------------------------------------------------
+
+def _check_scale_in(position, trade, profit_distance, minutes_in_trade):
+    """Add remaining 40% position size when trade confirms direction.
+
+    Livermore's principle: enter with a small "feeling-out" bet (60%), then
+    add to winners once the market confirms your thesis (+1x ATR within 10min).
+
+    Scale-in data is stored in Redis by the entry algorithm:
+    - scale_in_remaining:{ticket}  = remaining lots to add
+    - scale_in_atr:{ticket}        = ATR at entry time
+    - scale_in_done:{ticket}       = True if already scaled in
+    """
+    if minutes_in_trade < 0:
+        return
+
+    try:
+        from django.core.cache import cache
+
+        ticket = position.ticket
+        remaining_key = f'scale_in_remaining:{ticket}'
+        done_key = f'scale_in_done:{ticket}'
+        atr_key = f'scale_in_atr:{ticket}'
+
+        # Skip if no scale-in pending for this trade
+        remaining_volume = cache.get(remaining_key)
+        if remaining_volume is None:
+            return
+
+        # Skip if already scaled in
+        if cache.get(done_key):
+            return
+
+        entry_atr = cache.get(atr_key)
+        if entry_atr is None:
+            # Fallback to trade.entry_atr
+            entry_atr = trade.entry_atr
+        if entry_atr is None or entry_atr <= 0:
+            return
+
+        symbol = position.symbol
+        position_type = position.type  # 0=BUY, 1=SELL
+
+        # Check timeout: trade did not confirm within SCALE_IN_MAX_MINUTES
+        if minutes_in_trade > SCALE_IN_MAX_MINUTES:
+            cache.delete(remaining_key)
+            cache.delete(atr_key)
+            logger.info(
+                f"SCALE-IN EXPIRED: {symbol} ticket={ticket} did not confirm "
+                f"within {SCALE_IN_MAX_MINUTES}min, staying at 60%"
+            )
+            return
+
+        # Check confirmation: profit distance >= 1x ATR
+        if profit_distance < entry_atr * SCALE_IN_ATR_THRESHOLD:
+            return
+
+        # Trade confirmed! Send additional order for remaining volume
+        order_type = 'BUY' if position_type == BUY else 'SELL'
+
+        logger.info(
+            f"SCALE-IN CONFIRMED: {symbol} ticket={ticket} {order_type} "
+            f"+{profit_distance:.5f} >= {entry_atr * SCALE_IN_ATR_THRESHOLD:.5f} ATR threshold, "
+            f"adding {remaining_volume} lots"
+        )
+
+        try:
+            # Use same SL/TP as original position
+            sl = position.sl
+            tp = position.tp
+
+            order = send_market_order(
+                symbol=symbol,
+                volume=float(remaining_volume),
+                order_type=order_type,
+                sl=float(sl) if sl and sl != 0 else 0.0,
+                tp=float(tp) if tp and tp != 0 else None,
+                deviation=20,
+                type_filling="ORDER_FILLING_IOC",
+                comment=f'Scale-in for ticket {ticket}',
+            )
+
+            if order is not None:
+                cache.set(done_key, True, timeout=3600)
+                cache.delete(remaining_key)
+                cache.delete(atr_key)
+                logger.info(
+                    f"SCALE-IN SUCCESS: {symbol} ticket={ticket} "
+                    f"added {remaining_volume} lots, new order={order.get('order', 'unknown')}"
+                )
+            else:
+                logger.warning(
+                    f"SCALE-IN FAILED: {symbol} ticket={ticket} "
+                    f"order returned None, will retry next cycle"
+                )
+
+        except Exception as e:
+            logger.error(
+                f"SCALE-IN ERROR: {symbol} ticket={ticket} "
+                f"failed to send order: {e}\n{traceback.format_exc()}"
+            )
+
+    except Exception as e:
+        logger.error(f"Scale-in check error for ticket {position.ticket}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 0: MFE Acceleration
+# ---------------------------------------------------------------------------
+
+def _check_mfe_acceleration(position, trade, current_pnl, minutes_in_trade, current_atr):
+    """MFE-optimized exit management based on time + profit analysis.
+
+    Data shows: 92% of wins hit $5+ profit, winners average 26 min,
+    losers average 70 min. This phase aggressively locks fast profits
+    and kills trades going nowhere.
+
+    Returns True if trade was closed (caller should return early).
+    """
+    if minutes_in_trade < 0:
+        return False
+
+    position_type = position.type
+    entry_price = position.price_open
+    current_price = position.price_current
+    current_sl = position.sl
+    current_tp = position.tp
+
+    # --- Rule 1: Lock in 60% of profit on fast movers ---
+    # If trade hit $5+ profit within 15 min, it's a fast mover — lock it in
+    if current_pnl >= MFE_PROFIT_THRESHOLD and minutes_in_trade <= MFE_LOCK_MINUTES:
+        # Calculate price level that locks in 60% of current unrealized profit
+        if position_type == BUY:
+            profit_distance = current_price - entry_price
+            lock_distance = profit_distance * MFE_LOCK_FRACTION
+            new_sl = entry_price + lock_distance
+        else:
+            profit_distance = entry_price - current_price
+            lock_distance = profit_distance * MFE_LOCK_FRACTION
+            new_sl = entry_price - lock_distance
+
+        if _is_better_sl(position_type, new_sl, current_sl):
+            result = modify_sl_tp(
+                position, new_sl,
+                current_tp if current_tp and current_tp != 0 else None,
+            )
+            if result is not None:
+                logger.info(
+                    f"MFE LOCK: {position.symbol} ticket={position.ticket} "
+                    f"${current_pnl:.2f} profit in {minutes_in_trade}min — "
+                    f"SL locked at {new_sl:.5f} (60% of ${profit_distance*10000:.0f}pips)"
+                )
+        return False  # Don't close, just lock — let it run with protection
+
+    # --- Rule 2: Kill flat trades after 20 min ---
+    # Data shows trades going nowhere after 20 min have negative expected value
+    if minutes_in_trade >= FLAT_TRADE_MINUTES and current_pnl < FLAT_TRADE_MIN_PROFIT:
+        result = close_full(position.ticket, position.symbol, position.type, position.volume)
+        if result is not None:
+            logger.info(
+                f"MFE FLAT EXIT: {position.symbol} ticket={position.ticket} "
+                f"${current_pnl:.2f} after {minutes_in_trade}min — no momentum, closing"
+            )
+            return True
+        else:
+            logger.warning(
+                f"MFE FLAT EXIT: Failed to close {position.symbol} ticket={position.ticket}"
+            )
+
+    return False
+
+
+def _get_minutes_in_trade(trade):
+    """Calculate how many minutes the trade has been open."""
+    if trade.entry_time is None:
+        return -1
+
+    from datetime import datetime, timezone as tz
+    now = datetime.now(tz.utc)
+    entry = trade.entry_time
+
+    if entry.tzinfo is None:
+        import pytz
+        entry = pytz.utc.localize(entry)
+
+    delta = now - entry
+    return int(delta.total_seconds() / 60)
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +518,12 @@ def _check_partial_close(position, trade, profit_distance):
 # ---------------------------------------------------------------------------
 
 def _check_swing_trail(position, trade, df, current_atr):
-    """Trail SL using swing lows (longs) or swing highs (shorts)."""
+    """Trail SL using multi-TF S/R levels for structural trailing.
+
+    Uses the S/R detection module to find support levels (for longs) or
+    resistance levels (for shorts) across M15/H1/H4 timeframes. Falls back
+    to simple swing detection if S/R module is unavailable.
+    """
     if not trade.breakeven_moved:
         return
 
@@ -311,85 +533,113 @@ def _check_swing_trail(position, trade, df, current_atr):
     position_type = position.type
     current_sl = position.sl
     current_tp = position.tp
+    entry_price = position.price_open
+    current_price = position.price_current
 
-    if position_type == BUY:
-        # Find recent swing lows for trailing a long position
-        swing_values = _find_swing_low_values(df['low'].values, SWING_TRAIL_LOOKBACK)
-        if len(swing_values) < 1:
-            return
+    # Try S/R-based trailing first
+    candidate_sl = _get_sr_trail_level(
+        position.symbol, position_type, entry_price, current_price,
+        current_sl, current_atr,
+    )
 
-        # Use the most recent swing low minus a small ATR buffer
-        candidate_sl = swing_values[-1] - (current_atr * SWING_TRAIL_ATR_BUFFER)
+    # Fallback to simple swing detection
+    if candidate_sl is None:
+        if position_type == BUY:
+            swing_values = _find_swing_low_values(df['low'].values, SWING_TRAIL_LOOKBACK)
+            if swing_values:
+                candidate_sl = swing_values[-1] - (current_atr * SWING_TRAIL_ATR_BUFFER)
+        else:
+            swing_values = _find_swing_high_values(df['high'].values, SWING_TRAIL_LOOKBACK)
+            if swing_values:
+                candidate_sl = swing_values[-1] + (current_atr * SWING_TRAIL_ATR_BUFFER)
 
-        # Only move SL up, never down
-        if _is_better_sl(position_type, candidate_sl, current_sl):
-            result = modify_sl_tp(
-                position, candidate_sl,
-                current_tp if current_tp and current_tp != 0 else None
+    if candidate_sl is None:
+        return
+
+    if _is_better_sl(position_type, candidate_sl, current_sl):
+        result = modify_sl_tp(
+            position, candidate_sl,
+            current_tp if current_tp and current_tp != 0 else None
+        )
+        if result is not None:
+            trail_type = "S/R" if candidate_sl != current_sl else "SWING"
+            logger.info(
+                f"{trail_type} TRAIL: {position.symbol} ticket={position.ticket} "
+                f"{'BUY' if position_type == BUY else 'SELL'} SL -> {candidate_sl:.5f}"
             )
-            if result is not None:
-                logger.info(
-                    f"SWING TRAIL: {position.symbol} ticket={position.ticket} "
-                    f"BUY SL -> {candidate_sl:.5f}"
-                )
-            else:
-                logger.warning(
-                    f"SWING TRAIL: Failed to modify SL for {position.symbol} ticket={position.ticket}"
-                )
 
-    else:  # SELL
-        swing_values = _find_swing_high_values(df['high'].values, SWING_TRAIL_LOOKBACK)
-        if len(swing_values) < 1:
-            return
 
-        candidate_sl = swing_values[-1] + (current_atr * SWING_TRAIL_ATR_BUFFER)
+def _get_sr_trail_level(symbol, position_type, entry_price, current_price,
+                        current_sl, current_atr):
+    """Find the best S/R level for trailing stop placement.
 
-        if _is_better_sl(position_type, candidate_sl, current_sl):
-            result = modify_sl_tp(
-                position, candidate_sl,
-                current_tp if current_tp and current_tp != 0 else None
-            )
-            if result is not None:
-                logger.info(
-                    f"SWING TRAIL: {position.symbol} ticket={position.ticket} "
-                    f"SELL SL -> {candidate_sl:.5f}"
-                )
-            else:
-                logger.warning(
-                    f"SWING TRAIL: Failed to modify SL for {position.symbol} ticket={position.ticket}"
-                )
+    For BUY: find the highest support level that is below current price
+    but above the current SL (i.e., tightens the stop along structure).
+    For SELL: find the lowest resistance level above current price but
+    below the current SL.
+    """
+    try:
+        from app.quant.indicators.support_resistance import find_multi_tf_sr
+        from app.utils.api.data import fetch_data_pos
+
+        sr_levels = find_multi_tf_sr(symbol, fetch_data_pos, current_atr)
+        buffer = current_atr * SWING_TRAIL_ATR_BUFFER
+
+        if position_type == BUY:
+            # Find support levels between current_sl and current_price
+            candidates = [
+                s for s in sr_levels.get('support', [])
+                if s['price'] < current_price - buffer
+                and (current_sl is None or current_sl == 0 or s['price'] - buffer > current_sl)
+                and s['price'] > entry_price  # Only trail above entry (already at breakeven)
+            ]
+            if candidates:
+                # Use the highest (closest to price) for tightest trail
+                best = max(candidates, key=lambda x: x['price'])
+                return best['price'] - buffer
+
+        else:  # SELL
+            candidates = [
+                r for r in sr_levels.get('resistance', [])
+                if r['price'] > current_price + buffer
+                and (current_sl is None or current_sl == 0 or r['price'] + buffer < current_sl)
+                and r['price'] < entry_price  # Only trail below entry
+            ]
+            if candidates:
+                best = min(candidates, key=lambda x: x['price'])
+                return best['price'] + buffer
+
+    except Exception as e:
+        logger.debug(f"S/R trail lookup failed for {symbol}: {e}")
+
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Phase 4: Time Exit
 # ---------------------------------------------------------------------------
 
-def _check_time_exit(position, trade, df, current_atr, profit_distance):
-    """Close positions that haven't moved significantly after 20+ bars."""
-    if df is None or df.empty:
+def _check_time_exit(position, trade, current_pnl, minutes_in_trade):
+    """Close positions that haven't moved significantly after 30 minutes.
+
+    MFE/MAE data shows: avg winner takes 26 min, avg loser takes 70 min.
+    Trades lingering past 30 min with <$2 profit have negative expected value.
+    """
+    if minutes_in_trade < 0:
         return
 
-    if trade.entry_atr is None:
+    if minutes_in_trade <= TIME_EXIT_MINUTES:
         return
 
-    bars_since_entry = _estimate_bars_since_entry(trade, df)
-
-    if bars_since_entry <= TIME_EXIT_BAR_THRESHOLD:
+    if current_pnl >= TIME_EXIT_MIN_PROFIT:
         return
 
-    if profit_distance >= trade.entry_atr * TIME_EXIT_ATR_THRESHOLD:
-        return
-
-    # This trade is going nowhere -- free up capital
-    position_type = position.type
-    position_volume = position.volume
-
-    result = close_full(position.ticket, position.symbol, position_type, position_volume)
+    result = close_full(position.ticket, position.symbol, position.type, position.volume)
     if result is not None:
         logger.info(
             f"TIME EXIT: {position.symbol} ticket={position.ticket} "
-            f"after {bars_since_entry} bars, profit_dist={profit_distance:.5f}, "
-            f"threshold={trade.entry_atr * TIME_EXIT_ATR_THRESHOLD:.5f}"
+            f"${current_pnl:.2f} after {minutes_in_trade}min (threshold: "
+            f"{TIME_EXIT_MINUTES}min with <${TIME_EXIT_MIN_PROFIT})"
         )
     else:
         logger.warning(f"TIME EXIT: Failed to close {position.symbol} ticket={position.ticket}")

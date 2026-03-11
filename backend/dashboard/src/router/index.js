@@ -92,6 +92,12 @@ const routes = [
     component: () => import('@/pages/AIBrainPage.vue'),
   },
 
+  // --- ML Learning Pipeline ---
+  {
+    path: '/ml',
+    component: () => import('@/pages/MLBrainPage.vue'),
+  },
+
   // Catch-all
   {
     path: '/:pathMatch(.*)*',
