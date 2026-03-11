@@ -279,12 +279,18 @@ def _check_circuit_breaker(strategy_config, symbol=None):
         if cache.get(global_key):
             return False, "Circuit breaker: global cooldown active"
 
+        # Respect the daily halt reset timestamp — old trades from parameter
+        # changes should not re-trip the circuit breaker
+        reset_ts = cache.get('daily_halt_reset_time')
+        cb_filter = dict(close_time__isnull=False, pnl__isnull=False)
+        if reset_ts:
+            cb_filter['close_time__gte'] = reset_ts
+
         # Check per-symbol consecutive losses
         if symbol:
             symbol_trades = Trade.objects.filter(
                 symbol=symbol,
-                close_time__isnull=False,
-                pnl__isnull=False,
+                **cb_filter,
             ).order_by('-close_time')[:CIRCUIT_BREAKER_SYMBOL_LOSSES]
 
             symbol_losses = 0
@@ -304,8 +310,7 @@ def _check_circuit_breaker(strategy_config, symbol=None):
 
         # Check global consecutive losses
         global_trades = Trade.objects.filter(
-            close_time__isnull=False,
-            pnl__isnull=False,
+            **cb_filter,
         ).order_by('-close_time')[:CIRCUIT_BREAKER_GLOBAL_LOSSES]
 
         global_losses = 0
@@ -826,6 +831,29 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
             logger.info(f"CVD SIGNAL: {pair} {order_type} — {signal_desc}")
 
+            # --- Strategy Router (dynamic regime-based strategy selection) ---
+            # Reads HMM regime from Redis, selects strategies that fit,
+            # adjusts sizing/SL/confluence thresholds per regime.
+            router_mult = 1.0
+            router_min_confluence = 4
+            router_sl_adj = 1.0
+            try:
+                from app.quant.algorithms.strategy_router import route_symbol
+                routing = route_symbol(pair)
+                router_mult = routing.size_multiplier
+                router_min_confluence = routing.min_confluence
+                router_sl_adj = routing.sl_multiplier_adj
+                if strategy_config.name not in routing.selected_strategies:
+                    logger.info(
+                        f"CVD: ROUTER advisory: '{strategy_config.name}' not ideal for "
+                        f"{pair} ({routing.regime}, conf={routing.regime_confidence:.2f}) "
+                        f"— preferred: {routing.selected_strategies[:2]}"
+                    )
+                else:
+                    logger.info(f"CVD: ROUTER: {routing.reason}")
+            except Exception as e:
+                logger.debug(f"Strategy router unavailable: {e}")
+
             # --- Group Tendency Check (Livermore's "never fight the group") ---
             group_mult = 1.0
             grp_ok, grp_reason = _check_group_tendency(pair, order_type)
@@ -858,6 +886,130 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             except Exception as e:
                 logger.debug(f"ML scoring unavailable: {e}")
 
+            # --- Confluence Scorer (quantifies setup quality 0-11) ---
+            confluence_score = None
+            try:
+                from app.quant.algorithms.confluence_scorer import score_confluence, log_confluence_decision
+
+                # Detect displacement on current data
+                has_displacement = False
+                try:
+                    from app.quant.indicators.displacement import detect_displacement
+                    _norm_df = df.rename(columns={
+                        'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close',
+                    })
+                    disp_result = detect_displacement(_norm_df)
+                    if disp_result is not None and len(disp_result) > 0:
+                        last_disp = disp_result['displacement'].iloc[-1]
+                        has_displacement = (
+                            (last_disp == 1 and order_type == 'BUY') or
+                            (last_disp == -1 and order_type == 'SELL')
+                        )
+                except Exception:
+                    pass
+
+                # Detect FVG on current data
+                has_fvg = False
+                try:
+                    from app.quant.indicators.smc_detector import detect_fair_value_gaps
+                    fvg_df = detect_fair_value_gaps(df)
+                    if fvg_df is not None and 'FVG' in fvg_df.columns and len(fvg_df) > 0:
+                        last_fvg = fvg_df['FVG'].iloc[-1]
+                        has_fvg = (
+                            (last_fvg == 1 and order_type == 'BUY') or
+                            (last_fvg == -1 and order_type == 'SELL')
+                        )
+                except Exception:
+                    pass
+
+                # Detect order block at entry level (worth 1 confluence point)
+                has_ob = False
+                try:
+                    from app.quant.indicators.smc_detector import detect_order_blocks
+                    ob_df = detect_order_blocks(df)
+                    if ob_df is not None and 'OB' in ob_df.columns:
+                        for lookback_i in range(max(0, len(ob_df) - 5), len(ob_df)):
+                            ob_val = ob_df['OB'].iloc[lookback_i]
+                            if pd.notna(ob_val):
+                                has_ob = (
+                                    (ob_val == 1 and order_type == 'BUY') or
+                                    (ob_val == -1 and order_type == 'SELL')
+                                )
+                                if has_ob:
+                                    break
+                except Exception:
+                    pass
+
+                # Detect liquidity sweep (stop hunt — worth 2 confluence points)
+                has_sweep = False
+                try:
+                    from app.quant.indicators.smc_detector import detect_liquidity_sweeps
+                    sweep_df = detect_liquidity_sweeps(df)
+                    if sweep_df is not None and 'Liquidity' in sweep_df.columns:
+                        # Check last 5 bars for a recent sweep
+                        for lookback_i in range(max(0, len(sweep_df) - 5), len(sweep_df)):
+                            liq_val = sweep_df['Liquidity'].iloc[lookback_i]
+                            if pd.notna(liq_val):
+                                # Sell-side sweep (-1) = bullish (stop hunt below)
+                                # Buy-side sweep (1) = bearish (stop hunt above)
+                                has_sweep = (
+                                    (liq_val == -1 and order_type == 'BUY') or
+                                    (liq_val == 1 and order_type == 'SELL')
+                                )
+                                if has_sweep:
+                                    break
+                except Exception:
+                    pass
+
+                # HTF bias (H4 EMA + swing structure — worth 2 confluence points)
+                htf_bias = None
+                try:
+                    from app.quant.algorithms.mtf_analyzer import get_htf_bias_string
+                    htf_bias = get_htf_bias_string(pair)
+                except Exception:
+                    pass
+
+                # Regime favorability from router (strategy fits current regime?)
+                regime_ok = None
+                try:
+                    regime_ok = strategy_config.name in routing.selected_strategies
+                except Exception:
+                    pass
+
+                # CVD divergence is True if we got this far (signal IS the CVD)
+                confluence_score = score_confluence(
+                    symbol=pair,
+                    direction='long' if order_type == 'BUY' else 'short',
+                    htf_bias=htf_bias,
+                    liquidity_sweep=has_sweep,
+                    cvd_divergence=True,
+                    displacement=has_displacement,
+                    fvg_present=has_fvg,
+                    order_block_at_entry=has_ob,
+                    regime_favorable=regime_ok,
+                    strategy_name=strategy_config.name,
+                )
+                log_confluence_decision(confluence_score)
+
+                if not confluence_score.should_trade:
+                    logger.info(
+                        f"CVD: Confluence too low for {pair} {order_type}: "
+                        f"{confluence_score.total_score}/{confluence_score.max_possible} "
+                        f"({confluence_score.band}) — skipping"
+                    )
+                    continue
+
+                # Strategy router may require higher confluence for certain regimes
+                # (e.g. VOLATILE requires 9+, RANGING requires 5+)
+                if confluence_score.total_score < router_min_confluence:
+                    logger.info(
+                        f"CVD: Router requires min confluence {router_min_confluence} "
+                        f"for {pair}, got {confluence_score.total_score} — skipping"
+                    )
+                    continue
+            except Exception as e:
+                logger.debug(f"Confluence scoring unavailable: {e}")
+
             # Acquire PairLock before placing order
             try:
                 PairLock.objects.create(symbol=pair, strategy=strategy_config, ticket=0)
@@ -879,8 +1031,10 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 price_decimals = len(str(last_tick_price).split('.')[-1])
 
                 # --- Dynamic SL/TP: S/R levels first, ATR fallback ---
+                # router_sl_adj widens SL in volatile regimes (1.5x) for breathing room
+                effective_sl_mult = sl_mult * router_sl_adj
                 sl_price, tp_price, sl_tp_source = _compute_sl_tp(
-                    pair, last_tick_price, order_type, atr_val, sl_mult, tp_mult,
+                    pair, last_tick_price, order_type, atr_val, effective_sl_mult, tp_mult,
                 )
 
                 # --- Dynamic Position Sizing (vol + streak + symbol + context + group) ---
@@ -900,16 +1054,26 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     orch_mult = 1.0
                 # Daily profit preservation (Livermore: "no profit safe until banked")
                 pres_mult = _get_daily_profit_preservation_mult()
-                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult
-                size_multiplier = max(0.1, min(1.0, size_multiplier))
+                # Kill zone weighting — ICT session-aware sizing
+                try:
+                    from app.quant.indicators.kill_zones import get_kill_zone_weight, get_current_kill_zone
+                    kz_mult = get_kill_zone_weight()
+                    kz_name, _, kz_info = get_current_kill_zone()
+                except Exception:
+                    kz_mult = 1.0
+                    kz_name, kz_info = None, None
+                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult * kz_mult * router_mult
+                size_multiplier = max(0.1, min(2.0, size_multiplier))
                 order_capital = CAPITAL_PER_TRADE * size_multiplier
 
-                if size_multiplier < 1.0:
+                kz_desc = kz_info['description'] if kz_info else 'no kill zone'
+                if size_multiplier != 1.0:
                     logger.info(
                         f"CVD: Sized capital for {pair}: "
-                        f"${CAPITAL_PER_TRADE:.2f} × {size_multiplier:.2f} = ${order_capital:.2f} "
+                        f"${CAPITAL_PER_TRADE:.2f} x {size_multiplier:.2f} = ${order_capital:.2f} "
                         f"(vol={vol_mult:.2f}, sym={sym_mult:.2f}, ctx={ctx_mult:.2f}, "
-                        f"grp={group_mult:.2f}, orch={orch_mult:.2f}, pres={pres_mult:.2f})"
+                        f"grp={group_mult:.2f}, orch={orch_mult:.2f}, pres={pres_mult:.2f}, "
+                        f"kz={kz_mult:.2f} [{kz_desc}], router={router_mult:.2f})"
                     )
 
                 order_size_usd = calculate_order_size_usd(order_capital, LEVERAGE)
@@ -995,10 +1159,17 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         'signal': signal_desc,
                         'capital': f"${order_capital:.2f}",
                         'size_multiplier': f"{size_multiplier:.2f}",
+                        'kill_zone': kz_name or 'none',
+                        'kz_weight': f"{kz_mult:.2f}",
                         'sl': f"{sl_price:.{price_decimals}f}",
                         'tp': f"{tp_price:.{price_decimals}f}",
                         'atr': f"{atr_val:.{price_decimals}f}",
                         'sl_tp_source': sl_tp_source,
+                        'confluence_score': confluence_score.total_score if confluence_score else None,
+                        'confluence_band': confluence_score.band if confluence_score else None,
+                        'router_regime': routing.regime if 'routing' in dir() else None,
+                        'router_mult': f"{router_mult:.2f}",
+                        'router_sl_adj': f"{router_sl_adj:.2f}",
                     })
 
                     try:

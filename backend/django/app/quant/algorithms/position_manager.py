@@ -42,8 +42,15 @@ FLAT_TRADE_MIN_PROFIT = 1.5    # "Going nowhere" = less than $1.50 profit (was $
 
 # -- Phase thresholds (in ATR multiples) --
 BREAKEVEN_ATR_THRESHOLD = 1.0
-PARTIAL_CLOSE_ATR_THRESHOLD = 2.0
-PARTIAL_CLOSE_FRACTION = 0.33   # Reduced from 0.5: keep 2/3 riding for big moves (Livermore "sit tight")
+PARTIAL_CLOSE_ATR_THRESHOLD = 2.0  # Legacy — kept for backward compat
+PARTIAL_CLOSE_FRACTION = 0.33     # Legacy
+
+# 3-tier partial close: lock profits incrementally, let remainder ride
+PARTIAL_CLOSE_TIERS = [
+    {'atr_mult': 1.5, 'close_pct': 0.30, 'flag': 'partial_1'},  # 30% at 1.5R — lock early
+    {'atr_mult': 3.0, 'close_pct': 0.30, 'flag': 'partial_2'},  # 30% at 3R — lock mid
+    # Remaining 40% trails on H1/H4 structure until invalidation
+]
 SWING_TRAIL_LOOKBACK = 3       # bars on each side for swing detection
 SWING_TRAIL_ATR_BUFFER = 0.2   # ATR fraction for buffer beyond swing point
 TIME_EXIT_MINUTES = 30         # Back to 30min — data shows losers average 70min, cut them
@@ -187,7 +194,20 @@ def _manage_single_position(position):
     # Apply management phases in order
     _check_breakeven(position, trade, profit_distance, current_atr)
     _check_partial_close(position, trade, profit_distance)
-    _check_swing_trail(position, trade, df, current_atr)
+
+    # Dynamic trail tightening: if momentum is fading, use tighter ATR multiplier
+    trail_atr = current_atr
+    if df is not None and trade.entry_atr and trade.entry_atr > 0:
+        vol_ratio = current_atr / trade.entry_atr if trade.entry_atr > 0 else 1.0
+        if vol_ratio < 0.6:
+            # Volatility contracted significantly — momentum fading, tighten trail
+            trail_atr = current_atr * 0.7
+            logger.debug(
+                f"MOMENTUM FADE: {position.symbol} vol_ratio={vol_ratio:.2f} "
+                f"— tightening trail ATR from {current_atr:.6f} to {trail_atr:.6f}"
+            )
+
+    _check_swing_trail(position, trade, df, trail_atr)
     _check_time_exit(position, trade, current_pnl, minutes_in_trade)
 
 
@@ -499,44 +519,79 @@ def _check_breakeven(position, trade, profit_distance, current_atr):
 # ---------------------------------------------------------------------------
 
 def _check_partial_close(position, trade, profit_distance):
-    """Close 50% of position at 2x ATR profit."""
-    if trade.partial_closed:
-        return
+    """Tiered partial close: 30% at 1.5R, 30% at 3R, trail remaining 40%.
 
-    # Only after breakeven has been achieved
+    Locks profits incrementally — early lock secures gains, middle lock
+    captures momentum, final 40% rides on structural trailing for home runs.
+    """
     if not trade.breakeven_moved:
         return
 
-    if trade.entry_atr is None:
-        return
-
-    if profit_distance < trade.entry_atr * PARTIAL_CLOSE_ATR_THRESHOLD:
+    if trade.entry_atr is None or trade.entry_atr <= 0:
         return
 
     position_type = position.type
     position_volume = position.volume
     current_price = position.price_current
 
-    partial_vol = round(position_volume * PARTIAL_CLOSE_FRACTION, 2)
-    if partial_vol < 0.01:
-        logger.info(
-            f"PARTIAL CLOSE: {position.symbol} ticket={position.ticket} "
-            f"volume too small ({partial_vol}), skipping"
-        )
-        return
+    for tier in PARTIAL_CLOSE_TIERS:
+        flag = tier['flag']
 
-    result = close_partial(position.ticket, position.symbol, position_type, partial_vol)
-    if result is not None:
-        trade.partial_closed = True
-        trade.partial_close_volume = partial_vol
-        trade.partial_close_price = current_price
-        trade.save(update_fields=['partial_closed', 'partial_close_volume', 'partial_close_price'])
-        logger.info(
-            f"PARTIAL CLOSE: {position.symbol} ticket={position.ticket} "
-            f"closed {partial_vol} lots at {current_price:.5f}"
-        )
-    else:
-        logger.warning(f"PARTIAL CLOSE: Failed for {position.symbol} ticket={position.ticket}")
+        # Check if this tier was already triggered
+        if getattr(trade, 'partial_closed', False) and flag == 'partial_1':
+            # partial_closed=True means tier 1 done (backward compat)
+            continue
+
+        # Use Redis cache for tier tracking (avoids DB schema changes)
+        try:
+            from django.core.cache import cache
+            tier_key = f"partial_{flag}:{position.ticket}"
+            if cache.get(tier_key):
+                continue
+        except Exception:
+            continue
+
+        # Check if profit reached this tier's threshold
+        if profit_distance < trade.entry_atr * tier['atr_mult']:
+            break  # Tiers are ordered — if this one isn't hit, later ones won't be either
+
+        # Calculate volume to close
+        partial_vol = round(position_volume * tier['close_pct'], 2)
+        if partial_vol < 0.01:
+            logger.debug(
+                f"PARTIAL CLOSE T{tier['atr_mult']}: {position.symbol} "
+                f"volume too small ({partial_vol}), skipping"
+            )
+            continue
+
+        result = close_partial(position.ticket, position.symbol, position_type, partial_vol)
+        if result is not None:
+            # Mark tier as done
+            try:
+                from django.core.cache import cache
+                cache.set(f"partial_{flag}:{position.ticket}", True, timeout=86400)
+            except Exception:
+                pass
+
+            # Update trade record (backward compat with partial_closed field)
+            if flag == 'partial_1':
+                trade.partial_closed = True
+                trade.partial_close_volume = partial_vol
+                trade.partial_close_price = current_price
+                trade.save(update_fields=['partial_closed', 'partial_close_volume', 'partial_close_price'])
+
+            profit_r = profit_distance / trade.entry_atr
+            logger.info(
+                f"PARTIAL CLOSE ({tier['atr_mult']}R): {position.symbol} "
+                f"ticket={position.ticket} closed {partial_vol} lots "
+                f"({tier['close_pct']:.0%}) at {current_price:.5f} "
+                f"(profit={profit_r:.1f}R)"
+            )
+        else:
+            logger.warning(
+                f"PARTIAL CLOSE ({tier['atr_mult']}R): Failed for "
+                f"{position.symbol} ticket={position.ticket}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -544,11 +599,13 @@ def _check_partial_close(position, trade, profit_distance):
 # ---------------------------------------------------------------------------
 
 def _check_swing_trail(position, trade, df, current_atr):
-    """Trail SL using multi-TF S/R levels for structural trailing.
+    """Trail SL using multi-TF structure, escalating timeframe with profit.
 
-    Uses the S/R detection module to find support levels (for longs) or
-    resistance levels (for shorts) across M15/H1/H4 timeframes. Falls back
-    to simple swing detection if S/R module is unavailable.
+    Phase 3a: <2R profit → trail on entry timeframe (tight, responsive)
+    Phase 3b: 2-4R profit → trail on H1 structure (wider, for bigger moves)
+    Phase 3c: 4R+ profit → trail on H4 structure (let it ride — Livermore "sit tight")
+
+    Also checks for structure invalidation (BOS/CHoCH against position).
     """
     if not trade.breakeven_moved:
         return
@@ -562,13 +619,48 @@ def _check_swing_trail(position, trade, df, current_atr):
     entry_price = position.price_open
     current_price = position.price_current
 
-    # Try S/R-based trailing first
+    # Calculate profit in ATR multiples for timeframe escalation
+    profit_distance = (current_price - entry_price) if position_type == BUY else (entry_price - current_price)
+    profit_r = profit_distance / trade.entry_atr if trade.entry_atr and trade.entry_atr > 0 else 0
+
+    # Structure invalidation check — exit if structure breaks against us
+    if _check_structure_invalidation(position, trade, df, profit_distance):
+        return
+
+    # Determine trailing timeframe based on profit level
+    trailing_tf = _resolve_timeframe(trade)
+    trail_label = "SWING"
+
+    if profit_r >= 4.0:
+        trailing_tf = MT5Timeframe.H4
+        trail_label = "H4-STRUCT"
+    elif profit_r >= 2.0:
+        trailing_tf = MT5Timeframe.H1
+        trail_label = "H1-STRUCT"
+
+    # Try S/R-based trailing on the selected timeframe
     candidate_sl = _get_sr_trail_level(
         position.symbol, position_type, entry_price, current_price,
         current_sl, current_atr,
     )
 
-    # Fallback to simple swing detection
+    # For elevated timeframes, also fetch that TF's swings
+    if candidate_sl is None and trailing_tf != _resolve_timeframe(trade):
+        try:
+            htf_df = fetch_data_pos(position.symbol, trailing_tf, 50)
+            if htf_df is not None and len(htf_df) >= (2 * 5 + 1):
+                if position_type == BUY:
+                    swing_values = _find_swing_low_values(htf_df['low'].values, 5)
+                    if swing_values:
+                        candidate_sl = swing_values[-1] - (current_atr * SWING_TRAIL_ATR_BUFFER)
+                else:
+                    swing_values = _find_swing_high_values(htf_df['high'].values, 5)
+                    if swing_values:
+                        candidate_sl = swing_values[-1] + (current_atr * SWING_TRAIL_ATR_BUFFER)
+        except Exception as e:
+            logger.debug(f"HTF swing trail fetch failed for {position.symbol}: {e}")
+
+    # Fallback to entry-timeframe swing detection
     if candidate_sl is None:
         if position_type == BUY:
             swing_values = _find_swing_low_values(df['low'].values, SWING_TRAIL_LOOKBACK)
@@ -578,6 +670,7 @@ def _check_swing_trail(position, trade, df, current_atr):
             swing_values = _find_swing_high_values(df['high'].values, SWING_TRAIL_LOOKBACK)
             if swing_values:
                 candidate_sl = swing_values[-1] + (current_atr * SWING_TRAIL_ATR_BUFFER)
+        trail_label = "SWING"
 
     if candidate_sl is None:
         return
@@ -588,11 +681,59 @@ def _check_swing_trail(position, trade, df, current_atr):
             current_tp if current_tp and current_tp != 0 else None
         )
         if result is not None:
-            trail_type = "S/R" if candidate_sl != current_sl else "SWING"
             logger.info(
-                f"{trail_type} TRAIL: {position.symbol} ticket={position.ticket} "
-                f"{'BUY' if position_type == BUY else 'SELL'} SL -> {candidate_sl:.5f}"
+                f"{trail_label} TRAIL: {position.symbol} ticket={position.ticket} "
+                f"{'BUY' if position_type == BUY else 'SELL'} SL -> {candidate_sl:.5f} "
+                f"(profit={profit_r:.1f}R)"
             )
+
+
+def _check_structure_invalidation(position, trade, df, profit_distance):
+    """Exit immediately if market structure breaks against the position.
+
+    A CHoCH against our direction means the thesis is invalid — get out.
+    Only applies after breakeven is set (we have a risk-free position).
+    Returns True if trade was closed.
+    """
+    if not trade.breakeven_moved:
+        return False
+
+    # Don't invalidate if we're significantly in profit (>2R) — structure
+    # breaks can be temporary in strong trends
+    if trade.entry_atr and profit_distance > trade.entry_atr * 2:
+        return False
+
+    try:
+        from app.quant.indicators.smc_detector import detect_market_structure
+        ms_df = detect_market_structure(df, swing_lookback=5)
+
+        if ms_df is None or len(ms_df) < 3:
+            return False
+
+        position_type = position.type
+
+        # Check last 3 bars for a CHoCH against our direction
+        for i in range(max(0, len(ms_df) - 3), len(ms_df)):
+            choch_val = ms_df['CHOCH'].iloc[i]
+            if pd.isna(choch_val):
+                continue
+
+            # Bearish CHoCH against a BUY, or bullish CHoCH against a SELL
+            if (position_type == BUY and choch_val == -1) or \
+               (position_type == SELL and choch_val == 1):
+                result = close_full(position.ticket, position.symbol, position.type, position.volume)
+                if result is not None:
+                    current_pnl = position.profit
+                    logger.info(
+                        f"STRUCTURE INVALIDATION: {position.symbol} ticket={position.ticket} "
+                        f"CHoCH against {'BUY' if position_type == BUY else 'SELL'} "
+                        f"at bar {i} — CLOSED (PnL=${current_pnl:.2f})"
+                    )
+                    return True
+    except Exception as e:
+        logger.debug(f"Structure invalidation check failed: {e}")
+
+    return False
 
 
 def _get_sr_trail_level(symbol, position_type, entry_price, current_price,

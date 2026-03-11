@@ -342,6 +342,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.run_ml_retrain',
         'schedule': 60.0 * 30,  # every 30 minutes
     },
+    'run-ict-scanner': {
+        'task': 'quant.tasks.run_ict_scanner',
+        'schedule': 60.0,  # every 1 minute — same as CVD entry
+    },
     'run-strategy-orchestrator': {
         'task': 'quant.tasks.run_strategy_orchestrator',
         'schedule': 300.0,  # every 5 minutes

@@ -14,6 +14,10 @@ from app.quant.indicators.smc import (
     market_structure, fair_value_gap, order_block,
     liquidity_sweep, smc_confluence,
 )
+from app.quant.indicators.smc_detector import (
+    _registry_fvg, _registry_ob, _registry_structure,
+    _registry_liquidity, _registry_confluence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,12 @@ INDICATOR_REGISTRY = {
     'ORDER_BLOCK': lambda df, params: order_block(df, params),
     'LIQUIDITY_SWEEP': lambda df, params: liquidity_sweep(df, params),
     'SMC_CONFLUENCE': lambda df, params: smc_confluence(df, params),
+    # Library-backed SMC detectors (smartmoneyconcepts package)
+    'SMC_FVG_LIB': lambda df, params: _registry_fvg(df, params),
+    'SMC_OB_LIB': lambda df, params: _registry_ob(df, params),
+    'SMC_STRUCTURE_LIB': lambda df, params: _registry_structure(df, params),
+    'SMC_LIQUIDITY_LIB': lambda df, params: _registry_liquidity(df, params),
+    'SMC_CONFLUENCE_LIB': lambda df, params: _registry_confluence(df, params),
 }
 
 CONDITION_OPS = {
@@ -62,6 +72,12 @@ CONDITION_OPS = {
     'ob_retest': lambda a, b: isinstance(a, str) and b in a,
     'sweep': lambda a, b: isinstance(a, str) and b in a,
     'confluence': lambda a, b: isinstance(a, str) and b in a,
+    # Library-backed SMC conditions (smartmoneyconcepts package)
+    'fvg_lib': lambda a, b: isinstance(a, str) and b in a,
+    'ob_lib': lambda a, b: isinstance(a, str) and b in a,
+    'structure_lib': lambda a, b: isinstance(a, str) and b in a,
+    'liquidity_lib': lambda a, b: isinstance(a, str) and b in a,
+    'smc_confluence_lib': lambda a, b: isinstance(a, str) and b in a,
 }
 
 TIMEFRAME_YAHOO_INTERVAL = {

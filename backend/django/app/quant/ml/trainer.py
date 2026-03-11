@@ -1,25 +1,27 @@
 """
-ML Model Trainer — continuous learning with LightGBM + SHAP.
+ML Model Trainer — continuous learning with XGBoost + LightGBM fallback + SHAP.
 
 Model progression:
 1. <50 trades: No model, all signals accepted
-2. 50-200 trades: LightGBM with conservative hyperparams
-3. 200+ trades: LightGBM with full feature set + SHAP analysis
+2. 50-200 trades: XGBoost with conservative hyperparams (LightGBM fallback)
+3. 200+ trades: XGBoost with full feature set + SHAP + walk-forward validation
 
-Why LightGBM over sklearn GBM:
-- 5-10x faster training (leaf-wise vs level-wise growth)
-- Native categorical feature handling
-- Better generalization through L1/L2 regularization
-- Histogram-based splits reduce overfitting on small datasets
-- scikit-learn compatible API (drop-in replacement)
+Model hierarchy (first available wins):
+1. XGBoost — best regularization for small financial datasets
+2. LightGBM — fast leaf-wise growth with native categorical handling
+3. sklearn GBM/RF — universal fallback
+
+Retraining triggers:
+- N new labeled trades since last training (standard)
+- HMM regime shift detected (adaptive — model must match current market)
 
 SHAP (SHapley Additive exPlanations) replaces basic feature_importances_
-because it shows HOW each feature contributes to individual predictions,
-not just aggregate importance. This is critical for understanding why
-the model accepts or rejects specific trades.
+because it shows HOW each feature contributes to individual predictions.
 
-Reference: Ke et al., "LightGBM: A Highly Efficient Gradient Boosting
-Decision Tree" (NeurIPS 2017)
+References:
+- Chen & Guestrin, "XGBoost: A Scalable Tree Boosting System" (KDD 2016)
+- Ke et al., "LightGBM" (NeurIPS 2017)
+- Lopez de Prado, "Advances in Financial Machine Learning" (2018), Ch. 7 (walk-forward)
 """
 
 import json
@@ -41,25 +43,17 @@ RETRAIN_AFTER_N_NEW = 10
 def train_model():
     """Train or retrain the ML model on all available trade data.
 
-    Uses LightGBM with auto-tuned hyperparams based on dataset size.
-    Computes SHAP values for interpretable feature importance.
+    Tries XGBoost first (best for small financial datasets), falls back
+    to LightGBM, then sklearn. Uses walk-forward validation for financial
+    data (older data trains, recent data validates — no future leakage).
     """
-    try:
-        import lightgbm as lgb
-        from sklearn.model_selection import cross_val_score
-        import joblib
-    except ImportError as e:
-        logger.error(f"Required package not installed: {e}")
-        # Fallback to sklearn if lightgbm not available
-        return _train_sklearn_fallback()
-
     from app.nexus.models import TradeFeature, MLModel
 
-    # Gather training data
+    # Gather training data (ordered by trade time for walk-forward)
     features_qs = TradeFeature.objects.filter(
         actual_win__isnull=False,
         features_json__isnull=False,
-    ).exclude(features_json={})
+    ).exclude(features_json={}).order_by('created_at')
 
     count = features_qs.count()
     if count < MIN_TRADES_TO_TRAIN:
@@ -83,73 +77,32 @@ def train_model():
     y = np.array(y_list)
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Adaptive hyperparameters based on dataset size
-    if len(X) < 100:
-        params = {
-            'n_estimators': 100,
-            'max_depth': 4,
-            'num_leaves': 15,
-            'min_child_samples': 5,
-            'learning_rate': 0.05,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'reg_alpha': 0.1,     # L1 regularization
-            'reg_lambda': 1.0,    # L2 regularization
-            'is_unbalanced': True,
-            'random_state': 42,
-            'verbose': -1,
-        }
-    elif len(X) < 500:
-        params = {
-            'n_estimators': 200,
-            'max_depth': 5,
-            'num_leaves': 31,
-            'min_child_samples': 10,
-            'learning_rate': 0.05,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'reg_alpha': 0.1,
-            'reg_lambda': 1.0,
-            'is_unbalanced': True,
-            'random_state': 42,
-            'verbose': -1,
-        }
-    else:
-        params = {
-            'n_estimators': 300,
-            'max_depth': 6,
-            'num_leaves': 63,
-            'min_child_samples': 20,
-            'learning_rate': 0.03,
-            'subsample': 0.7,
-            'colsample_bytree': 0.7,
-            'reg_alpha': 0.3,
-            'reg_lambda': 2.0,
-            'is_unbalanced': True,
-            'random_state': 42,
-            'verbose': -1,
-        }
+    # Try model hierarchy: XGBoost -> LightGBM -> sklearn
+    model, model_type, params = _build_model(X, y)
 
-    model = lgb.LGBMClassifier(**params)
-    model_type = 'LightGBM'
+    # Walk-forward validation (Lopez de Prado style — no future leakage)
+    wf_accuracy = _walk_forward_validate(X, y, model_type, params)
 
-    # Cross-validation
-    cv_folds = min(5, len(X) // 5)
-    if cv_folds >= 2:
-        cv_scores = cross_val_score(model, X, y, cv=cv_folds, scoring='accuracy')
-        cv_accuracy = cv_scores.mean()
-        cv_std = cv_scores.std()
-    else:
+    # Standard cross-validation (for comparison)
+    try:
+        from sklearn.model_selection import cross_val_score
+        cv_folds = min(5, len(X) // 5)
+        if cv_folds >= 2:
+            cv_scores = cross_val_score(model, X, y, cv=cv_folds, scoring='accuracy')
+            cv_accuracy = cv_scores.mean()
+            cv_std = cv_scores.std()
+        else:
+            cv_accuracy = 0.0
+            cv_std = 0.0
+    except Exception:
         cv_accuracy = 0.0
         cv_std = 0.0
 
     # Train on full dataset
     model.fit(X, y)
 
-    # SHAP feature importance (more informative than split-based importance)
+    # SHAP feature importance
     importance_dict = _compute_shap_importance(model, X)
-
-    # Fallback to native importance if SHAP fails
     if not importance_dict and hasattr(model, 'feature_importances_'):
         importance_dict = {
             name: round(float(imp), 4)
@@ -168,6 +121,7 @@ def train_model():
     f1 = f1_score(y, y_pred, zero_division=0)
 
     # Save model
+    import joblib
     os.makedirs(MODEL_DIR, exist_ok=True)
     version = MLModel.objects.count() + 1
     model_path = os.path.join(MODEL_DIR, f'trade_scorer_v{version}.joblib')
@@ -176,7 +130,7 @@ def train_model():
     # Learning curve
     learning_curve = _compute_learning_curve(X, y, params)
 
-    # SHAP summary for dashboard (per-feature mean absolute SHAP values)
+    # SHAP summary for dashboard
     shap_summary = _compute_shap_summary(model, X)
 
     # Store model metadata
@@ -197,21 +151,31 @@ def train_model():
         win_rate_baseline=round(sum(y) / len(y), 4),
     )
 
-    # Store SHAP data in model's JSON field for dashboard
-    if shap_summary:
+    # Store SHAP + walk-forward data for dashboard
+    if shap_summary or wf_accuracy > 0:
         ml_model.feature_importance = {
             **importance_dict,
             '_shap_summary': shap_summary,
+            '_walk_forward_accuracy': round(wf_accuracy, 4),
         }
         ml_model.save(update_fields=['feature_importance'])
 
     # Deactivate previous models
     MLModel.objects.exclude(id=ml_model.id).update(is_active=False)
 
+    # Cache the regime at training time (for regime-shift detection)
+    try:
+        from django.core.cache import cache
+        current_regime = cache.get('hmm_regime_consensus', 'UNKNOWN')
+        cache.set('ml_trained_regime', current_regime, timeout=86400 * 7)
+    except Exception:
+        pass
+
     logger.info(
         f"ML Model v{version} trained: {model_type}, "
         f"trades={len(X)}, accuracy={accuracy:.1%}, "
         f"CV={cv_accuracy:.1%}±{cv_std:.1%}, "
+        f"WF={wf_accuracy:.1%}, "
         f"precision={precision:.1%}, recall={recall:.1%}, "
         f"top_features={list(importance_dict.keys())[:5]}"
     )
@@ -222,10 +186,122 @@ def train_model():
         'trade_count': len(X),
         'accuracy': accuracy,
         'cv_accuracy': cv_accuracy,
+        'walk_forward_accuracy': wf_accuracy,
         'precision': precision,
         'recall': recall,
         'feature_importance': importance_dict,
     }
+
+
+def _build_model(X, y):
+    """Build the best available model. XGBoost > LightGBM > sklearn.
+
+    Returns (model, model_type, params_dict).
+    """
+    n = len(X)
+    win_rate = sum(y) / len(y) if len(y) > 0 else 0.5
+    scale_pos = (1 - win_rate) / win_rate if win_rate > 0 else 1.0
+
+    # Adaptive hyperparams based on dataset size
+    if n < 100:
+        base_params = {
+            'n_estimators': 100, 'max_depth': 4, 'learning_rate': 0.05,
+            'subsample': 0.8, 'colsample_bytree': 0.8,
+            'reg_alpha': 0.1, 'reg_lambda': 1.0,
+        }
+    elif n < 500:
+        base_params = {
+            'n_estimators': 200, 'max_depth': 5, 'learning_rate': 0.05,
+            'subsample': 0.8, 'colsample_bytree': 0.8,
+            'reg_alpha': 0.1, 'reg_lambda': 1.0,
+        }
+    else:
+        base_params = {
+            'n_estimators': 300, 'max_depth': 6, 'learning_rate': 0.03,
+            'subsample': 0.7, 'colsample_bytree': 0.7,
+            'reg_alpha': 0.3, 'reg_lambda': 2.0,
+        }
+
+    # Try XGBoost first
+    try:
+        import xgboost as xgb
+        params = {
+            **base_params,
+            'scale_pos_weight': round(scale_pos, 2),
+            'eval_metric': 'logloss',
+            'use_label_encoder': False,
+            'random_state': 42,
+            'verbosity': 0,
+        }
+        model = xgb.XGBClassifier(**params)
+        logger.info(f"ML: Using XGBoost (n={n}, scale_pos_weight={scale_pos:.2f})")
+        return model, 'XGBoost', params
+    except ImportError:
+        pass
+
+    # Fall back to LightGBM
+    try:
+        import lightgbm as lgb
+        lgb_extra = {'num_leaves': min(31, 2 ** base_params['max_depth'] - 1)}
+        if n < 100:
+            lgb_extra['min_child_samples'] = 5
+            lgb_extra['num_leaves'] = 15
+        elif n < 500:
+            lgb_extra['min_child_samples'] = 10
+        else:
+            lgb_extra['min_child_samples'] = 20
+            lgb_extra['num_leaves'] = 63
+
+        params = {**base_params, **lgb_extra, 'is_unbalanced': True, 'random_state': 42, 'verbose': -1}
+        model = lgb.LGBMClassifier(**params)
+        logger.info(f"ML: Using LightGBM fallback (n={n})")
+        return model, 'LightGBM', params
+    except ImportError:
+        pass
+
+    # Fall back to sklearn
+    from sklearn.ensemble import GradientBoostingClassifier
+    params = {
+        'n_estimators': base_params['n_estimators'],
+        'max_depth': base_params['max_depth'],
+        'learning_rate': base_params['learning_rate'],
+        'subsample': base_params['subsample'],
+        'min_samples_leaf': 5,
+        'random_state': 42,
+    }
+    model = GradientBoostingClassifier(**params)
+    logger.info(f"ML: Using sklearn GBM fallback (n={n})")
+    return model, 'GradientBoosting', params
+
+
+def _walk_forward_validate(X, y, model_type, params):
+    """Walk-forward validation — train on first 70%, test on last 30%.
+
+    This is the gold standard for financial ML because it respects temporal
+    ordering: the model never sees future data during training.
+    Lopez de Prado (AFML Ch. 7): "Purged walk-forward cross-validation."
+    """
+    if len(X) < 50:
+        return 0.0
+
+    try:
+        split = int(len(X) * 0.7)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+
+        if len(np.unique(y_train)) < 2 or len(np.unique(y_test)) < 2:
+            return 0.0
+
+        # Build a fresh model with same params
+        model, _, _ = _build_model(X_train, y_train)
+        model.fit(X_train, y_train)
+
+        from sklearn.metrics import accuracy_score
+        y_pred = model.predict(X_test)
+        return float(accuracy_score(y_test, y_pred))
+    except Exception as e:
+        logger.debug(f"Walk-forward validation failed: {e}")
+        return 0.0
 
 
 def _compute_shap_importance(model, X):
@@ -447,7 +523,13 @@ def get_active_model():
 
 
 def should_retrain():
-    """Check if enough new trades have accumulated to warrant retraining."""
+    """Check if retraining is warranted.
+
+    Triggers:
+    1. No active model + enough trades → first training
+    2. N new labeled trades since last training → incremental retrain
+    3. HMM regime shifted since last training → adaptive retrain
+    """
     from app.nexus.models import TradeFeature, MLModel
 
     active = MLModel.objects.filter(is_active=True).first()
@@ -455,9 +537,31 @@ def should_retrain():
         total = TradeFeature.objects.filter(actual_win__isnull=False).count()
         return total >= MIN_TRADES_TO_TRAIN
 
+    # Trigger 2: enough new trades
     new_trades = TradeFeature.objects.filter(
         actual_win__isnull=False,
         created_at__gt=active.trained_at,
     ).count()
 
-    return new_trades >= RETRAIN_AFTER_N_NEW
+    if new_trades >= RETRAIN_AFTER_N_NEW:
+        return True
+
+    # Trigger 3: regime shift — retrain if market regime changed since last training
+    try:
+        from django.core.cache import cache
+        trained_regime = cache.get('ml_trained_regime')
+        current_regime = cache.get('hmm_regime_consensus')
+
+        if (trained_regime and current_regime
+                and trained_regime != current_regime
+                and current_regime != 'UNKNOWN'
+                and new_trades >= 5):  # Need at least 5 new trades in new regime
+            logger.info(
+                f"ML: Regime shift detected ({trained_regime} -> {current_regime}), "
+                f"triggering retrain with {new_trades} new trades"
+            )
+            return True
+    except Exception:
+        pass
+
+    return False

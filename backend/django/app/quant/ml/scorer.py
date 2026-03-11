@@ -14,7 +14,7 @@ Threshold progression (auto-tightens as confidence grows):
 import logging
 import json
 
-from .features import extract_features, features_to_array
+from .features import extract_features, features_to_array, SELECTED_FEATURES
 from .trainer import get_active_model
 
 logger = logging.getLogger('app.quant.ml')
@@ -47,11 +47,21 @@ def score_signal(symbol, order_type, df, atr_val,
         return 0.5, True, "No ML model yet, collecting data", features
 
     try:
+        import numpy as np
         X = features_to_array(features).reshape(1, -1)
 
         # Handle NaN
-        import numpy as np
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Handle feature count mismatch (model trained with fewer features)
+        model_n_features = getattr(model, 'n_features_in_', None) or getattr(model, 'n_features_', None)
+        if model_n_features and X.shape[1] != model_n_features:
+            # Truncate to what the model expects (new features at end)
+            X = X[:, :model_n_features]
+            logger.debug(
+                f"ML: Truncated features from {len(SELECTED_FEATURES)} to {model_n_features} "
+                f"for backward compat (retrain will use full set)"
+            )
 
         # Get probability of winning
         probabilities = model.predict_proba(X)[0]

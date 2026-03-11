@@ -60,7 +60,13 @@ def _check_global_daily_halt():
                 )
 
         # --- Daily halt check ---
-        cutoff = timezone.now() - timedelta(hours=24)
+        # Only count trades after the parameter reset to avoid old $5k-era
+        # losses re-triggering the halt with the new $300 limit.
+        reset_ts = cache.get('daily_halt_reset_time')
+        if reset_ts:
+            cutoff = max(reset_ts, timezone.now() - timedelta(hours=24))
+        else:
+            cutoff = timezone.now() - timedelta(hours=24)
         closed_trades = Trade.objects.filter(
             close_time__gte=cutoff,
             pnl__isnull=False,
@@ -547,6 +553,101 @@ def run_strategy_orchestrator():
         run_orchestrator()
     except Exception as e:
         logger.error(f"Strategy orchestrator error: {e}")
+
+
+@shared_task(name='quant.tasks.run_ict_scanner', max_retries=1, soft_time_limit=60)
+def run_ict_scanner():
+    """ICT 5-step institutional entry scanner.
+
+    Scans all forex pairs for full ICT chain setups (HTF bias -> sweep ->
+    MSS -> FVG -> price at FVG). When a valid setup is found, places an order.
+    """
+    if is_bot_paused():
+        return
+    if _check_global_daily_halt():
+        return
+    try:
+        total_open = _count_open_positions()
+        if total_open >= GLOBAL_MAX:
+            logger.debug("ICT scanner: global position limit reached")
+            return
+
+        from app.quant.algorithms.ict_entry import scan_ict_setups
+
+        symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF']
+        setups = scan_ict_setups(symbols)
+
+        if not setups:
+            return
+
+        for setup in setups:
+            if total_open >= GLOBAL_MAX:
+                break
+
+            try:
+                _execute_ict_setup(setup)
+                total_open += 1
+            except Exception as e:
+                logger.error(f"ICT: failed to execute {setup.symbol} {setup.direction}: {e}")
+
+    except SoftTimeLimitExceeded:
+        logger.error("ICT scanner task timed out.")
+    except Exception as e:
+        logger.error(f"ICT scanner error: {e}")
+
+
+def _execute_ict_setup(setup):
+    """Place an order for a confirmed ICT setup."""
+    from app.nexus.models import PairLock, Trade
+    from app.utils.api.order import send_order
+
+    # Check pair lock
+    if PairLock.objects.filter(pair=setup.symbol).exists():
+        logger.info(f"ICT: {setup.symbol} already has open position, skipping")
+        return
+
+    # Dynamic sizing based on ICT grade
+    from app.quant.algorithms.cvd.config import CAPITAL_PER_TRADE
+    capital = CAPITAL_PER_TRADE * setup.step_details.get('sl_tp', {}).get('atr', 0.001)
+
+    # Use a sensible lot size (0.01 for micro, scaled by grade)
+    lot_size = round(0.01 * (CAPITAL_PER_TRADE / 500) * (setup.rr_ratio / 2.0), 2)
+    lot_size = max(0.01, min(lot_size, 0.10))  # Clamp to safe range
+
+    order_type_mt5 = 'BUY' if setup.direction == 'BUY' else 'SELL'
+
+    result = send_order(
+        symbol=setup.symbol,
+        order_type=order_type_mt5,
+        lot=lot_size,
+        sl=round(setup.stop_loss, 5),
+        tp=round(setup.take_profit, 5),
+        comment=f"ICT {setup.step_details.get('step3_mss', {}).get('type', '5step') if isinstance(setup.step_details.get('step3_mss'), dict) else '5step'}",
+    )
+
+    if result and result.get('success'):
+        # Create pair lock
+        PairLock.objects.create(pair=setup.symbol)
+
+        # Log trade
+        Trade.objects.create(
+            symbol=setup.symbol,
+            strategy=f"ICT_{setup.direction}",
+            entry_price=setup.entry_price,
+            sl=setup.stop_loss,
+            tp=setup.take_profit,
+            lot=lot_size,
+            direction=setup.direction,
+            entry_signal=f"ICT 5-step: {setup.step_details.get('step1_htf_bias', '')}",
+        )
+
+        logger.info(
+            f"ICT ORDER PLACED: {setup.symbol} {setup.direction} "
+            f"lot={lot_size} SL={setup.stop_loss:.5f} TP={setup.take_profit:.5f} "
+            f"R:R={setup.rr_ratio}"
+        )
+    else:
+        logger.warning(f"ICT: order failed for {setup.symbol}: {result}")
 
 
 @shared_task(name='quant.tasks.run_ml_retrain', max_retries=1, soft_time_limit=120)

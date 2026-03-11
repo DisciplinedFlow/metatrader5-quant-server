@@ -66,6 +66,19 @@ FEATURE_NAMES = [
     # Trade quality
     'spread_atr_ratio',     # Spread / ATR
     'signal_strength',      # Strategy-specific signal strength (0-1)
+
+    # SMC features (Phase 6 — institutional footprints)
+    'confluence_score',     # 0-11 confluence score from confluence_scorer
+    'htf_bias_aligned',     # 1 if HTF agrees with trade direction, 0 otherwise
+    'kill_zone_weight',     # Kill zone multiplier (0.3-2.0)
+    'fvg_present',          # 1 if Fair Value Gap at entry, 0 otherwise
+    'ob_present',           # 1 if Order Block at entry, 0 otherwise
+    'recent_sweep',         # 1 if liquidity sweep in last 5 bars, 0 otherwise
+    'displacement',         # 1 if displacement move detected, 0 otherwise
+    'hmm_regime_label',     # 0=RANGING, 1=TRENDING, 2=VOLATILE
+    'hmm_regime_confidence', # HMM posterior probability (0-1)
+    'router_size_mult',     # Strategy router sizing multiplier
+    'router_min_confluence', # Router's minimum confluence for this regime
 ]
 
 # Selected features for ML model — expands as data grows.
@@ -82,6 +95,11 @@ SELECTED_FEATURES = [
     'spread_atr_ratio',  # Trade cost quality (high spread = bad entry)
     'symbol_wr_10',      # Recent symbol performance
     'recent_streak',     # Win/loss momentum
+    # Phase 6 SMC features (added to model when enough data accumulates)
+    'confluence_score',  # 0-11 setup quality — strongest single predictor candidate
+    'htf_bias_aligned',  # ICT: never trade against HTF structure
+    'kill_zone_weight',  # Session quality — NY open 2x, Asian 0.3x
+    'recent_sweep',      # Liquidity sweep = institutional activity
 ]
 
 SYMBOL_ENCODING = {
@@ -290,6 +308,9 @@ def extract_features(
         else:
             features['signal_strength'] = 0.5
 
+        # --- SMC features (Phase 6) ---
+        features.update(_extract_smc_features(symbol, order_type, df))
+
         return features
 
     except Exception as e:
@@ -309,6 +330,149 @@ def features_to_array(features_dict):
 # ---------------------------------------------------------------------------
 # Helper data lookups
 # ---------------------------------------------------------------------------
+
+def _extract_smc_features(symbol, order_type, df):
+    """Extract Smart Money Concepts features for ML model.
+
+    All features are fail-open: return default (0) if any module is unavailable.
+    """
+    smc = {
+        'confluence_score': 0,
+        'htf_bias_aligned': 0,
+        'kill_zone_weight': 0.5,
+        'fvg_present': 0,
+        'ob_present': 0,
+        'recent_sweep': 0,
+        'displacement': 0,
+        'hmm_regime_label': 0,
+        'hmm_regime_confidence': 0.0,
+        'router_size_mult': 1.0,
+        'router_min_confluence': 4,
+    }
+
+    direction = 'long' if order_type == 'BUY' else 'short'
+
+    # HTF bias alignment
+    try:
+        from app.quant.algorithms.mtf_analyzer import get_htf_bias_string
+        htf = get_htf_bias_string(symbol)
+        if htf:
+            aligned = (
+                (htf == 'bullish' and order_type == 'BUY') or
+                (htf == 'bearish' and order_type == 'SELL')
+            )
+            smc['htf_bias_aligned'] = 1 if aligned else 0
+    except Exception:
+        pass
+
+    # Kill zone weight
+    try:
+        from app.quant.indicators.kill_zones import get_kill_zone_weight
+        smc['kill_zone_weight'] = get_kill_zone_weight()
+    except Exception:
+        pass
+
+    # FVG detection
+    try:
+        from app.quant.indicators.smc_detector import detect_fair_value_gaps
+        fvg_df = detect_fair_value_gaps(df)
+        if fvg_df is not None and 'FVG' in fvg_df.columns:
+            last_fvg = fvg_df['FVG'].iloc[-1]
+            if not pd.isna(last_fvg):
+                smc['fvg_present'] = 1 if (
+                    (last_fvg == 1 and order_type == 'BUY') or
+                    (last_fvg == -1 and order_type == 'SELL')
+                ) else 0
+    except Exception:
+        pass
+
+    # Order block detection
+    try:
+        from app.quant.indicators.smc_detector import detect_order_blocks
+        ob_df = detect_order_blocks(df)
+        if ob_df is not None and 'OB' in ob_df.columns:
+            for i in range(max(0, len(ob_df) - 5), len(ob_df)):
+                ob_val = ob_df['OB'].iloc[i]
+                if not pd.isna(ob_val):
+                    if (ob_val == 1 and order_type == 'BUY') or (ob_val == -1 and order_type == 'SELL'):
+                        smc['ob_present'] = 1
+                        break
+    except Exception:
+        pass
+
+    # Liquidity sweep detection
+    try:
+        from app.quant.indicators.smc_detector import detect_liquidity_sweeps
+        sweep_df = detect_liquidity_sweeps(df)
+        if sweep_df is not None and 'Liquidity' in sweep_df.columns:
+            for i in range(max(0, len(sweep_df) - 5), len(sweep_df)):
+                liq_val = sweep_df['Liquidity'].iloc[i]
+                if not pd.isna(liq_val):
+                    if (liq_val == -1 and order_type == 'BUY') or (liq_val == 1 and order_type == 'SELL'):
+                        smc['recent_sweep'] = 1
+                        break
+    except Exception:
+        pass
+
+    # Displacement detection
+    try:
+        from app.quant.indicators.displacement import detect_displacement
+        _norm_df = df.rename(columns={
+            'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close',
+        })
+        disp = detect_displacement(_norm_df)
+        if disp is not None and len(disp) > 0:
+            last_d = disp['displacement'].iloc[-1]
+            smc['displacement'] = 1 if (
+                (last_d == 1 and order_type == 'BUY') or
+                (last_d == -1 and order_type == 'SELL')
+            ) else 0
+    except Exception:
+        pass
+
+    # HMM regime details
+    try:
+        import json
+        from django.core.cache import cache
+        detail_raw = cache.get(f'hmm_regime_detail:{symbol}')
+        if detail_raw:
+            detail = json.loads(detail_raw) if isinstance(detail_raw, str) else detail_raw
+            label = detail.get('label', 'RANGING')
+            label_map = {'RANGING': 0, 'TRENDING': 1, 'VOLATILE': 2}
+            smc['hmm_regime_label'] = label_map.get(label, 0)
+            smc['hmm_regime_confidence'] = float(detail.get('confidence', 0.0))
+    except Exception:
+        pass
+
+    # Strategy router sizing
+    try:
+        from app.quant.algorithms.strategy_router import route_symbol
+        routing = route_symbol(symbol)
+        smc['router_size_mult'] = routing.size_multiplier
+        smc['router_min_confluence'] = routing.min_confluence
+    except Exception:
+        pass
+
+    # Confluence score (compute fresh — lightweight since all factors are cached)
+    try:
+        from app.quant.algorithms.confluence_scorer import score_confluence
+        cs = score_confluence(
+            symbol=symbol,
+            direction=direction,
+            htf_bias='bullish' if smc['htf_bias_aligned'] else None,
+            cvd_divergence=True,
+            fvg_present=bool(smc['fvg_present']),
+            displacement=bool(smc['displacement']),
+            liquidity_sweep=bool(smc['recent_sweep']),
+            order_block_at_entry=bool(smc['ob_present']),
+            regime_favorable=smc['router_size_mult'] >= 0.7,
+        )
+        smc['confluence_score'] = cs.total_score
+    except Exception:
+        pass
+
+    return smc
+
 
 def _get_regime(symbol):
     """Get market regime for a symbol."""

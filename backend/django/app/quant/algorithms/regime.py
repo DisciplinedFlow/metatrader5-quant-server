@@ -229,10 +229,49 @@ def scan_all_pairs():
         except Exception as e:
             logger.error(f"Regime scan failed for {pair}: {e}")
 
-    # HMM regime scan (data-driven, runs alongside rule-based)
+    # Enhanced HMM regime scan (data-driven, runs alongside rule-based)
+    # Caches per-pair detail + cross-pair consensus in Redis
     try:
         from app.quant.ml.regime_hmm import scan_all_hmm_regimes
-        scan_all_hmm_regimes(FOREX_PAIRS, fetch_data_pos, MT5Timeframe.H1)
+        hmm_results = scan_all_hmm_regimes(FOREX_PAIRS, fetch_data_pos, MT5Timeframe.H1)
+
+        # Store HMM results alongside rule-based in MarketRegime model
+        if hmm_results:
+            for symbol, result in hmm_results.items():
+                try:
+                    mr = MarketRegime.objects.filter(
+                        symbol=symbol, timeframe='H1'
+                    ).first()
+                    if mr:
+                        # Log when HMM and rule-based disagree
+                        rule_label = mr.regime  # e.g. 'TRENDING_UP'
+                        hmm_label = result['label']  # e.g. 'TRENDING'
+                        # Normalize for comparison: TRENDING_UP/DOWN -> TRENDING
+                        rule_base = rule_label.replace('_UP', '').replace('_DOWN', '')
+                        if rule_base != hmm_label and rule_base != 'UNKNOWN':
+                            logger.warning(
+                                f"Regime disagreement {symbol}: "
+                                f"rule-based={rule_label} vs HMM={hmm_label} "
+                                f"(HMM conf={result['confidence']:.2f})"
+                            )
+                except Exception as e:
+                    logger.debug(f"HMM/rule-based comparison failed for {symbol}: {e}")
+
+            # Log consensus summary
+            try:
+                import json
+                from django.core.cache import cache as redis_cache
+                consensus_raw = redis_cache.get('hmm_regime_consensus')
+                if consensus_raw:
+                    consensus = json.loads(consensus_raw)
+                    logger.info(
+                        f"HMM cross-pair consensus: {consensus.get('dominant_regime', '?')} "
+                        f"({consensus.get('consensus_pct', 0):.0%} agreement) "
+                        f"| votes: {consensus.get('weighted_votes', {})}"
+                    )
+            except Exception as e:
+                logger.debug(f"HMM consensus log failed: {e}")
+
     except Exception as e:
         logger.debug(f"HMM regime scan skipped: {e}")
 
