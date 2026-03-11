@@ -1,3 +1,4 @@
+import json
 import os
 from collections import deque
 
@@ -348,6 +349,15 @@ class PairLocksView(views.APIView):
         return Response(data)
 
 
+class ICTScanView(views.APIView):
+    """Return cached ICT 5-step scanner results for the dashboard."""
+
+    def get(self, request):
+        results = cache.get('ict_scan_results', [])
+        limit = int(request.query_params.get('limit', 10))
+        return Response(results[:limit])
+
+
 class MLStatusView(views.APIView):
     """ML learning pipeline status — model info, training data stats, predictions."""
 
@@ -358,9 +368,10 @@ class MLStatusView(views.APIView):
         active_model = MLModel.objects.filter(is_active=True).first()
         model_info = None
         if active_model:
-            # Separate SHAP summary from feature importance dict
+            # Separate SHAP summary and walk-forward accuracy from feature importance dict
             fi = active_model.feature_importance or {}
             shap_summary = fi.pop('_shap_summary', [])
+            walk_forward_accuracy = fi.pop('_walk_forward_accuracy', None)
             model_info = {
                 'version': active_model.version,
                 'model_type': active_model.model_type,
@@ -368,6 +379,7 @@ class MLStatusView(views.APIView):
                 'accuracy': active_model.accuracy,
                 'cv_accuracy': active_model.cv_accuracy,
                 'cv_std': active_model.cv_std,
+                'walk_forward_accuracy': walk_forward_accuracy,
                 'precision': active_model.precision,
                 'recall': active_model.recall,
                 'f1_score': active_model.f1_score,
@@ -389,20 +401,22 @@ class MLStatusView(views.APIView):
         from app.quant.ml.data_collector import get_training_data_stats
         llm_stats = get_training_data_stats()
 
-        # Model history
+        # Model history — include walk-forward accuracy per model
         all_models = MLModel.objects.all()[:10]
-        model_history = [
-            {
+        model_history = []
+        for m in all_models:
+            m_fi = m.feature_importance or {}
+            wf_acc = m_fi.get('_walk_forward_accuracy', None)
+            model_history.append({
                 'version': m.version,
                 'model_type': m.model_type,
                 'trade_count': m.trade_count,
                 'accuracy': m.accuracy,
                 'cv_accuracy': m.cv_accuracy,
+                'walk_forward_accuracy': wf_acc,
                 'trained_at': m.trained_at.isoformat() if m.trained_at else None,
                 'is_active': m.is_active,
-            }
-            for m in all_models
-        ]
+            })
 
         return Response({
             'active_model': model_info,
@@ -444,3 +458,132 @@ class MLPredictionsView(views.APIView):
             })
 
         return Response(data)
+
+
+class ConfluenceScoreView(views.APIView):
+    """Return confluence score distribution from recent trades.
+
+    Reads TradeFeature.features_json to extract the confluence_score field
+    and returns a histogram-style distribution plus band breakdown.
+    """
+
+    def get(self, request):
+        from .models import TradeFeature
+
+        limit = min(int(request.query_params.get('limit', 200)), 1000)
+
+        features = (
+            TradeFeature.objects
+            .select_related('trade')
+            .filter(trade__market_type='FOREX')
+            .order_by('-created_at')[:limit]
+        )
+
+        # Extract confluence scores from features_json
+        scores = []
+        band_counts = {'skip': 0, 'reduced': 0, 'full': 0, 'enhanced': 0}
+        for tf in features:
+            fj = tf.features_json or {}
+            cs = fj.get('confluence_score')
+            if cs is not None:
+                try:
+                    cs = int(cs)
+                except (TypeError, ValueError):
+                    continue
+                scores.append({
+                    'score': cs,
+                    'symbol': tf.trade.symbol,
+                    'actual_win': tf.actual_win,
+                    'pnl': tf.trade.pnl,
+                    'entry_time': tf.trade.entry_time.isoformat() if tf.trade.entry_time else None,
+                })
+                # Classify into bands
+                if cs <= 3:
+                    band_counts['skip'] += 1
+                elif cs <= 6:
+                    band_counts['reduced'] += 1
+                elif cs <= 8:
+                    band_counts['full'] += 1
+                else:
+                    band_counts['enhanced'] += 1
+
+        # Build distribution histogram (scores 0-11)
+        distribution = {str(i): 0 for i in range(12)}
+        for s in scores:
+            key = str(min(s['score'], 11))
+            distribution[key] = distribution.get(key, 0) + 1
+
+        # Win rate per band
+        band_wins = {'skip': 0, 'reduced': 0, 'full': 0, 'enhanced': 0}
+        band_total = {'skip': 0, 'reduced': 0, 'full': 0, 'enhanced': 0}
+        for s in scores:
+            cs = s['score']
+            if cs <= 3:
+                band = 'skip'
+            elif cs <= 6:
+                band = 'reduced'
+            elif cs <= 8:
+                band = 'full'
+            else:
+                band = 'enhanced'
+            if s['actual_win'] is not None:
+                band_total[band] += 1
+                if s['actual_win']:
+                    band_wins[band] += 1
+
+        band_winrates = {}
+        for band in band_counts:
+            total = band_total[band]
+            band_winrates[band] = round(band_wins[band] / total * 100, 1) if total > 0 else None
+
+        return Response({
+            'total_scored': len(scores),
+            'distribution': distribution,
+            'band_counts': band_counts,
+            'band_winrates': band_winrates,
+            'avg_score': round(sum(s['score'] for s in scores) / len(scores), 1) if scores else 0,
+        })
+
+
+class HMMRegimeView(views.APIView):
+    """Return current HMM regime state per forex pair and cross-pair consensus.
+
+    Reads from Redis cache keys:
+    - hmm_regime_detail:{symbol} -- full result dict (JSON)
+    - hmm_regime_consensus -- cross-pair consensus dict (JSON)
+    """
+
+    FOREX_PAIRS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF']
+
+    def get(self, request):
+        per_pair = {}
+        for symbol in self.FOREX_PAIRS:
+            detail_raw = cache.get(f'hmm_regime_detail:{symbol}')
+            if detail_raw:
+                try:
+                    detail = json.loads(detail_raw) if isinstance(detail_raw, str) else detail_raw
+                    per_pair[symbol] = {
+                        'label': detail.get('label', 'UNKNOWN'),
+                        'confidence': detail.get('confidence', 0),
+                        'direction': detail.get('direction', 'NEUTRAL'),
+                        'atr_override': detail.get('atr_override', False),
+                        'state': detail.get('state'),
+                    }
+                except (json.JSONDecodeError, TypeError):
+                    per_pair[symbol] = {'label': 'UNKNOWN', 'confidence': 0, 'direction': 'NEUTRAL'}
+            else:
+                per_pair[symbol] = {'label': 'UNKNOWN', 'confidence': 0, 'direction': 'NEUTRAL'}
+
+        # Cross-pair consensus
+        consensus_raw = cache.get('hmm_regime_consensus')
+        consensus = {'dominant_regime': 'UNKNOWN', 'consensus_pct': 0, 'weighted_votes': {}}
+        if consensus_raw:
+            try:
+                consensus = json.loads(consensus_raw) if isinstance(consensus_raw, str) else consensus_raw
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return Response({
+            'per_pair': per_pair,
+            'consensus': consensus,
+        })

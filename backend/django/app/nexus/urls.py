@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView, MLStatusView, MLPredictionsView
+from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView, ICTScanView, MLStatusView, MLPredictionsView, ConfluenceScoreView, HMMRegimeView
 
 router = DefaultRouter()
 router.register(r'trades', TradeViewSet)
@@ -19,6 +19,9 @@ urlpatterns = [
     path('market-pulse/', MarketPulseView.as_view(), name='market-pulse'),
     path('market-regime/', MarketRegimeView.as_view(), name='market-regime'),
     path('pair-locks/', PairLocksView.as_view(), name='pair-locks'),
+    path('ict/scan/', ICTScanView.as_view(), name='ict-scan'),
     path('ml/status/', MLStatusView.as_view(), name='ml-status'),
     path('ml/predictions/', MLPredictionsView.as_view(), name='ml-predictions'),
+    path('confluence-scores/', ConfluenceScoreView.as_view(), name='confluence-scores'),
+    path('hmm-regimes/', HMMRegimeView.as_view(), name='hmm-regimes'),
 ]

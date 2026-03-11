@@ -75,8 +75,8 @@ onMounted(fetchTrades)
         <h1>Trade History</h1>
         <p>All forex trades tracked by the bot — updated automatically.</p>
       </div>
-      <button class="tp-btn tp-btn-secondary" @click="fetchTrades" :disabled="loading">
-        <span class="material-symbols-outlined" style="font-size:18px">refresh</span>
+      <button class="tp-btn tp-btn-outline" @click="fetchTrades" :disabled="loading">
+        <span class="material-symbols-outlined" style="font-size:16px">refresh</span>
         Refresh
       </button>
     </div>
@@ -187,47 +187,62 @@ onMounted(fetchTrades)
 
 <style scoped>
 .history-page {
-  padding: 2rem 1rem;
+  padding: 1.5rem 1.5rem 2rem;
 }
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 1.5rem;
+  align-items: center;
+  margin-bottom: 1.25rem;
 }
 .page-header h1 {
-  font-size: 2rem;
+  font-size: 1.25rem;
   font-weight: 800;
   letter-spacing: -0.02em;
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.15rem;
+}
+.page-header p {
+  font-size: 0.8rem;
+  color: var(--tp-text-dim);
 }
 
 /* Stats Row */
 .stats-row {
   display: flex;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
-  flex-wrap: wrap;
+  gap: 0;
+  margin-bottom: 1.25rem;
+  border-radius: var(--tp-radius);
+  overflow: hidden;
+  background: var(--tp-bg-glass);
+  backdrop-filter: var(--tp-glass-blur);
+  -webkit-backdrop-filter: var(--tp-glass-blur);
+  border: var(--tp-glass-border);
+  box-shadow: var(--tp-glass-shadow);
 }
 .stat-card {
   flex: 1;
-  min-width: 110px;
-  background: var(--tp-bg-surface);
-  border: 1px solid var(--tp-border);
-  border-radius: var(--tp-radius-sm);
-  padding: 1rem;
+  min-width: 0;
+  padding: 0.75rem 1rem;
   text-align: center;
+  border-right: 1px solid var(--tp-border);
+}
+.stat-card:last-child {
+  border-right: none;
 }
 .stat-value {
-  font-size: 1.35rem;
-  font-weight: 700;
-  margin-bottom: 0.25rem;
+  font-size: 1.15rem;
+  font-weight: 800;
+  margin-bottom: 0.15rem;
+  font-feature-settings: 'tnum' 1;
+  white-space: nowrap;
 }
 .stat-label {
-  font-size: 0.75rem;
-  color: var(--tp-text-muted);
+  font-size: 0.6rem;
+  color: var(--tp-text-dim);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 /* Table */

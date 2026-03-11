@@ -28,6 +28,11 @@ def estimate_probability(market):
         logger.warning("ANTHROPIC_API_KEY not set, skipping LLM estimation")
         return None
 
+    # Circuit breaker: skip if recent credit/auth error (avoid log spam)
+    from django.core.cache import cache as django_cache
+    if django_cache.get('llm_estimator_circuit_open'):
+        return None
+
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
@@ -91,7 +96,12 @@ Consider base rates, current events, and any relevant domain knowledge."""
         logger.error(f"Failed to parse LLM response: {e}")
         return None
     except Exception as e:
-        logger.error(f"LLM estimation error: {e}")
+        error_msg = str(e)
+        if 'credit balance' in error_msg or 'too low' in error_msg:
+            logger.error(f"LLM credits exhausted — circuit breaker open for 1h")
+            django_cache.set('llm_estimator_circuit_open', True, 3600)
+        else:
+            logger.error(f"LLM estimation error: {e}")
         return None
 
 

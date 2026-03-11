@@ -28,7 +28,7 @@ def run_crypto_entry():
         return
     from app.quant.tasks import _check_global_daily_halt
     if _check_global_daily_halt():
-        logger.warning("Global daily halt active — skipping crypto entry.")
+        logger.debug("Daily halt — skipping crypto entry.")
         return
     try:
         from app.quant.algorithms.crypto.entry import entry_algorithm
@@ -73,7 +73,7 @@ def run_lighter_entry():
         return
     from app.quant.tasks import _check_global_daily_halt
     if _check_global_daily_halt():
-        logger.warning("Global daily halt active — skipping lighter entry.")
+        logger.debug("Daily halt — skipping lighter entry.")
         return
     try:
         from app.quant.algorithms.lighter.entry import entry_algorithm

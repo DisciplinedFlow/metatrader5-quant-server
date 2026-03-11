@@ -37,7 +37,7 @@ def _check_global_daily_halt():
     # Fast path: check Redis cache first
     cached = cache.get('global_daily_halt')
     if cached is not None:
-        logger.warning(f"GLOBAL DAILY HALT active (cached PnL: ${cached}). All trading suspended.")
+        logger.debug(f"Daily halt active (PnL: ${cached}).")
         return True
 
     try:
@@ -212,7 +212,7 @@ def run_quant_entry_algorithm():
         logger.info("Bot is paused, skipping entry algorithm.")
         return
     if _check_global_daily_halt():
-        logger.warning("Global daily halt active — skipping all entry algorithms.")
+        logger.debug("Daily halt — skipping entry algorithms.")
         return
     try:
         from app.nexus.models import StrategyConfig, PairLock
@@ -561,6 +561,7 @@ def run_ict_scanner():
 
     Scans all forex pairs for full ICT chain setups (HTF bias -> sweep ->
     MSS -> FVG -> price at FVG). When a valid setup is found, places an order.
+    Results are cached in Redis for the dashboard ICT Setup Log.
     """
     if is_bot_paused():
         return
@@ -576,6 +577,9 @@ def run_ict_scanner():
 
         symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF']
         setups = scan_ict_setups(symbols)
+
+        # Cache scan results for dashboard (even partial/failed results)
+        _cache_ict_scan_results(symbols, setups)
 
         if not setups:
             return
@@ -594,6 +598,88 @@ def run_ict_scanner():
         logger.error("ICT scanner task timed out.")
     except Exception as e:
         logger.error(f"ICT scanner error: {e}")
+
+
+def _cache_ict_scan_results(symbols, setups):
+    """Cache ICT scan results in Redis for the dashboard.
+
+    Maintains a rolling list of the last 50 scan results, each with per-symbol
+    step chain details so the dashboard can show checkmark/cross for each step.
+    """
+    import json
+    from django.core.cache import cache
+    from django.utils import timezone
+
+    try:
+        now = timezone.now().isoformat()
+
+        # Build result entries for symbols that produced setups
+        scan_entries = []
+        setup_symbols = set()
+
+        for setup in (setups or []):
+            setup_symbols.add(setup.symbol)
+            # Determine grade from R:R and confluence
+            grade = _compute_ict_grade(setup.rr_ratio, setup.confluence_score)
+
+            # Build step chain: all 5 steps passed for valid setups
+            steps = [True, True, True, True, True]
+
+            scan_entries.append({
+                'symbol': setup.symbol,
+                'direction': setup.direction,
+                'grade': grade,
+                'steps': steps,
+                'rr_ratio': round(setup.rr_ratio, 2),
+                'entry_price': round(setup.entry_price, 5),
+                'stop_loss': round(setup.stop_loss, 5),
+                'take_profit': round(setup.take_profit, 5),
+                'confluence': setup.confluence_score,
+                'timestamp': now,
+            })
+
+        # Also log symbols that were scanned but had no setup (grade F)
+        for sym in symbols:
+            if sym not in setup_symbols:
+                scan_entries.append({
+                    'symbol': sym,
+                    'direction': '-',
+                    'grade': 'F',
+                    'steps': [False, False, False, False, False],
+                    'rr_ratio': 0,
+                    'entry_price': 0,
+                    'stop_loss': 0,
+                    'take_profit': 0,
+                    'confluence': 0,
+                    'timestamp': now,
+                })
+
+        # Merge with existing cache (keep last 50 entries)
+        existing = cache.get('ict_scan_results', [])
+        updated = scan_entries + existing
+        updated = updated[:50]  # Keep last 50
+
+        cache.set('ict_scan_results', updated, timeout=3600)  # 1 hour TTL
+
+    except Exception as e:
+        logger.error(f"Failed to cache ICT scan results: {e}")
+
+
+def _compute_ict_grade(rr_ratio, confluence_score):
+    """Compute ICT setup quality grade.
+
+    A+: R:R >= 3.0 and confluence >= 8
+    A:  R:R >= 2.0 and confluence >= 6
+    B:  R:R >= 1.5 (minimum valid setup)
+    F:  Below minimum (should not happen for valid setups)
+    """
+    if rr_ratio >= 3.0 and confluence_score >= 8:
+        return 'A+'
+    elif rr_ratio >= 2.0 and confluence_score >= 6:
+        return 'A'
+    elif rr_ratio >= 1.5:
+        return 'B'
+    return 'F'
 
 
 def _execute_ict_setup(setup):

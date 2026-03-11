@@ -355,6 +355,12 @@ const api = {
     return this.django('v1/market-pulse/')
   },
 
+  // --- ICT Scanner API ---
+
+  getICTScanResults(limit = 10) {
+    return this.django(`v1/ict/scan/?limit=${limit}`)
+  },
+
   // --- ML Learning Pipeline API ---
 
   getMLStatus() {
@@ -363,6 +369,18 @@ const api = {
 
   getMLPredictions(limit = 50) {
     return this.django(`v1/ml/predictions/?limit=${limit}`)
+  },
+
+  // --- Confluence Scores API ---
+
+  getConfluenceScores(limit = 200) {
+    return this.django(`v1/confluence-scores/?limit=${limit}`)
+  },
+
+  // --- HMM Regime API ---
+
+  getHMMRegimes() {
+    return this.django('v1/hmm-regimes/')
   },
 }
 

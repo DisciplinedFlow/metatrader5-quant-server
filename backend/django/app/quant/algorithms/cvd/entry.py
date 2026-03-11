@@ -39,6 +39,7 @@ from app.quant.backtester_generic import INDICATOR_REGISTRY, CONDITION_OPS
 from app.quant.algorithms.cvd.config import (
     LEVERAGE,
     CAPITAL_PER_TRADE,
+    MAX_LOT_SIZE,
     DEVIATION,
     MAX_OPEN_TRADES,
     ATR_PERIOD,
@@ -765,7 +766,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             # --- Symbol performance filter ---
             sym_ok, sym_mult, sym_reason = _check_symbol_performance(pair)
             if not sym_ok:
-                logger.warning(f"CVD: {sym_reason}")
+                logger.debug(f"CVD: {sym_reason}")
                 continue
             if sym_mult < 1.0:
                 logger.info(f"CVD: {sym_reason}")
@@ -859,12 +860,12 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             grp_ok, grp_reason = _check_group_tendency(pair, order_type)
             if not grp_ok:
                 group_mult = GROUP_TENDENCY_SIZE_PENALTY
-                logger.warning(
+                logger.debug(
                     f"CVD: {grp_reason} — applying {GROUP_TENDENCY_SIZE_PENALTY:.0%} "
                     f"sizing penalty"
                 )
             else:
-                logger.info(f"CVD: {grp_reason}")
+                logger.debug(f"CVD: {grp_reason}")
 
             # --- ML Signal Scorer ---
             ml_score, ml_accept, ml_features = 0.5, True, {}
@@ -1103,6 +1104,14 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     logger.error(f"CVD: Order volume too low for {pair}: {full_volume_lots}")
                     PairLock.objects.filter(symbol=pair).delete()
                     continue
+
+                # Hard safety cap — prevent catastrophic sizing regardless of upstream math
+                if full_volume_lots > MAX_LOT_SIZE:
+                    logger.warning(
+                        f"CVD: CAPPING {pair} from {full_volume_lots:.2f} to {MAX_LOT_SIZE} lots "
+                        f"(capital=${order_capital:.2f}, size_usd=${order_size_usd:.2f})"
+                    )
+                    full_volume_lots = MAX_LOT_SIZE
 
                 # Livermore scale-in: enter at 60%, add 40% on confirmation
                 order_volume_lots = round(full_volume_lots * INITIAL_SIZE_FRACTION, 2)

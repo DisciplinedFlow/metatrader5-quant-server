@@ -195,11 +195,11 @@ function getColor(index) {
     <div class="page-header">
       <div>
         <h1>Bot Strategies</h1>
-        <p>Automate your trading with high-performance algorithmic bots.</p>
+        <p>Algorithmic bot management & backtesting.</p>
       </div>
       <div class="header-actions">
         <button class="tp-btn tp-btn-outline" @click="showBuilder = !showBuilder">
-          <span class="material-symbols-outlined" style="font-size:18px">{{ showBuilder ? 'close' : 'history' }}</span>
+          <span class="material-symbols-outlined" style="font-size:14px">{{ showBuilder ? 'close' : 'history' }}</span>
           {{ showBuilder ? 'Cancel' : 'Strategy Builder' }}
         </button>
         <button
@@ -208,20 +208,20 @@ function getColor(index) {
           :aria-busy="botStatusLoading"
           @click="toggleBot"
         >
-          <span class="material-symbols-outlined" style="font-size:18px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
+          <span class="material-symbols-outlined" style="font-size:14px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
           {{ botPaused ? 'Resume Bot' : 'Pause Bot' }}
         </button>
       </div>
     </div>
 
     <!-- Bot Status Banner -->
-    <div class="status-banner" :class="botPaused ? 'status-paused' : 'status-running'" style="margin-bottom: 1.5rem;">
+    <div class="status-banner" :class="botPaused ? 'status-paused' : 'status-running'" style="margin-bottom: 1rem;">
       <span class="material-symbols-outlined" style="font-size:16px">{{ botPaused ? 'pause_circle' : 'play_circle' }}</span>
       <span class="status-text">Bot is {{ botPaused ? 'PAUSED' : 'RUNNING' }}</span>
     </div>
 
     <!-- Stats Overview -->
-    <div class="tp-stats-grid" style="margin-bottom: 2rem;">
+    <div class="tp-stats-grid" style="margin-bottom: 1.25rem;">
       <div class="tp-stat-card">
         <div class="stat-label">Total Strategies</div>
         <div class="stat-value">{{ strategies.length + customStrategies.length }}</div>
@@ -265,7 +265,7 @@ function getColor(index) {
         <div class="card-top">
           <div class="card-title-row">
             <div class="strat-icon" :style="{ background: getColor(idx) + '15', color: getColor(idx) }">
-              <span class="material-symbols-outlined" style="font-size:24px">{{ getIcon(idx) }}</span>
+              <span class="material-symbols-outlined" style="font-size:18px">{{ getIcon(idx) }}</span>
             </div>
             <div>
               <h3 class="strat-name">{{ s.name }}</h3>
@@ -302,7 +302,7 @@ function getColor(index) {
         </div>
 
         <!-- Performance Bars (visual) -->
-        <div v-if="s.latest_backtest" class="tp-perf-bars" style="margin: 0 1.25rem;">
+        <div v-if="s.latest_backtest" class="tp-perf-bars" style="margin: 0 1rem;">
           <div class="bar" v-for="n in 8" :key="n"
             :style="{
               height: (20 + Math.random() * 80) + '%',
@@ -392,10 +392,10 @@ function getColor(index) {
       <!-- Add New Strategy Card -->
       <div class="tp-add-card" @click="showBuilder = true">
         <div class="icon-circle">
-          <span class="material-symbols-outlined" style="font-size:2rem">add</span>
+          <span class="material-symbols-outlined" style="font-size:1.5rem">add</span>
         </div>
-        <p style="font-weight:700;font-size:1.1rem;color:var(--tp-text);margin-bottom:0.25rem;">Create Custom Strategy</p>
-        <p style="font-size:0.85rem;text-align:center;max-width:220px;">Use the visual builder to create and backtest your own bot strategy.</p>
+        <p style="font-weight:700;font-size:0.88rem;color:var(--tp-text);margin-bottom:0.15rem;">Create Custom Strategy</p>
+        <p style="font-size:0.75rem;text-align:center;max-width:200px;">Use the visual builder to create and backtest your own strategy.</p>
       </div>
     </div>
 
@@ -407,16 +407,16 @@ function getColor(index) {
     <!-- Custom Strategies Tab -->
     <div v-if="pageTab === 'custom'">
       <div v-if="customStrategies.length === 0" class="empty-state">
-        <span class="material-symbols-outlined" style="font-size:3rem;color:var(--tp-text-dim)">inventory_2</span>
-        <p style="font-weight:600;font-size:1rem;color:var(--tp-text);margin-top:0.5rem;">No Custom Strategies</p>
-        <p style="font-size:0.85rem;">Create one using the Strategy Builder above.</p>
+        <span class="material-symbols-outlined" style="font-size:2rem;color:var(--tp-text-dim)">inventory_2</span>
+        <p style="font-weight:600;font-size:0.88rem;color:var(--tp-text);margin-top:0.4rem;">No Custom Strategies</p>
+        <p style="font-size:0.75rem;">Create one using the Strategy Builder above.</p>
       </div>
       <div v-else class="strategy-grid">
         <div v-for="(cs, idx) in customStrategies" :key="'c'+cs.id" class="tp-card strategy-card" :class="{ 'card-active': cs.is_active }">
           <div class="card-top">
             <div class="card-title-row">
               <div class="strat-icon" :style="cs.is_active ? 'background:rgba(34,197,94,0.15);color:#22c55e;' : 'background:rgba(139,92,246,0.15);color:#8b5cf6;'">
-                <span class="material-symbols-outlined" style="font-size:24px">{{ cs.is_active ? 'bolt' : 'code' }}</span>
+                <span class="material-symbols-outlined" style="font-size:18px">{{ cs.is_active ? 'bolt' : 'code' }}</span>
               </div>
               <div>
                 <h3 class="strat-name">{{ cs.name }}</h3>
@@ -536,25 +536,29 @@ function getColor(index) {
 
 <style scoped>
 .strat-page {
-  padding: 2rem 1rem;
+  padding: 1.5rem 1.5rem 2rem;
 }
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 1.5rem;
+  align-items: center;
+  gap: 0.75rem;
   flex-wrap: wrap;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
 }
 .page-header h1 {
-  font-size: 2rem;
-  font-weight: 900;
+  font-size: 1.25rem;
+  font-weight: 800;
   letter-spacing: -0.02em;
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.1rem;
+}
+.page-header p {
+  font-size: 0.8rem;
+  color: var(--tp-text-dim);
 }
 .header-actions {
   display: flex;
-  gap: 0.75rem;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
 
@@ -562,10 +566,10 @@ function getColor(index) {
 .status-banner {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.6rem 1rem;
+  gap: 0.4rem;
+  padding: 0.4rem 0.85rem;
   border-radius: var(--tp-radius-sm);
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   font-weight: 700;
 }
 .status-running {
@@ -582,8 +586,8 @@ function getColor(index) {
 /* Strategy Grid */
 .strategy-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 1rem;
 }
 
 /* Strategy Card */
@@ -602,16 +606,16 @@ function getColor(index) {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  padding: 1.25rem;
+  padding: 0.85rem 1rem;
   border-bottom: 1px solid var(--tp-border);
 }
 .card-title-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
 }
 .strat-icon {
-  width: 3rem; height: 3rem;
+  width: 2.25rem; height: 2.25rem;
   border-radius: var(--tp-radius);
   display: flex;
   align-items: center;
@@ -619,13 +623,13 @@ function getColor(index) {
   flex-shrink: 0;
 }
 .strat-name {
-  font-size: 1.05rem;
+  font-size: 0.88rem;
   font-weight: 700;
   line-height: 1.2;
-  margin-bottom: 0.15rem;
+  margin-bottom: 0.1rem;
 }
 .strat-desc {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--tp-text-dim) !important;
 }
 
@@ -633,29 +637,29 @@ function getColor(index) {
 .card-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
+  gap: 0.5rem;
+  padding: 0.65rem 1rem;
   background: rgba(30,41,59,0.2);
 }
 .card-stats-empty {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
+  padding: 0.65rem 1rem;
 }
 .stat-item {
   display: flex;
   flex-direction: column;
 }
 .stat-micro-label {
-  font-size: 0.6rem;
+  font-size: 0.58rem;
   text-transform: uppercase;
   font-weight: 700;
   color: var(--tp-text-dim);
   letter-spacing: 0.06em;
 }
 .stat-micro-value {
-  font-size: 1.1rem;
+  font-size: 0.92rem;
   font-weight: 700;
   color: var(--tp-text);
 }
@@ -664,14 +668,14 @@ function getColor(index) {
 
 /* Expandable sections */
 .card-expandable {
-  padding: 0 1.25rem;
+  padding: 0 1rem;
 }
 .expand-summary {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.75rem 0;
-  font-size: 0.8rem;
+  gap: 0.35rem;
+  padding: 0.55rem 0;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--tp-text-muted);
   cursor: pointer;
@@ -692,16 +696,16 @@ details[open] > .expand-summary::after {
   transform: rotate(180deg);
 }
 .expand-content {
-  padding: 0.75rem 0;
+  padding: 0.5rem 0;
 }
 
 /* Detail Table */
 .detail-table {
   width: 100%;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
 }
 .detail-table td {
-  padding: 0.4rem 0;
+  padding: 0.3rem 0;
   border: none;
 }
 .detail-table td:first-child {
@@ -727,8 +731,8 @@ details[open] > .expand-summary::after {
 /* Card Actions */
 .card-actions {
   display: flex;
-  gap: 0.75rem;
-  padding: 1.25rem;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
   margin-top: auto;
 }
 
@@ -737,8 +741,8 @@ details[open] > .expand-summary::after {
   background: var(--tp-bg-surface);
   border: 1px solid var(--tp-border);
   border-radius: var(--tp-radius-sm);
-  padding: 1rem;
-  font-size: 0.75rem;
+  padding: 0.65rem;
+  font-size: 0.7rem;
   color: var(--tp-text-muted);
   overflow-x: auto;
   margin: 0;
@@ -750,7 +754,12 @@ details[open] > .expand-summary::after {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 4rem 2rem;
+  padding: 3rem 2rem;
   text-align: center;
+}
+
+/* Performance bars compact */
+.tp-perf-bars {
+  margin: 0 1rem !important;
 }
 </style>

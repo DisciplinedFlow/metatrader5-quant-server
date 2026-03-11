@@ -4,6 +4,7 @@ from app.utils.constants import MT5Timeframe
 DEFAULT_TIMEFRAME = MT5Timeframe.M15
 LEVERAGE = 200
 CAPITAL_PER_TRADE = 500
+MAX_LOT_SIZE = 1.0     # Hard safety cap — never exceed this regardless of sizing math
 DEVIATION = 20
 MAX_OPEN_TRADES = 5    # Reduced from 10 — less exposure with only 3 active strategies
 ATR_PERIOD = 14

@@ -76,6 +76,19 @@ function fmtPct(val) {
   if (val === null || val === undefined) return '-'
   return (val * 100).toFixed(1) + '%'
 }
+
+const modelTypeClass = computed(() => {
+  if (!model.value) return ''
+  return modelTypeClassFor(model.value.model_type)
+})
+
+function modelTypeClassFor(type) {
+  if (!type) return ''
+  const t = type.toLowerCase()
+  if (t.includes('xgboost')) return 'mt-xgboost'
+  if (t.includes('lightgbm') || t.includes('lgbm')) return 'mt-lightgbm'
+  return 'mt-sklearn'
+}
 </script>
 
 <template>
@@ -88,6 +101,20 @@ function fmtPct(val) {
     <div v-if="loading" aria-busy="true">Loading ML data...</div>
 
     <template v-else>
+      <!-- Model Type Banner -->
+      <div v-if="model" class="model-type-banner" style="margin-bottom: 1.5rem;">
+        <div class="model-type-pill" :class="modelTypeClass">
+          {{ model.model_type }}
+        </div>
+        <div class="model-type-meta">
+          <span class="model-version">v{{ model.version }}</span>
+          <span class="model-sep">/</span>
+          <span>{{ model.trade_count }} trades</span>
+          <span class="model-sep">/</span>
+          <span>Trained {{ fmtTime(model.trained_at) }}</span>
+        </div>
+      </div>
+
       <!-- Status Cards -->
       <div class="tp-stats-grid" style="margin-bottom: 2rem;">
         <div class="tp-stat-card">
@@ -107,6 +134,16 @@ function fmtPct(val) {
           </div>
           <div v-if="model" style="font-size:0.75rem; color:var(--tp-text-muted)">
             CV: {{ fmtPct(model.cv_accuracy) }} &plusmn; {{ fmtPct(model.cv_std) }}
+          </div>
+        </div>
+
+        <div class="tp-stat-card" v-if="model && model.walk_forward_accuracy != null">
+          <div class="stat-label">Walk-Forward</div>
+          <div class="stat-value" :style="model.walk_forward_accuracy > 0.55 ? 'color:var(--tp-success)' : model.walk_forward_accuracy > 0.50 ? 'color:var(--tp-warning)' : 'color:var(--tp-danger)'">
+            {{ fmtPct(model.walk_forward_accuracy) }}
+          </div>
+          <div style="font-size:0.75rem; color:var(--tp-text-muted)">
+            No future leakage
           </div>
         </div>
 
@@ -204,10 +241,20 @@ function fmtPct(val) {
           <table>
             <tbody>
               <tr><td>Version</td><td>v{{ model.version }}</td></tr>
-              <tr><td>Type</td><td>{{ model.model_type }}</td></tr>
+              <tr>
+                <td>Type</td>
+                <td><span class="model-type-inline" :class="modelTypeClass">{{ model.model_type }}</span></td>
+              </tr>
               <tr><td>Training Trades</td><td>{{ model.trade_count }}</td></tr>
               <tr><td>Accuracy</td><td>{{ fmtPct(model.accuracy) }}</td></tr>
               <tr><td>Cross-Validated</td><td>{{ fmtPct(model.cv_accuracy) }} &plusmn; {{ fmtPct(model.cv_std) }}</td></tr>
+              <tr v-if="model.walk_forward_accuracy != null">
+                <td>Walk-Forward</td>
+                <td :style="model.walk_forward_accuracy > 0.55 ? 'color:var(--tp-success);font-weight:700' : model.walk_forward_accuracy > 0.50 ? 'color:var(--tp-warning);font-weight:700' : 'color:var(--tp-danger);font-weight:700'">
+                  {{ fmtPct(model.walk_forward_accuracy) }}
+                  <span style="font-weight:400;font-size:0.75rem;color:var(--tp-text-muted);margin-left:0.5rem;">Lopez de Prado method</span>
+                </td>
+              </tr>
               <tr><td>Precision</td><td>{{ fmtPct(model.precision) }}</td></tr>
               <tr><td>Recall</td><td>{{ fmtPct(model.recall) }}</td></tr>
               <tr><td>F1 Score</td><td>{{ fmtPct(model.f1_score) }}</td></tr>
@@ -343,7 +390,8 @@ function fmtPct(val) {
                 <th>Type</th>
                 <th>Trades</th>
                 <th>Accuracy</th>
-                <th>CV Accuracy</th>
+                <th>CV Acc</th>
+                <th>WF Acc</th>
                 <th>Trained</th>
                 <th>Active</th>
               </tr>
@@ -351,10 +399,13 @@ function fmtPct(val) {
             <tbody>
               <tr v-for="m in history" :key="m.version" :style="m.is_active ? 'background:rgba(var(--tp-success-rgb, 0,200,100), 0.05)' : ''">
                 <td><strong>v{{ m.version }}</strong></td>
-                <td>{{ m.model_type }}</td>
+                <td><span class="model-type-inline" :class="modelTypeClassFor(m.model_type)">{{ m.model_type }}</span></td>
                 <td>{{ m.trade_count }}</td>
                 <td :style="m.accuracy > 0.55 ? 'color:var(--tp-success)' : ''">{{ fmtPct(m.accuracy) }}</td>
                 <td>{{ fmtPct(m.cv_accuracy) }}</td>
+                <td :style="m.walk_forward_accuracy > 0.55 ? 'color:var(--tp-success);font-weight:700' : m.walk_forward_accuracy > 0.50 ? 'color:var(--tp-warning)' : ''">
+                  {{ m.walk_forward_accuracy != null ? fmtPct(m.walk_forward_accuracy) : '-' }}
+                </td>
                 <td style="font-size:0.8rem;">{{ fmtTime(m.trained_at) }}</td>
                 <td>{{ m.is_active ? 'Active' : '' }}</td>
               </tr>
@@ -494,5 +545,69 @@ function fmtPct(val) {
   .feature-row {
     grid-template-columns: 100px 1fr 40px;
   }
+}
+
+/* Model Type Banner */
+.model-type-banner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  background: var(--tp-bg-glass);
+  backdrop-filter: var(--tp-glass-blur);
+  -webkit-backdrop-filter: var(--tp-glass-blur);
+  border: var(--tp-glass-border);
+  border-radius: var(--tp-radius);
+  box-shadow: var(--tp-glass-shadow);
+}
+
+.model-type-pill {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.model-type-inline {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.mt-xgboost {
+  background: rgba(99, 102, 241, 0.12);
+  color: #818cf8;
+}
+
+.mt-lightgbm {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+}
+
+.mt-sklearn {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+}
+
+.model-type-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--tp-text-muted);
+}
+
+.model-version {
+  font-weight: 700;
+  color: var(--tp-text);
+}
+
+.model-sep {
+  color: var(--tp-border);
 }
 </style>

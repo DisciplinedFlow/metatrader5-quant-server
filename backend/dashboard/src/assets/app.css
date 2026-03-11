@@ -468,14 +468,18 @@ body {
   gap: 2rem;
   border-bottom: 1px solid var(--tp-border);
   margin-bottom: 1.5rem;
+  margin-top: 0.75rem;
   background: var(--tp-bg-glass);
   backdrop-filter: var(--tp-glass-blur);
   -webkit-backdrop-filter: var(--tp-glass-blur);
-  padding: 0 1rem;
+  padding: 0 1.5rem;
   border-radius: var(--tp-radius) var(--tp-radius) 0 0;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .tp-tabs::-webkit-scrollbar {
@@ -498,6 +502,7 @@ body {
   display: inline-block;
   white-space: nowrap;
   flex-shrink: 0;
+  outline: none;
 }
 
 .tp-tabs button.active,
@@ -506,6 +511,10 @@ body {
   border-bottom-color: var(--tp-primary);
 }
 
+.tp-tabs button:focus,
+.tp-tabs a:focus {
+  box-shadow: none;
+}
 .tp-tabs button:hover:not(.active),
 .tp-tabs a:hover:not(.router-link-exact-active) {
   color: var(--tp-text);
@@ -888,33 +897,33 @@ dialog footer {
 .logs-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
 }
 
 .logs-header-left {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.15rem;
 }
 
 .logs-header-left .logs-title-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
 }
 
 .logs-header-left h1 {
-  font-size: 1.75rem;
+  font-size: 1.25rem;
   font-weight: 800;
   margin: 0;
   letter-spacing: -0.02em;
 }
 
 .logs-header-left .logs-subtitle {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: var(--tp-text-dim);
   margin: 0;
 }
@@ -929,12 +938,12 @@ dialog footer {
 .logs-badge-running {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.25rem 0.75rem;
+  gap: 0.3rem;
+  padding: 0.15rem 0.55rem;
   border-radius: 9999px;
   background: rgba(34, 197, 94, 0.1);
   color: #22c55e;
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -977,8 +986,8 @@ dialog footer {
 /* Layout: sidebar + terminal */
 .logs-layout {
   display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 1.5rem;
+  grid-template-columns: 220px 1fr;
+  gap: 1rem;
   min-height: 600px;
 }
 
@@ -992,7 +1001,7 @@ dialog footer {
 .logs-sidebar {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 0.75rem;
 }
 
 .logs-sidebar-card {
@@ -1002,14 +1011,15 @@ dialog footer {
   border: var(--tp-glass-border);
   border-radius: var(--tp-radius);
   box-shadow: var(--tp-glass-shadow);
-  padding: 1.25rem;
+  padding: 0.85rem;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 0.85rem;
+  overflow: hidden;
 }
 
 .logs-sidebar h3 {
-  font-size: 0.7rem;
+  font-size: 0.6rem;
   font-weight: 700;
   color: var(--tp-text-dim);
   text-transform: uppercase;
@@ -1023,21 +1033,22 @@ dialog footer {
 
 .logs-search-wrap .material-symbols-outlined {
   position: absolute;
-  left: 0.75rem;
+  left: 0.6rem;
   top: 50%;
   transform: translateY(-50%);
   color: var(--tp-text-dim);
-  font-size: 18px;
+  font-size: 15px;
 }
 
 .logs-search {
   width: 100%;
-  padding: 0.5rem 0.75rem 0.5rem 2.5rem;
+  height: 2rem;
+  padding: 0 0.6rem;
   background: var(--tp-bg-dark);
   border: 1px solid var(--tp-border);
   border-radius: var(--tp-radius-sm);
   color: var(--tp-text);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-family: var(--tp-font);
   outline: none;
   transition: border-color 0.15s;
@@ -1052,6 +1063,10 @@ dialog footer {
   color: var(--tp-text-dim);
 }
 
+.logs-search.logs-search-noicon {
+  padding-left: 0.6rem;
+}
+
 /* Level filter checkboxes */
 .logs-level-list {
   display: flex;
@@ -1063,7 +1078,7 @@ dialog footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.5rem;
+  padding: 0.3rem 0.4rem;
   border-radius: var(--tp-radius-sm);
   cursor: pointer;
   transition: background 0.15s;
@@ -1076,7 +1091,7 @@ dialog footer {
 .logs-level-item label {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.45rem;
   cursor: pointer;
   margin: 0;
 }
@@ -1084,8 +1099,8 @@ dialog footer {
 .logs-level-item input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border: 1px solid var(--tp-border-light);
   border-radius: 3px;
   background: transparent;
@@ -1113,7 +1128,7 @@ dialog footer {
 }
 
 .logs-level-item .level-name {
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   color: var(--tp-text-muted);
 }
 
@@ -1144,21 +1159,24 @@ dialog footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-top: 1rem;
+  padding-top: 0.75rem;
   border-top: 1px solid var(--tp-border);
+  overflow: hidden;
 }
 
 .logs-toggle-row span {
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-weight: 500;
   color: var(--tp-text-muted);
 }
 
 .logs-toggle-switch {
   position: relative;
-  width: 44px;
-  height: 24px;
+  width: 36px;
+  min-width: 36px;
+  height: 20px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .logs-toggle-switch input {
@@ -1171,9 +1189,10 @@ dialog footer {
 .logs-toggle-switch .slider {
   position: absolute;
   inset: 0;
-  background: var(--tp-border-light);
-  border-radius: 12px;
-  transition: background 0.2s;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  transition: background 0.2s, border-color 0.2s;
 }
 
 .logs-toggle-switch .slider::before {
@@ -1181,8 +1200,8 @@ dialog footer {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   background: white;
   border-radius: 50%;
   transition: transform 0.2s;
@@ -1190,10 +1209,11 @@ dialog footer {
 
 .logs-toggle-switch input:checked+.slider {
   background: var(--tp-primary);
+  border-color: var(--tp-primary);
 }
 
 .logs-toggle-switch input:checked+.slider::before {
-  transform: translateX(20px);
+  transform: translateX(16px);
 }
 
 /* Quick insight card */
@@ -1201,19 +1221,19 @@ dialog footer {
   background: rgba(13, 127, 242, 0.08);
   border: 1px solid rgba(13, 127, 242, 0.2);
   border-radius: var(--tp-radius);
-  padding: 1.25rem;
+  padding: 0.75rem 0.85rem;
 }
 
 .logs-insight-card .insight-header {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
 }
 
 .logs-insight-card .insight-header .material-symbols-outlined {
   color: var(--tp-primary);
-  font-size: 20px;
+  font-size: 16px;
 }
 
 .logs-insight-card .insight-header h4 {
@@ -1225,9 +1245,9 @@ dialog footer {
 }
 
 .logs-insight-card p {
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   color: var(--tp-text-muted);
-  line-height: 1.6;
+  line-height: 1.5;
   margin: 0;
 }
 
@@ -1318,14 +1338,14 @@ dialog footer {
 /* Terminal body */
 .logs-terminal-body {
   flex: 1;
-  padding: 1rem;
+  padding: 0.75rem;
   font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 0.8rem;
-  line-height: 1.7;
+  font-size: 0.72rem;
+  line-height: 1.6;
   overflow-y: auto;
   background: #060a10;
   min-height: 400px;
-  max-height: 65vh;
+  max-height: 70vh;
 }
 
 .logs-terminal-body::-webkit-scrollbar {

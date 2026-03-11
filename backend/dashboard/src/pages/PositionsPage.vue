@@ -82,27 +82,26 @@ async function handleModifySubmit({ ticket, sl, tp }) {
 </script>
 
 <template>
-  <div class="tp-page">
-    <SectionNav :links="forexLinks" />
-    
-    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem;">
+  <SectionNav :links="forexLinks" />
+  <div class="tp-page positions-page">
+    <div class="page-header">
       <div>
-        <h1 style="font-size: 2.25rem; font-weight: 900; letter-spacing: -0.02em;">Active Positions</h1>
-        <p style="color: var(--tp-text-muted); margin-top: 0.25rem;">Forex &amp; CFD Trading</p>
+        <h1>Active Positions</h1>
+        <p class="page-subtitle">Forex & CFD Trading</p>
       </div>
-      <div style="display: flex; gap: 0.75rem;">
+      <div class="header-actions">
         <button class="tp-btn tp-btn-outline" @click="refresh">
-          <span class="material-symbols-outlined" style="font-size:18px">refresh</span>
+          <span class="material-symbols-outlined" style="font-size:16px">refresh</span>
           Refresh
         </button>
         <button class="tp-btn tp-btn-danger" @click="handleCloseAll">
-          <span class="material-symbols-outlined" style="font-size:18px">close</span>
+          <span class="material-symbols-outlined" style="font-size:16px">close</span>
           Close All
         </button>
       </div>
     </div>
 
-    <div class="tp-card" style="padding: 0;">
+    <div class="tp-card positions-card">
       <PositionsTable
         :positions="positionsStore.positions"
         :show-actions="true"
@@ -120,3 +119,33 @@ async function handleModifySubmit({ ticket, sl, tp }) {
     />
   </div>
 </template>
+
+<style scoped>
+.positions-page {
+  padding: 1.5rem 1.5rem 2rem;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+.page-header h1 {
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.page-subtitle {
+  font-size: 0.8rem;
+  color: var(--tp-text-dim);
+  margin-top: 0.15rem;
+}
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.positions-card {
+  padding: 0;
+  overflow: hidden;
+}
+</style>

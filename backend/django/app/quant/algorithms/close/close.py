@@ -63,7 +63,7 @@ def close_algorithm():
                     closing_reason = closed_deal.get('reason', 'CLOSED')
                 else:
                     # Fallback: use cached position data when deal history is unavailable
-                    logger.warning(f"No deal history for ticket {ticket}, using cached position data.")
+                    logger.debug(f"No deal history for ticket {ticket}, using cached position data.")
                     close_time = current_time
                     close_price = position.price_current
                     pnl = position.profit

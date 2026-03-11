@@ -126,16 +126,16 @@ const levelCounts = computed(() => ({
             Bot Running
           </div>
         </div>
-        <p class="logs-subtitle">Real-time system diagnostics and execution history for Forex Trading Bot</p>
+        <p class="logs-subtitle">Real-time bot diagnostics & execution logs.</p>
       </div>
       <div class="logs-header-actions">
-        <button class="tp-btn tp-btn-primary" @click="refresh">
-          <span class="material-symbols-outlined" style="font-size:16px;">download</span>
-          Export Logs
+        <button class="tp-btn tp-btn-outline" @click="refresh">
+          <span class="material-symbols-outlined" style="font-size:14px">refresh</span>
+          Refresh
         </button>
-        <button class="tp-btn tp-btn-dark" @click="logs = []">
-          <span class="material-symbols-outlined" style="font-size:16px;">delete_sweep</span>
-          Clear Logs
+        <button class="tp-btn tp-btn-outline" @click="logs = []">
+          <span class="material-symbols-outlined" style="font-size:14px">delete_sweep</span>
+          Clear
         </button>
       </div>
     </div>
@@ -148,16 +148,15 @@ const levelCounts = computed(() => ({
           <!-- Search -->
           <div>
             <h3>Search &amp; Filter</h3>
-            <div class="logs-search-wrap" style="margin-top:0.75rem;">
-              <span class="material-symbols-outlined">search</span>
-              <input v-model="searchQuery" class="logs-search" type="text" placeholder="Search logs..." />
+            <div class="logs-search-wrap" style="margin-top:0.4rem;">
+              <input v-model="searchQuery" class="logs-search logs-search-noicon" type="text" placeholder="Filter logs..." />
             </div>
           </div>
 
           <!-- Log Level -->
           <div>
             <h3>Log Level</h3>
-            <div class="logs-level-list" style="margin-top:0.5rem;">
+            <div class="logs-level-list" style="margin-top:0.3rem;">
               <div class="logs-level-item">
                 <label>
                   <input v-model="showInfo" type="checkbox" />
@@ -185,7 +184,7 @@ const levelCounts = computed(() => ({
           <!-- Lines select -->
           <div>
             <h3>Display Lines</h3>
-            <select v-model="lines" @change="refresh" class="tp-select" style="margin-top:0.5rem;">
+            <select v-model="lines" @change="refresh" class="tp-select" style="margin-top:0.3rem;font-size:0.78rem;height:2rem;">
               <option value="100">100 Lines</option>
               <option value="200">200 Lines</option>
               <option value="500">500 Lines</option>

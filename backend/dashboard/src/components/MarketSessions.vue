@@ -10,7 +10,7 @@ const SESSIONS = [
   { name: 'NYMEX',    openUTC: 23, closeUTC: 22, color: '#8d6e63', assets: 'NG, WTI, BRN', nearly24h: true, breakStartUTC: 22, breakEndUTC: 23 },
 ]
 
-const HOURS = [0, 3, 6, 9, 12, 15, 18, 21]
+const HOURS = [0, 3, 6, 9, 12, 15, 18, 21, 24]
 
 const now = ref(new Date())
 const timer = setInterval(() => { now.value = new Date() }, 1000)

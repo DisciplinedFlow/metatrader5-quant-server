@@ -3,9 +3,14 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePositionsStore } from '@/stores/positions'
 import { usePolling } from '@/composables/usePolling'
+import { useConfluenceScore } from '@/composables/useConfluenceScore'
+import { useHMMRegime } from '@/composables/useHMMRegime'
 import PositionsTable from '@/components/PositionsTable.vue'
 import MarketSessions from '@/components/MarketSessions.vue'
 import SectionNav from '@/components/SectionNav.vue'
+import ICTSetupLog from '@/components/ICTSetupLog.vue'
+import ConfluenceScoreWidget from '@/components/ConfluenceScoreWidget.vue'
+import HMMRegimeWidget from '@/components/HMMRegimeWidget.vue'
 import api from '@/services/api'
 
 const router = useRouter()
@@ -140,69 +145,74 @@ function formatNewsTime(unixTimestamp) {
   return d.toLocaleDateString()
 }
 
+// Confluence score & HMM regime composables
+const confluence = useConfluenceScore()
+const hmmRegime = useHMMRegime()
+
 onMounted(fetchTrades)
 usePolling(refresh, 5000)
 usePolling(fetchMarketPulse, 120000)
 usePolling(fetchTrades, 30000)
+usePolling(() => confluence.fetch(), 60000)
+usePolling(() => hmmRegime.fetch(), 30000)
 </script>
 
 <template>
   <SectionNav :links="forexLinks" />
   <div class="tp-page dashboard-page">
+
+    <!-- Bot Status + Positions Stats — full-width strip -->
+    <div class="top-row">
+      <div class="tp-card bot-card">
+        <div class="bot-header">
+          <div class="bot-label-row">
+            <div class="bot-icon" :class="botPaused ? 'bot-icon-paused' : 'bot-icon-running'">
+              <span class="material-symbols-outlined">smart_toy</span>
+            </div>
+            <div>
+              <p class="micro-label">Bot Status</p>
+              <div class="bot-status-row">
+                <span class="status-dot" :class="botPaused ? 'dot-paused' : 'dot-running'"></span>
+                <p class="bot-status-text">{{ botPaused ? 'PAUSED' : 'RUNNING' }}</p>
+              </div>
+            </div>
+          </div>
+          <button
+            class="tp-btn tp-btn-outline"
+            :aria-busy="botStatusLoading"
+            @click="toggleBot"
+          >
+            <span class="material-symbols-outlined" style="font-size:16px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
+            {{ botPaused ? 'Resume Bot' : 'Pause Bot' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="tp-card stats-row-card" v-if="!posError">
+        <div class="mini-stat">
+          <p class="micro-label">Count</p>
+          <p class="mini-stat-value">{{ positionsStore.positions.length }}</p>
+        </div>
+        <div class="mini-stat">
+          <p class="micro-label">Total Profit</p>
+          <p class="mini-stat-value" :class="positionsStore.totalProfit >= 0 ? 'text-success' : 'text-danger'">
+            ${{ positionsStore.totalProfit.toFixed(2) }}
+          </p>
+        </div>
+        <div class="mini-stat">
+          <p class="micro-label">Total Swap</p>
+          <p class="mini-stat-value">${{ positionsStore.totalSwap.toFixed(2) }}</p>
+        </div>
+      </div>
+      <div v-else class="tp-card stats-row-card">
+        <p style="color:var(--tp-text-dim);font-size:0.85rem;padding:1rem;">Failed to load positions</p>
+      </div>
+    </div>
+
     <div class="dash-grid">
 
       <!-- ===== LEFT COLUMN ===== -->
       <div class="left-col">
-
-        <!-- Bot Status + Positions Stats row -->
-        <div class="top-row">
-          <!-- Bot Status Card -->
-          <div class="tp-card bot-card">
-            <div class="bot-header">
-              <div class="bot-label-row">
-                <div class="bot-icon" :class="botPaused ? 'bot-icon-paused' : 'bot-icon-running'">
-                  <span class="material-symbols-outlined">smart_toy</span>
-                </div>
-                <div>
-                  <p class="micro-label">Bot Status</p>
-                  <div class="bot-status-row">
-                    <span class="status-dot" :class="botPaused ? 'dot-paused' : 'dot-running'"></span>
-                    <p class="bot-status-text">{{ botPaused ? 'PAUSED' : 'RUNNING' }}</p>
-                  </div>
-                </div>
-              </div>
-              <button
-                class="tp-btn tp-btn-outline"
-                :aria-busy="botStatusLoading"
-                @click="toggleBot"
-              >
-                <span class="material-symbols-outlined" style="font-size:16px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
-                {{ botPaused ? 'Resume Bot' : 'Pause Bot' }}
-              </button>
-            </div>
-          </div>
-
-          <!-- Positions Stats Card -->
-          <div class="tp-card stats-row-card" v-if="!posError">
-            <div class="mini-stat">
-              <p class="micro-label">Count</p>
-              <p class="mini-stat-value">{{ positionsStore.positions.length }}</p>
-            </div>
-            <div class="mini-stat">
-              <p class="micro-label">Total Profit</p>
-              <p class="mini-stat-value" :class="positionsStore.totalProfit >= 0 ? 'text-success' : 'text-danger'">
-                ${{ positionsStore.totalProfit.toFixed(2) }}
-              </p>
-            </div>
-            <div class="mini-stat">
-              <p class="micro-label">Total Swap</p>
-              <p class="mini-stat-value">${{ positionsStore.totalSwap.toFixed(2) }}</p>
-            </div>
-          </div>
-          <div v-else class="tp-card stats-row-card">
-            <p style="color:var(--tp-text-dim);font-size:0.85rem;padding:1rem;">Failed to load positions</p>
-          </div>
-        </div>
 
         <!-- Market Sessions -->
         <div class="tp-card sessions-card">
@@ -308,6 +318,17 @@ usePolling(fetchTrades, 30000)
           </button>
         </div>
 
+        <!-- HMM Regime Display -->
+        <HMMRegimeWidget :data="hmmRegime.data.value" :loading="hmmRegime.loading.value" />
+
+        <!-- Confluence Score Distribution -->
+        <ConfluenceScoreWidget :data="confluence.data.value" :loading="confluence.loading.value" />
+
+        <!-- ICT 5-Step Scanner -->
+        <div class="tp-card ict-card">
+          <ICTSetupLog />
+        </div>
+
         <!-- Market Pulse / News Card -->
         <div class="tp-card news-card">
           <div class="news-header">
@@ -342,74 +363,87 @@ usePolling(fetchTrades, 30000)
 
 <style scoped>
 .dashboard-page {
-  padding: 1.5rem 1rem 2rem;
+  padding: 1rem 1.5rem 2rem;
 }
 
 /* ===== Grid Layout ===== */
 .dash-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 1.5rem;
+  gap: 1.25rem;
 }
 @media (min-width: 1024px) {
   .dash-grid {
-    grid-template-columns: 2fr 1fr;
+    grid-template-columns: 1.65fr 1fr;
   }
 }
 .left-col, .right-col {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1.25rem;
+  min-width: 0; /* prevent grid blowout */
 }
 
-/* ===== Top Row: Bot + Stats ===== */
+/* ===== Top Row: Bot + Stats — full-width strip above grid ===== */
 .top-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
-}
-@media (max-width: 768px) {
-  .top-row {
-    grid-template-columns: 1fr;
-  }
+  display: flex;
+  gap: 0;
+  border-radius: var(--tp-radius);
+  overflow: hidden;
+  background: var(--tp-bg-glass);
+  backdrop-filter: var(--tp-glass-blur);
+  -webkit-backdrop-filter: var(--tp-glass-blur);
+  border: var(--tp-glass-border);
+  box-shadow: var(--tp-glass-shadow);
+  margin-bottom: 1.25rem;
 }
 
-/* Bot Card */
+/* Bot Card — left segment */
 .bot-card {
-  padding: 1.25rem;
+  padding: 1rem 1.25rem;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: center;
+  border-right: 1px solid var(--tp-border);
+  /* override tp-card defaults since parent handles glass */
+  background: none;
+  backdrop-filter: none;
+  border-radius: 0;
+  border-top: none;
+  border-bottom: none;
+  border-left: none;
+  box-shadow: none;
+  flex-shrink: 0;
 }
 .bot-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-.bot-label-row {
   display: flex;
   align-items: center;
   gap: 0.75rem;
 }
+.bot-label-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
 .bot-icon {
-  width: 2.5rem; height: 2.5rem;
+  width: 2rem; height: 2rem;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
+.bot-icon .material-symbols-outlined { font-size: 18px; }
 .bot-icon-running {
-  background: rgba(34,197,94,0.1);
+  background: rgba(34,197,94,0.12);
   color: var(--tp-success);
 }
 .bot-icon-paused {
-  background: rgba(245,158,11,0.1);
+  background: rgba(245,158,11,0.12);
   color: var(--tp-warning);
 }
 .micro-label {
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-weight: 700;
@@ -419,45 +453,74 @@ usePolling(fetchTrades, 30000)
 .bot-status-row {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  margin-top: 0.15rem;
+  gap: 0.35rem;
+  margin-top: 0.1rem;
 }
 .status-dot {
-  width: 8px; height: 8px;
+  width: 7px; height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 .dot-running { background: var(--tp-success); }
 .dot-paused { background: var(--tp-warning); }
 .bot-status-text {
-  font-size: 1.1rem;
+  font-size: 0.9rem;
   font-weight: 800;
   color: var(--tp-text);
   margin: 0;
 }
 
-/* Stats Row Card */
+/* Stats Row Card — fills remaining space */
 .stats-row-card {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
-  padding: 1.25rem;
-  align-items: center;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  /* override tp-card defaults */
+  background: none;
+  backdrop-filter: none;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  align-items: stretch;
 }
 .mini-stat {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  justify-content: center;
+  gap: 0.2rem;
+  padding: 1rem 1.25rem;
+  border-right: 1px solid var(--tp-border);
+  min-width: 0;
+}
+.mini-stat:last-child {
+  border-right: none;
 }
 .mini-stat-value {
-  font-size: 1.75rem;
+  font-size: 1.35rem;
   font-weight: 800;
   color: var(--tp-text);
   margin: 0;
   line-height: 1;
+  font-feature-settings: 'tnum' 1;
+  white-space: nowrap;
 }
 .text-success { color: var(--tp-success) !important; }
 .text-danger { color: var(--tp-danger) !important; }
+
+@media (max-width: 768px) {
+  .top-row {
+    flex-direction: column;
+  }
+  .bot-card {
+    border-right: none;
+    border-bottom: 1px solid var(--tp-border);
+  }
+  .stats-row-card {
+    flex-direction: row;
+  }
+}
 
 /* Sessions Card */
 .sessions-card {
@@ -640,6 +703,12 @@ usePolling(fetchTrades, 30000)
   width: 100%;
   justify-content: center;
   font-size: 0.8rem;
+}
+
+/* ===== ICT Card ===== */
+.ict-card {
+  padding: 0;
+  overflow: hidden;
 }
 
 /* ===== News Card ===== */

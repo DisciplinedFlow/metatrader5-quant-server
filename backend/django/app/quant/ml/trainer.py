@@ -509,7 +509,7 @@ def get_active_model():
             return None, None
 
         if not os.path.exists(ml_model.model_path):
-            logger.warning(f"Model file not found: {ml_model.model_path}")
+            logger.debug(f"Model file not found: {ml_model.model_path}")
             return None, None
 
         model = joblib.load(ml_model.model_path)

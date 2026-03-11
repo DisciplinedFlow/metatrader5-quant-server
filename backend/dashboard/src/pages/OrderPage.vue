@@ -81,12 +81,12 @@ async function handleSubmit() {
 
         <form @submit.prevent="handleSubmit">
           <!-- Buy / Sell Toggle -->
-          <div class="tp-toggle" style="margin-bottom: 1rem;">
-            <button type="button" :class="{ active: form.type === 'BUY' }" @click="form.type = 'BUY'">
-              <span class="material-symbols-outlined" style="font-size:16px">trending_up</span> Buy
+          <div class="side-toggle">
+            <button type="button" class="side-btn side-buy" :class="{ active: form.type === 'BUY' }" @click="form.type = 'BUY'">
+              Buy
             </button>
-            <button type="button" :class="{ active: form.type === 'SELL' }" @click="form.type = 'SELL'">
-              <span class="material-symbols-outlined" style="font-size:16px">trending_down</span> Sell
+            <button type="button" class="side-btn side-sell" :class="{ active: form.type === 'SELL' }" @click="form.type = 'SELL'">
+              Sell
             </button>
           </div>
 
@@ -179,61 +179,103 @@ async function handleSubmit() {
 .order-page {
   display: flex;
   justify-content: center;
-  padding: 2rem 1rem;
+  padding: 1.5rem 1rem;
 }
 .order-wrapper {
   width: 100%;
-  max-width: 520px;
+  max-width: 460px;
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1.25rem;
 }
 .order-card {
-  padding: 1.75rem;
+  padding: 1.5rem;
 }
 .order-header {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
 .order-header h1 {
-  font-size: 1.5rem;
+  font-size: 1.25rem;
   font-weight: 800;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.15rem;
 }
 .order-subtitle {
+  font-size: 0.8rem;
+}
+
+/* Side toggle — compact segmented control */
+.side-toggle {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.side-btn {
+  flex: 1;
+  padding: 0.4rem 0;
+  font-family: var(--tp-font);
+  font-size: 0.8rem;
+  font-weight: 700;
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-radius-sm);
+  background: transparent;
+  color: var(--tp-text-dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.side-buy.active {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: var(--tp-success);
+  color: var(--tp-success);
+}
+.side-sell.active {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: var(--tp-danger);
+  color: var(--tp-danger);
+}
+.side-btn:hover:not(.active) {
+  background: var(--tp-bg-hover);
+  color: var(--tp-text);
+}
+
+/* Compact inputs */
+.order-card :deep(.tp-input),
+.order-card :deep(.tp-select) {
+  height: 2.25rem;
   font-size: 0.85rem;
 }
+
 .field {
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
   flex: 1;
 }
 .field-row {
   display: flex;
-  gap: 1rem;
+  gap: 0.75rem;
   margin-bottom: 0;
 }
 .tick-bar {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.75rem 1rem;
+  padding: 0.5rem 0.75rem;
   background: rgba(13,127,242,0.05);
   border: 1px solid rgba(13,127,242,0.2);
   border-radius: var(--tp-radius-sm);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: var(--tp-text-muted);
-  margin-bottom: 1.25rem;
+  margin-bottom: 1rem;
 }
 .tick-bar strong {
   color: var(--tp-text);
 }
 .action-row {
   display: flex;
-  gap: 1rem;
+  gap: 0.75rem;
 }
 .action-btn {
   flex: 1;
-  height: 3rem;
-  font-size: 0.95rem;
+  height: 2.5rem;
+  font-size: 0.88rem;
   border-radius: var(--tp-radius-sm);
 }
 .result-card {
