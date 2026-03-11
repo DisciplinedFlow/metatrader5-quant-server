@@ -112,14 +112,26 @@ def _get_current_regimes():
     return {r.symbol: r.regime for r in regimes}
 
 
+# Leader pairs get 2x weight in regime voting (Livermore Ch XVIII:
+# "Never buy a stock that refuses to follow its group leader")
+REGIME_LEADERS = {'EURUSD', 'GBPUSD'}
+LEADER_WEIGHT = 2
+
+
 def _get_dominant_regime(regime_map):
-    """Majority vote across all symbol regimes.
+    """Leader-weighted majority vote across all symbol regimes.
+
+    Livermore Ch XVIII: the group leader's regime matters more than minors.
+    EURUSD and GBPUSD get 2x voting weight in the regime determination.
 
     Returns (dominant_regime, counts_dict).
     """
     if not regime_map:
         return 'UNKNOWN', {}
-    counter = Counter(regime_map.values())
+    counter = Counter()
+    for symbol, regime in regime_map.items():
+        weight = LEADER_WEIGHT if symbol in REGIME_LEADERS else 1
+        counter[regime] += weight
     dominant = counter.most_common(1)[0][0]
     return dominant, dict(counter)
 

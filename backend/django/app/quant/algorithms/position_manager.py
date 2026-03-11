@@ -54,6 +54,9 @@ ATR_PERIOD = 14
 PROFIT_PROTECT_MIN_USD = 4.0    # Activate earlier — protect any meaningful gain
 PROFIT_PROTECT_GIVEBACK = 0.40  # Tighter: close if giving back 40%+ from peak (was 50%)
 
+# -- Hard dollar loss ceiling (O'Neil: "Cut all losses at 7-8%") --
+MAX_LOSS_PER_TRADE_USD = 50.0  # Absolute ceiling — close immediately if unrealized loss hits this
+
 # -- Livermore Scale-In ("feeling-out bet") --
 SCALE_IN_ATR_THRESHOLD = 1.0   # Add remaining size after +1x ATR confirmation
 SCALE_IN_MAX_MINUTES = 10      # Must confirm within 10 minutes
@@ -166,6 +169,10 @@ def _manage_single_position(position):
     # 7. Compute minutes in trade (used by multiple phases)
     minutes_in_trade = _get_minutes_in_trade(trade)
 
+    # Hard dollar loss ceiling (O'Neil: "Cut all losses at 7-8%")
+    if _check_hard_loss_ceiling(position, trade, current_pnl):
+        return
+
     # Scale-in check (Livermore "feeling-out bet") — add remaining 40% on confirmation
     _check_scale_in(position, trade, profit_distance, minutes_in_trade)
 
@@ -202,6 +209,25 @@ def _update_profit_tracking(trade, current_pnl):
 
     if updates:
         trade.save(update_fields=updates)
+
+
+def _check_hard_loss_ceiling(position, trade, current_pnl):
+    """O'Neil's rule: cut ALL losses at a hard dollar ceiling, no exceptions.
+
+    This is the absolute safety net — catches gaps, slippage, and any scenario
+    where the ATR-based SL hasn't triggered. Returns True if trade was closed.
+    """
+    if current_pnl >= -MAX_LOSS_PER_TRADE_USD:
+        return False
+
+    result = close_full(position.ticket, position.symbol, position.type, position.volume)
+    if result is not None:
+        logger.warning(
+            f"HARD CEILING: {position.symbol} ticket={position.ticket} "
+            f"${current_pnl:.2f} hit -${MAX_LOSS_PER_TRADE_USD} ceiling — CLOSED"
+        )
+        return True
+    return False
 
 
 def _check_profit_protection(position, trade, current_pnl):

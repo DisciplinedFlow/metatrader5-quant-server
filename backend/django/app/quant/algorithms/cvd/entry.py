@@ -213,6 +213,49 @@ def _is_trading_session():
 
 
 # ---------------------------------------------------------------------------
+# Daily Profit Preservation (Livermore: "No profit is safe until banked")
+# ---------------------------------------------------------------------------
+
+DAILY_PROFIT_PRESERVATION_USD = 50.0   # After +$50 daily profit, switch to preservation
+PRESERVATION_SIZE_MULT = 0.50          # Trade at 50% size to protect gains
+
+def _get_daily_profit_preservation_mult():
+    """Livermore: "No profit is safe until deposited in your bank."
+
+    After a profitable day, reduce sizing to protect gains. Prevents the
+    common pattern of making money in the morning, then giving it all back.
+    Returns a size multiplier (1.0 = normal, 0.5 = preservation mode).
+    """
+    try:
+        from django.core.cache import cache
+
+        cached = cache.get('daily_profit_preservation_mult')
+        if cached is not None:
+            return float(cached)
+
+        from app.nexus.models import Trade
+        from django.utils import timezone
+        from datetime import timedelta
+
+        cutoff = timezone.now() - timedelta(hours=24)
+        closed_today = Trade.objects.filter(
+            close_time__isnull=False,
+            close_time__gte=cutoff,
+        )
+        daily_pnl = sum(float(t.pnl) for t in closed_today if t.pnl is not None)
+
+        if daily_pnl >= DAILY_PROFIT_PRESERVATION_USD:
+            cache.set('daily_profit_preservation_mult', PRESERVATION_SIZE_MULT, timeout=300)
+            return PRESERVATION_SIZE_MULT
+
+        cache.set('daily_profit_preservation_mult', 1.0, timeout=300)
+        return 1.0
+
+    except Exception:
+        return 1.0
+
+
+# ---------------------------------------------------------------------------
 # Adaptive Trading Filters
 # ---------------------------------------------------------------------------
 
@@ -855,7 +898,9 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     orch_mult = get_orchestrator_size_multiplier(strategy_config.name)
                 except Exception:
                     orch_mult = 1.0
-                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult
+                # Daily profit preservation (Livermore: "no profit safe until banked")
+                pres_mult = _get_daily_profit_preservation_mult()
+                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult
                 size_multiplier = max(0.1, min(1.0, size_multiplier))
                 order_capital = CAPITAL_PER_TRADE * size_multiplier
 
@@ -864,7 +909,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         f"CVD: Sized capital for {pair}: "
                         f"${CAPITAL_PER_TRADE:.2f} × {size_multiplier:.2f} = ${order_capital:.2f} "
                         f"(vol={vol_mult:.2f}, sym={sym_mult:.2f}, ctx={ctx_mult:.2f}, "
-                        f"grp={group_mult:.2f}, orch={orch_mult:.2f})"
+                        f"grp={group_mult:.2f}, orch={orch_mult:.2f}, pres={pres_mult:.2f})"
                     )
 
                 order_size_usd = calculate_order_size_usd(order_capital, LEVERAGE)

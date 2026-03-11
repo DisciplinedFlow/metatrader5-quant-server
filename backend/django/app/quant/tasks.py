@@ -19,8 +19,8 @@ from app.utils.bot_control import is_bot_paused
 logger = logging.getLogger(__name__)
 
 GLOBAL_MAX = 10
-DAILY_MAX_LOSS_USD = 3000.0  # Hard daily loss limit — scaled for $5k/trade paper trading
-DRAWDOWN_REDUCTION_THRESHOLD = 10000.0  # Total cumulative loss to trigger size reduction
+DAILY_MAX_LOSS_USD = 300.0   # Hard daily loss limit — scaled for $500/trade paper trading
+DRAWDOWN_REDUCTION_THRESHOLD = 2000.0   # Total cumulative loss to trigger size reduction
 DRAWDOWN_REDUCED_CAPITAL = 100  # Fall back to conservative sizing
 
 
