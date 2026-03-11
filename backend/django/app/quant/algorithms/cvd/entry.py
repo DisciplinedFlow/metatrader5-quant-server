@@ -846,7 +846,13 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 # sym_mult: symbol win rate adjustment
                 # ctx_mult: regime mismatch penalty (from market context gate)
                 # group_mult: group tendency divergence penalty
-                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult
+                # orch_mult: strategy orchestrator regime/performance adjustment
+                try:
+                    from app.quant.strategy_orchestrator import get_orchestrator_size_multiplier
+                    orch_mult = get_orchestrator_size_multiplier(strategy_config.name)
+                except Exception:
+                    orch_mult = 1.0
+                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult
                 size_multiplier = max(0.1, min(1.0, size_multiplier))
                 order_capital = CAPITAL_PER_TRADE * size_multiplier
 
@@ -855,7 +861,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         f"CVD: Sized capital for {pair}: "
                         f"${CAPITAL_PER_TRADE:.2f} × {size_multiplier:.2f} = ${order_capital:.2f} "
                         f"(vol={vol_mult:.2f}, sym={sym_mult:.2f}, ctx={ctx_mult:.2f}, "
-                        f"grp={group_mult:.2f})"
+                        f"grp={group_mult:.2f}, orch={orch_mult:.2f})"
                     )
 
                 order_size_usd = calculate_order_size_usd(order_capital, LEVERAGE)

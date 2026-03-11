@@ -68,13 +68,14 @@ FEATURE_NAMES = [
     'signal_strength',      # Strategy-specific signal strength (0-1)
 ]
 
-# Selected features for ML model — reduced from 30 to 8 per the
-# "one-in-ten" rule (need ~10 samples per feature to avoid overfitting).
+# Selected features for ML model — expands as data grows.
 # Full 30 features still extracted into features_json for LLM training data.
-# Expand this list gradually as labeled trade count grows past 100, 200, etc.
 SELECTED_FEATURES = [
-    'session',           # Session timing is the strongest predictor
+    'session',           # Session timing (Asian/London/NY/overlap)
+    'hour_sin',          # Cyclical hour encoding — lets ML learn 09:00 kill zone
+    'hour_cos',          # Cyclical hour encoding — paired with hour_sin
     'order_direction',   # Core signal direction
+    'symbol_id',         # Which pair — lets ML learn GBPUSD is riskier at certain hours
     'atr_normalized',    # Volatility context for entry quality
     'rsi',               # Momentum / overbought-oversold
     'vol_ratio',         # ATR(5)/ATR(21) — regime transition detector
@@ -85,7 +86,7 @@ SELECTED_FEATURES = [
 
 SYMBOL_ENCODING = {
     'EURUSD': 0, 'GBPUSD': 1, 'USDJPY': 2, 'AUDUSD': 3,
-    'NZDUSD': 4, 'USDCAD': 5, 'USDCHF': 6,
+    'NZDUSD': 4, 'USDCAD': 5, 'USDCHF': 6, 'EURGBP': 7,
 }
 
 

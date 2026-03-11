@@ -309,18 +309,23 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'crypto.tasks.run_lighter_exit',
         'schedule': 30.0,  # every 30 seconds
     },
-    'run-macro-analysis': {
-        'task': 'quant.tasks.run_macro_analysis',
-        'schedule': 60.0 * 30,  # every 30 minutes
-    },
-    'run-strategy-evolution': {
-        'task': 'quant.tasks.run_strategy_evolution',
-        'schedule': 60.0 * 60 * 6,  # every 6 hours
-    },
-    'run-ai-brain': {
-        'task': 'quant.tasks.run_ai_brain',
-        'schedule': 60.0 * 5,  # every 5 minutes
-    },
+    # --- LLM-powered tasks DISABLED: $10/day API cost not justified at current scale ---
+    # Re-enable when account is consistently profitable. These are "nice to have"
+    # on top of the 6 rule-based layers (circuit breaker, symbol filter, regime,
+    # group tendency, ML meta-filter, event guard) which cost $0.
+    #
+    # 'run-macro-analysis': {
+    #     'task': 'quant.tasks.run_macro_analysis',
+    #     'schedule': 60.0 * 30,  # every 30 minutes
+    # },
+    # 'run-strategy-evolution': {
+    #     'task': 'quant.tasks.run_strategy_evolution',
+    #     'schedule': 60.0 * 60 * 6,  # every 6 hours
+    # },
+    # 'run-ai-brain': {
+    #     'task': 'quant.tasks.run_ai_brain',
+    #     'schedule': 60.0 * 5,  # every 5 minutes
+    # },
     'fetch-market-pulse': {
         'task': 'quant.tasks.fetch_market_pulse',
         'schedule': 120.0,  # every 2 minutes
@@ -329,12 +334,16 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.run_regime_scan',
         'schedule': 300.0,  # every 5 minutes
     },
-    'run-ai-brain-executor': {
-        'task': 'quant.tasks.run_ai_brain_executor',
-        'schedule': 300.0,  # every 5 minutes
-    },
+    # 'run-ai-brain-executor': {
+    #     'task': 'quant.tasks.run_ai_brain_executor',
+    #     'schedule': 300.0,  # every 5 minutes
+    # },
     'run-ml-retrain': {
         'task': 'quant.tasks.run_ml_retrain',
         'schedule': 60.0 * 30,  # every 30 minutes
+    },
+    'run-strategy-orchestrator': {
+        'task': 'quant.tasks.run_strategy_orchestrator',
+        'schedule': 300.0,  # every 5 minutes
     },
 }

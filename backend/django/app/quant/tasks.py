@@ -19,7 +19,9 @@ from app.utils.bot_control import is_bot_paused
 logger = logging.getLogger(__name__)
 
 GLOBAL_MAX = 10
-DAILY_MAX_LOSS_USD = 75.0  # Hard daily loss limit across ALL strategies
+DAILY_MAX_LOSS_USD = 3000.0  # Hard daily loss limit — scaled for $5k/trade paper trading
+DRAWDOWN_REDUCTION_THRESHOLD = 10000.0  # Total cumulative loss to trigger size reduction
+DRAWDOWN_REDUCED_CAPITAL = 100  # Fall back to conservative sizing
 
 
 def _check_global_daily_halt():
@@ -27,6 +29,8 @@ def _check_global_daily_halt():
 
     Checks all closed trades in the last 24 hours across ALL strategies.
     If cumulative loss exceeds DAILY_MAX_LOSS_USD, halts all trading for 24h.
+    Also checks total cumulative loss — if it exceeds $10k, reduces capital per
+    trade back to $100 (conservative mode).
     """
     from django.core.cache import cache
 
@@ -41,6 +45,21 @@ def _check_global_daily_halt():
         from django.utils import timezone
         from app.nexus.models import Trade
 
+        # --- Cumulative drawdown check: reduce size at -$10k total ---
+        all_closed = Trade.objects.filter(pnl__isnull=False)
+        total_cumulative = sum(t.pnl for t in all_closed)
+        if total_cumulative < -DRAWDOWN_REDUCTION_THRESHOLD:
+            from app.quant.algorithms.cvd import config as cvd_config
+            if cvd_config.CAPITAL_PER_TRADE != DRAWDOWN_REDUCED_CAPITAL:
+                cvd_config.CAPITAL_PER_TRADE = DRAWDOWN_REDUCED_CAPITAL
+                cache.set('drawdown_reduction_active', round(total_cumulative, 2), timeout=86400)
+                logger.critical(
+                    f"DRAWDOWN REDUCTION: Cumulative PnL ${total_cumulative:.2f} exceeds "
+                    f"-${DRAWDOWN_REDUCTION_THRESHOLD}. CAPITAL_PER_TRADE reduced to "
+                    f"${DRAWDOWN_REDUCED_CAPITAL}."
+                )
+
+        # --- Daily halt check ---
         cutoff = timezone.now() - timedelta(hours=24)
         closed_trades = Trade.objects.filter(
             close_time__gte=cutoff,
@@ -518,6 +537,16 @@ def run_ai_brain_executor():
         logger.error("AI Brain Executor task timed out.")
     except Exception as e:
         logger.error(f"AI Brain Executor error: {e}")
+
+
+@shared_task(name='quant.tasks.run_strategy_orchestrator', max_retries=1, soft_time_limit=60)
+def run_strategy_orchestrator():
+    """Strategy Orchestrator — dynamically enable/disable strategies based on regime + performance."""
+    try:
+        from app.quant.strategy_orchestrator import run_orchestrator
+        run_orchestrator()
+    except Exception as e:
+        logger.error(f"Strategy orchestrator error: {e}")
 
 
 @shared_task(name='quant.tasks.run_ml_retrain', max_retries=1, soft_time_limit=120)

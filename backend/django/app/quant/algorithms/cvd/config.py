@@ -3,7 +3,7 @@ from app.utils.constants import MT5Timeframe
 # Default config for CVD strategies — overridden by CustomStrategy.definition
 DEFAULT_TIMEFRAME = MT5Timeframe.M15
 LEVERAGE = 200
-CAPITAL_PER_TRADE = 100
+CAPITAL_PER_TRADE = 5000
 DEVIATION = 20
 MAX_OPEN_TRADES = 10
 ATR_PERIOD = 14
