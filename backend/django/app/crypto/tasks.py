@@ -58,11 +58,27 @@ def run_crypto_backtest():
     try:
         from app.quant.algorithms.crypto.backtester import run_and_store_backtest
         result = run_and_store_backtest()
-        logger.info(f"Crypto backtest complete: passed={result.passed}, win_rate={result.win_rate:.2%}")
+        if result:
+            logger.info(f"Crypto backtest complete: passed={result.passed}, win_rate={result.win_rate:.2%}")
     except SoftTimeLimitExceeded:
         logger.error("run_crypto_backtest timed out.")
     except Exception as e:
         logger.error(f"run_crypto_backtest error: {e}")
+
+
+@shared_task(name='crypto.tasks.run_crypto_backtest_all', max_retries=1, soft_time_limit=600)
+def run_crypto_backtest_all(symbols=None):
+    """Run all strategies across all symbols and store results."""
+    try:
+        from app.quant.algorithms.crypto.backtester import run_and_store_all_backtests
+        records = run_and_store_all_backtests(symbols)
+        passed = sum(1 for r in records if r.passed)
+        logger.info(f"Multi-strategy backtest complete: {len(records)} results, {passed} passed")
+        return {'total': len(records), 'passed': passed}
+    except SoftTimeLimitExceeded:
+        logger.error("run_crypto_backtest_all timed out (600s limit).")
+    except Exception as e:
+        logger.error(f"run_crypto_backtest_all error: {e}")
 
 
 # ── Lighter.xyz DEX tasks ────────────────────────────────

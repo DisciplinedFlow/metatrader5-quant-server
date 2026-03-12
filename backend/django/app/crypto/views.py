@@ -78,6 +78,18 @@ class CryptoBacktestViewSet(viewsets.ReadOnlyModelViewSet):
         run_crypto_backtest.delay()
         return Response({'status': 'backtest started'}, status=status.HTTP_202_ACCEPTED)
 
+    @action(detail=False, methods=['post'], url_path='run-all')
+    def run_all_backtests(self, request):
+        """Run all strategies across all symbols."""
+        from .tasks import run_crypto_backtest_all
+        symbols = request.data.get('symbols')  # optional override
+        run_crypto_backtest_all.delay(symbols)
+        from app.quant.algorithms.crypto.strategies import STRATEGY_REGISTRY
+        return Response({
+            'status': 'multi-strategy backtest started',
+            'strategies': list(STRATEGY_REGISTRY.keys()),
+        }, status=status.HTTP_202_ACCEPTED)
+
 
 class CryptoStrategyConfigView(views.APIView):
     def get(self, request):
