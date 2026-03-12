@@ -257,7 +257,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     'run-quant-trailing-stop-algorithm': {
         'task': 'quant.tasks.run_quant_trailing_stop_algorithm',  # This should match the @shared_task name
-        'schedule': 15,
+        'schedule': 5,  # every 5 seconds — gold can move $10 in 15s
     },
     'run-quant-close-algorithm': {
         'task': 'quant.tasks.run_quant_close_algorithm',  # This should match the @shared_task name

@@ -1,5 +1,3 @@
-import os
-import requests
 from typing import Dict
 import pandas as pd
 from datetime import datetime, timedelta
@@ -8,11 +6,10 @@ import logging
 import traceback
 from app.utils.constants import MT5Timeframe
 from app.utils.constants import TIMEZONE
+from app.utils.api.session import get_session, BASE_URL
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-
-BASE_URL = os.getenv('MT5_API_URL')
 
 def history_deals_get(from_date: datetime, to_date: datetime, position: int = None) -> Dict:
     try:
@@ -25,7 +22,7 @@ def history_deals_get(from_date: datetime, to_date: datetime, position: int = No
             params['position'] = position
             
         url = f"{BASE_URL}/history_deals_get"
-        response = requests.get(url, params=params)
+        response = get_session().get(url, params=params, timeout=10)
         response.raise_for_status()
         
         return response.json()
@@ -38,7 +35,7 @@ def history_orders_get(ticket: int) -> Dict:
         params = {'ticket': ticket}
             
         url = f"{BASE_URL}/history_orders_get"
-        response = requests.get(url, params=params)
+        response = get_session().get(url, params=params, timeout=10)
         response.raise_for_status()
         
         return response.json()

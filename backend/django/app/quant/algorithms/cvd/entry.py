@@ -57,9 +57,16 @@ CIRCUIT_BREAKER_COOLDOWN_HOURS = 1   # How long to pause after circuit breaker t
 SYMBOL_FILTER_LOOKBACK = 10          # Trades to check for symbol performance
 SYMBOL_FILTER_MIN_WR = 0.35          # Minimum win rate to continue trading a symbol
 SYMBOL_FILTER_COOLDOWN_HOURS = 24    # How long to skip a poorly-performing symbol
+
+# --- Learning Mode: bypass circuit breakers & symbol filters ---
+# Set to False to re-enable all protection gates.
+LEARNING_MODE = True
 REGIME_MISMATCH_SIZE_PENALTY = 0.50  # Halve position when regime doesn't match strategy
 GROUP_TENDENCY_SIZE_PENALTY = 0.50   # Halve position when peer pairs disagree with direction
 GROUP_TENDENCY_CACHE_TTL = 300       # Cache correlation check for 5 minutes
+
+# --- Hard Loss Ceiling (matches position_manager.MAX_LOSS_PER_TRADE_USD) ---
+MAX_LOSS_PER_TRADE = 50.0            # Broker SL placed here — no software timing gaps
 
 # --- Livermore Scale-In ("feeling-out bet") ---
 INITIAL_SIZE_FRACTION = 0.60  # Enter at 60%, add remaining 40% on confirmation
@@ -780,10 +787,11 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             return
 
         # --- Global circuit breaker check ---
-        cb_ok, cb_reason = _check_circuit_breaker(strategy_config)
-        if not cb_ok:
-            logger.warning(f"CVD: {cb_reason}")
-            return
+        if not LEARNING_MODE:
+            cb_ok, cb_reason = _check_circuit_breaker(strategy_config)
+            if not cb_ok:
+                logger.warning(f"CVD: {cb_reason}")
+                return
 
         # --- Streak multiplier (computed once per cycle, vol-targeting is per-pair) ---
         streak_multiplier = _get_dynamic_size_multiplier(strategy_config)
@@ -859,14 +867,15 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 continue
 
             # --- Per-symbol circuit breaker ---
-            cb_ok, cb_reason = _check_circuit_breaker(strategy_config, symbol=pair)
-            if not cb_ok:
-                logger.warning(f"CVD: {cb_reason}")
-                continue
+            if not LEARNING_MODE:
+                cb_ok, cb_reason = _check_circuit_breaker(strategy_config, symbol=pair)
+                if not cb_ok:
+                    logger.warning(f"CVD: {cb_reason}")
+                    continue
 
             # --- Symbol performance filter ---
             sym_ok, sym_mult, sym_reason = _check_symbol_performance(pair)
-            if not sym_ok:
+            if not sym_ok and not LEARNING_MODE:
                 logger.debug(f"CVD: {sym_reason}")
                 continue
             if sym_mult < 1.0:
@@ -1176,20 +1185,22 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 order_size_usd = calculate_order_size_usd(order_capital, LEVERAGE)
                 commission = calculate_commission(order_size_usd, pair)
 
-                # Clamp SL so max loss does not exceed capital
+                # Clamp SL so max loss does not exceed $50 hard ceiling
+                # (position_manager also enforces this, but broker SL is the real safety net)
+                max_loss_allowed = min(order_capital, MAX_LOSS_PER_TRADE)
                 pnl_at_sl, _ = get_pnl_at_price(
                     sl_price, last_tick_price, order_size_usd, LEVERAGE, order_type, commission
                 )
-                if pnl_at_sl < -order_capital:
+                if pnl_at_sl < -max_loss_allowed:
                     sl_price, _ = get_price_at_pnl(
-                        desired_pnl=-order_capital,
+                        desired_pnl=-max_loss_allowed,
                         entry_price=last_tick_price,
                         order_size_usd=order_size_usd,
                         leverage=LEVERAGE,
                         type=order_type,
                         commission=commission,
                     )
-                    logger.info(f"CVD: Clamped SL for {pair} to limit loss to ${order_capital:.2f}")
+                    logger.info(f"CVD: Clamped SL for {pair} to limit loss to ${max_loss_allowed:.2f}")
 
                 # --- Fetch broker contract specs for this symbol ---
                 # Contract sizes vary wildly: forex=100k, XAUUSD=100oz,
@@ -1259,6 +1270,16 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     logger.error(f"CVD: SL too low for SELL on {pair}.")
                     PairLock.objects.filter(symbol=pair).delete()
                     continue
+
+                # --- Pre-trade margin safety check ---
+                try:
+                    from app.utils.api.account import check_margin_safe
+                    if not check_margin_safe(pair, order_volume_lots, order_type):
+                        logger.warning(f"CVD: MARGIN BLOCKED {pair} {order_type} {order_volume_lots} lots — skipping")
+                        PairLock.objects.filter(symbol=pair).delete()
+                        continue
+                except Exception as e:
+                    logger.debug(f"CVD: Margin check unavailable ({e}), proceeding with trade")
 
                 # Send market order
                 order = send_market_order(

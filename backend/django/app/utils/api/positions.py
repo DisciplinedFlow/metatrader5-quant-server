@@ -1,20 +1,17 @@
-import os
 import traceback
 from typing import List, Dict
 from datetime import datetime
 import logging
 import time
 
-import requests
 import pandas as pd
 from dotenv import load_dotenv
 
 from app.utils.constants import MT5Timeframe
+from app.utils.api.session import get_session, BASE_URL
 
 logger = logging.getLogger(__name__)
 load_dotenv()
-
-BASE_URL = os.getenv('MT5_API_URL')
 
 empty_df = pd.DataFrame(columns=[
     'ticket', 'time', 'time_msc', 'time_update', 'time_update_msc', 'type',
@@ -26,7 +23,7 @@ def get_positions() -> pd.DataFrame:
     try:
         url = f"{BASE_URL}/get_positions"
         start_time = time.time()  # Start timing
-        response = requests.get(url, timeout=10)
+        response = get_session().get(url, timeout=10)
         end_time = time.time()    # End timing
         duration = end_time - start_time
         logger.info(f"Fetched positions in {duration:.2f} seconds")

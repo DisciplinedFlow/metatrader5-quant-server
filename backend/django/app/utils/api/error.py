@@ -1,23 +1,17 @@
-import os
-import requests
 import traceback
 from typing import List, Dict
-import pandas as pd
-from datetime import datetime
 from dotenv import load_dotenv
 import logging
 
-from app.utils.constants import MT5Timeframe
+from app.utils.api.session import get_session, BASE_URL
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-BASE_URL = os.getenv('MT5_API_URL')
-
 def last_error() -> Dict:
     try:
         url = f"{BASE_URL}/last_error"
-        response = requests.get(url)
+        response = get_session().get(url, timeout=10)
         response.raise_for_status()
         
         data = response.json()
@@ -29,7 +23,7 @@ def last_error() -> Dict:
 def last_error_str() -> Dict:
     try:
         url = f"{BASE_URL}/last_error_str"
-        response = requests.get(url)
+        response = get_session().get(url, timeout=10)
         response.raise_for_status()
         
         data = response.json()

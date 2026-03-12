@@ -9,13 +9,12 @@ import logging
 
 from app.utils.constants import MT5Timeframe
 from app.utils.api.data import symbol_info_tick
+from app.utils.api.session import get_session, BASE_URL
 from app.nexus.models import Trade, TradeClosePricesMutation  # Import models
 from app.utils.arithmetics import get_pnl_at_price, calculate_commission, get_price_at_pnl, calculate_order_capital, calculate_order_size_usd
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-
-BASE_URL = os.getenv('MT5_API_URL')
 
 def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp: float = None,
                       deviation: int = 20, comment: str = 'From Django Server', magic: int = 234000, type_filling: str = 'ORDER_FILLING_IOC', position_size_usd: float = None, commission: float = None, capital: float = None, leverage: int = 500,
@@ -71,7 +70,7 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
         logger.info(f"Sending market order: {request}")
 
         url = f"{BASE_URL}/order"
-        response = requests.post(url, json=request, timeout=10)
+        response = get_session().post(url, json=request, timeout=10)
         response.raise_for_status()
 
         response_data = response.json()
@@ -114,7 +113,7 @@ def modify_sl_tp(position, sl: float, tp: float = None) -> Dict:
         logger.info(f"Sending modify SL/TP request: {request}")
 
         url = f"{BASE_URL}/modify_sl_tp"
-        response = requests.post(url, json=request, timeout=10)
+        response = get_session().post(url, json=request, timeout=10)
         response.raise_for_status()
 
         response_data = response.json()
@@ -172,7 +171,7 @@ def close_partial(ticket, symbol, order_type, volume):
         logger.info(f"Sending partial close: ticket={ticket} symbol={symbol} volume={volume}")
 
         url = f"{BASE_URL}/close_position"
-        response = requests.post(url, json=request, timeout=10)
+        response = get_session().post(url, json=request, timeout=10)
         response.raise_for_status()
 
         response_data = response.json()
@@ -230,7 +229,7 @@ def close_full(ticket, symbol, order_type, volume):
         logger.info(f"Sending full close: ticket={ticket} symbol={symbol} volume={volume}")
 
         url = f"{BASE_URL}/close_position"
-        response = requests.post(url, json=request, timeout=10)
+        response = get_session().post(url, json=request, timeout=10)
         response.raise_for_status()
 
         response_data = response.json()
