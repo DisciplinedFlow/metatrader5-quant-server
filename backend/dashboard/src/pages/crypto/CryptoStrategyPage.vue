@@ -38,6 +38,83 @@ const configLoading = ref(false)
 const latestBacktest = ref(null)
 const backtests = ref([])
 
+// New multi-strategy backtest results
+const allBacktestResults = ref([])
+const runningAllBacktests = ref(false)
+
+// Strategy metadata for the 5 new strategies
+const STRATEGY_META = {
+  rsi_mean_reversion: {
+    name: 'RSI Mean Reversion',
+    desc: 'Buy RSI oversold + lower Bollinger Band, sell overbought + upper band',
+    icon: 'swap_vert',
+    color: '#3b82f6',
+  },
+  ema_ribbon_trend: {
+    name: 'EMA Ribbon Trend',
+    desc: '4-EMA ribbon alignment (8/13/21/55) + ADX trend strength filter',
+    icon: 'stacked_line_chart',
+    color: '#8b5cf6',
+  },
+  macd_momentum: {
+    name: 'MACD Momentum',
+    desc: 'MACD histogram crossover confirmed by EMA(50) trend direction',
+    icon: 'speed',
+    color: '#f59e0b',
+  },
+  bollinger_squeeze_breakout: {
+    name: 'Bollinger Squeeze Breakout',
+    desc: 'Volatility compression detection + volume-confirmed breakout',
+    icon: 'unfold_more',
+    color: '#ef4444',
+  },
+  confluence_scorer: {
+    name: 'Confluence Scorer',
+    desc: '6-indicator scoring: RSI + MACD + EMA + SMA + Volume + StochRSI',
+    icon: 'hub',
+    color: '#22c55e',
+  },
+}
+
+import { computed } from 'vue'
+
+// Group backtest results by strategy
+const strategyResults = computed(() => {
+  const grouped = {}
+  for (const r of allBacktestResults.value) {
+    const name = r.strategy_name
+    if (!grouped[name]) grouped[name] = []
+    grouped[name].push(r)
+  }
+  // Build summary per strategy
+  const strategies = []
+  for (const [name, results] of Object.entries(grouped)) {
+    if (name === 'momentum') continue // legacy, shown separately
+    const meta = STRATEGY_META[name] || { name, desc: '', icon: 'psychology', color: '#6b7280' }
+    const sorted = results.sort((a, b) => new Date(b.run_time) - new Date(a.run_time))
+    const latest = sorted[0]
+    const passed = results.filter(r => r.passed)
+    const bestPnl = results.reduce((best, r) => r.total_pnl > (best?.total_pnl ?? -Infinity) ? r : best, null)
+    const avgWinRate = results.length ? results.reduce((s, r) => s + (r.win_rate || 0), 0) / results.length : 0
+    const totalPnl = results.reduce((s, r) => s + (r.total_pnl || 0), 0)
+    const symbols = [...new Set(results.map(r => r.symbol))]
+    strategies.push({
+      key: name,
+      ...meta,
+      results: sorted,
+      latest,
+      bestPnl,
+      passedCount: passed.length,
+      totalResults: results.length,
+      avgWinRate,
+      totalPnl,
+      symbols,
+    })
+  }
+  // Sort by total PnL descending
+  return strategies.sort((a, b) => b.totalPnl - a.totalPnl)
+})
+
 // Custom strategy state
 const customStrategies = ref([])
 const loadingBtn = ref({})
@@ -67,12 +144,26 @@ async function refresh() {
   }
   if (backtestsResult.status === 'fulfilled') {
     const list = backtestsResult.value.results || backtestsResult.value
-    backtests.value = list
-    if (list.length > 0) latestBacktest.value = list[0]
+    allBacktestResults.value = list
+    // Legacy momentum backtests for the active card
+    const momentumResults = list.filter(r => r.strategy_name === 'momentum')
+    backtests.value = momentumResults
+    if (momentumResults.length > 0) latestBacktest.value = momentumResults[0]
   }
   if (botResult.status === 'fulfilled') {
     botPaused.value = botResult.value.paused
   }
+}
+
+async function runAllBacktests() {
+  runningAllBacktests.value = true
+  try {
+    await api.runAllCryptoBacktests()
+    toast.success('Multi-strategy backtest started — results will appear shortly')
+  } catch (err) {
+    toast.error(`Backtest failed: ${err.message}`)
+  }
+  runningAllBacktests.value = false
 }
 
 async function refreshCustom() {
@@ -263,7 +354,100 @@ usePolling(async () => { await refresh(); await refreshCustom() }, 15000)
     </div>
 
     <!-- ==================== ACTIVE STRATEGIES TAB ==================== -->
-    <div v-if="pageTab === 'active'" class="strategy-grid">
+    <div v-if="pageTab === 'active'">
+
+      <!-- Run All Backtests Button -->
+      <div v-if="strategyResults.length" class="run-all-bar">
+        <span class="run-all-label">{{ strategyResults.length }} advanced strategies &middot; {{ strategyResults.reduce((s, r) => s + r.totalResults, 0) }} backtests</span>
+        <button
+          class="tp-btn tp-btn-primary"
+          :aria-busy="runningAllBacktests"
+          @click="runAllBacktests"
+        >
+          <span class="material-symbols-outlined" style="font-size:16px">rocket_launch</span>
+          Run All Backtests
+        </button>
+      </div>
+
+      <!-- Advanced Strategy Cards -->
+      <div v-if="strategyResults.length" class="strategy-grid" style="margin-bottom: 1.5rem;">
+        <div v-for="s in strategyResults" :key="s.key" class="tp-card strategy-card">
+          <div class="card-top">
+            <div class="card-title-row">
+              <div class="strat-icon" :style="{ background: s.color + '22', color: s.color }">
+                <span class="material-symbols-outlined" style="font-size:24px">{{ s.icon }}</span>
+              </div>
+              <div>
+                <h3 class="strat-name">{{ s.name }}</h3>
+                <p class="strat-desc">{{ s.desc }}</p>
+              </div>
+            </div>
+            <span class="tp-badge" :class="s.passedCount > 0 ? 'tp-badge-success' : 'tp-badge-danger'" style="font-size:0.65rem;">
+              {{ s.passedCount }}/{{ s.totalResults }} passed
+            </span>
+          </div>
+
+          <!-- Best result stats -->
+          <div class="card-stats">
+            <div class="stat-item">
+              <span class="stat-micro-label">Avg Win Rate</span>
+              <span class="stat-micro-value" :class="s.avgWinRate >= 0.5 ? 'positive' : 'negative'">
+                {{ (s.avgWinRate * 100).toFixed(1) }}%
+              </span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-micro-label">Total PnL</span>
+              <span class="stat-micro-value" :class="s.totalPnl >= 0 ? 'positive' : 'negative'">
+                {{ s.totalPnl >= 0 ? '+' : '' }}${{ s.totalPnl.toFixed(2) }}
+              </span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-micro-label">Symbols</span>
+              <span class="stat-micro-value" style="font-size:0.85rem;">{{ s.symbols.join(', ') }}</span>
+            </div>
+          </div>
+
+          <!-- Per-symbol breakdown -->
+          <div class="card-expandable">
+            <details>
+              <summary class="expand-summary">
+                <span class="material-symbols-outlined" style="font-size:16px">leaderboard</span>
+                Results by Symbol ({{ s.results.length }})
+              </summary>
+              <div class="expand-content" style="overflow-x: auto;">
+                <table class="detail-table">
+                  <thead>
+                    <tr><th>Symbol</th><th>Trades</th><th>Win Rate</th><th>PnL</th><th>PF</th><th>Max DD</th><th>Status</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="r in s.results" :key="r.id || r.symbol">
+                      <td style="font-weight:700;">{{ r.symbol }}</td>
+                      <td>{{ r.total_trades }}</td>
+                      <td :style="{ color: (r.win_rate || 0) >= 0.5 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
+                        {{ ((r.win_rate || 0) * 100).toFixed(1) }}%
+                      </td>
+                      <td :style="{ color: r.total_pnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)', fontWeight: 700 }">
+                        {{ r.total_pnl >= 0 ? '+' : '' }}${{ Number(r.total_pnl).toFixed(2) }}
+                      </td>
+                      <td>{{ r.profit_factor != null ? Number(r.profit_factor).toFixed(2) : '-' }}</td>
+                      <td>{{ r.max_drawdown != null ? ((r.max_drawdown * 100).toFixed(2) + '%') : '-' }}</td>
+                      <td>
+                        <span class="tp-badge" :class="r.passed ? 'tp-badge-success' : 'tp-badge-danger'" style="font-size:0.6rem;">
+                          {{ r.passed ? 'PASS' : 'FAIL' }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+
+      <!-- Legacy Momentum Strategy Card -->
+      <h4 v-if="strategyResults.length" style="color:var(--tp-text-dim);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.75rem;">Legacy Strategy</h4>
+      <div class="strategy-grid">
       <div class="tp-card strategy-card">
         <!-- Card Header -->
         <div class="card-top">
@@ -467,6 +651,7 @@ usePolling(async () => { await refresh(); await refreshCustom() }, 15000)
             Run Backtest
           </button>
         </div>
+      </div>
       </div>
     </div>
 
@@ -792,6 +977,25 @@ details[open] > .expand-summary::after {
   color: var(--tp-text-muted);
   overflow-x: auto;
   margin: 0;
+}
+
+/* Run All Bar */
+.run-all-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+  background: var(--tp-bg-glass);
+  backdrop-filter: var(--tp-glass-blur);
+  -webkit-backdrop-filter: var(--tp-glass-blur);
+  border: var(--tp-glass-border);
+  border-radius: var(--tp-radius);
+}
+.run-all-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--tp-text-dim);
 }
 
 /* Empty state */

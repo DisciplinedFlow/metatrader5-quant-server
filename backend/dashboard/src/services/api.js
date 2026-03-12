@@ -252,6 +252,12 @@ const api = {
     })
   },
 
+  runAllCryptoBacktests() {
+    return this.django('v1/crypto/backtests/run-all/', {
+      method: 'POST',
+    })
+  },
+
   getCryptoStrategyConfig() {
     return this.django('v1/crypto/strategy/')
   },

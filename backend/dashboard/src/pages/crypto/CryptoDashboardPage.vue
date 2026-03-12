@@ -285,10 +285,7 @@ usePolling(refresh, 10000)
                 <div class="coin-icon" :style="{ background: getCoinColor(p.coin) + '22', color: getCoinColor(p.coin) }">
                   {{ p.coin.slice(0, 2) }}
                 </div>
-                <div>
-                  <div class="price-coin-name">{{ p.coin }}</div>
-                  <div class="price-coin-pair">{{ p.coin }}/USD</div>
-                </div>
+                <span class="price-coin-name">{{ p.coin }}</span>
               </div>
               <div class="price-value">${{ fmtPrice(p.price) }}</div>
             </div>
@@ -706,14 +703,14 @@ usePolling(refresh, 10000)
 }
 .prices-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.5rem;
 }
 .price-item {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.6rem 0.75rem;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.65rem 0.7rem;
   background: var(--tp-bg-surface);
   border-radius: var(--tp-radius-sm);
   transition: transform var(--tp-transition);
@@ -724,16 +721,16 @@ usePolling(refresh, 10000)
 .price-coin-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 .coin-icon {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.6rem;
+  font-size: 0.55rem;
   font-weight: 800;
   letter-spacing: 0.03em;
   flex-shrink: 0;
@@ -751,17 +748,16 @@ usePolling(refresh, 10000)
 }
 .price-coin-name {
   font-weight: 700;
-  font-size: 0.8rem;
-  line-height: 1.2;
-}
-.price-coin-pair {
-  font-size: 0.6rem;
-  color: var(--tp-text-dim);
+  font-size: 0.75rem;
+  line-height: 1;
 }
 .price-value {
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   font-weight: 800;
   font-feature-settings: 'tnum' 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ===== Positions Card ===== */
@@ -1105,6 +1101,9 @@ usePolling(refresh, 10000)
   margin-top: 1.5rem;
 }
 
+@media (max-width: 768px) {
+  .prices-grid { grid-template-columns: repeat(3, 1fr); }
+}
 @media (max-width: 480px) {
   .prices-grid { grid-template-columns: repeat(2, 1fr); }
 }
