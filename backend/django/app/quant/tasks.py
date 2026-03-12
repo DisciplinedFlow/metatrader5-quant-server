@@ -18,8 +18,12 @@ from app.utils.bot_control import is_bot_paused
 
 logger = logging.getLogger(__name__)
 
-GLOBAL_MAX = 10
-DAILY_MAX_LOSS_USD = 300.0   # Hard daily loss limit — scaled for $500/trade paper trading
+# --- TRAINING MODE: imported from entry config ---
+# When True, bypasses daily halt and raises position limits for max data collection.
+from app.quant.algorithms.cvd.entry import TRAINING_MODE
+
+GLOBAL_MAX = 20 if TRAINING_MODE else 10
+DAILY_MAX_LOSS_USD = 9999.0 if TRAINING_MODE else 300.0
 DRAWDOWN_REDUCTION_THRESHOLD = 2000.0   # Total cumulative loss to trigger size reduction
 DRAWDOWN_REDUCED_CAPITAL = 100  # Fall back to conservative sizing
 
@@ -223,7 +227,7 @@ def run_quant_entry_algorithm():
     if is_bot_paused():
         logger.info("Bot is paused, skipping entry algorithm.")
         return
-    if _check_global_daily_halt():
+    if not TRAINING_MODE and _check_global_daily_halt():
         logger.debug("Daily halt — skipping entry algorithms.")
         return
     try:
@@ -247,8 +251,8 @@ def run_quant_entry_algorithm():
                 logger.info(f"Strategy {config.name}: position limit reached ({config.max_positions})")
                 continue
 
-            # Check regime filter (if set)
-            if config.regime_filter:
+            # Check regime filter (if set) — bypassed in training mode
+            if not TRAINING_MODE and config.regime_filter:
                 try:
                     from app.quant.algorithms.regime import get_dominant_regime
                     current_regime = get_dominant_regime()
@@ -258,8 +262,8 @@ def run_quant_entry_algorithm():
                 except Exception as e:
                     logger.warning(f"Regime check failed for {config.name}, proceeding anyway: {e}")
 
-            # Live performance gate — auto-disable losing strategies
-            if not _check_live_performance(config):
+            # Live performance gate — bypassed in training mode
+            if not TRAINING_MODE and not _check_live_performance(config):
                 continue
 
             # Route to appropriate entry algorithm
@@ -577,7 +581,7 @@ def run_ict_scanner():
     """
     if is_bot_paused():
         return
-    if _check_global_daily_halt():
+    if not TRAINING_MODE and _check_global_daily_halt():
         return
     try:
         total_open = _count_open_positions()

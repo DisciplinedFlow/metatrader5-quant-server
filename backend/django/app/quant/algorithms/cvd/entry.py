@@ -58,9 +58,13 @@ SYMBOL_FILTER_LOOKBACK = 10          # Trades to check for symbol performance
 SYMBOL_FILTER_MIN_WR = 0.25          # Minimum win rate to continue trading a symbol
 SYMBOL_FILTER_COOLDOWN_HOURS = 2     # How long to skip a poorly-performing symbol
 
-# --- Learning Mode: bypass circuit breakers & symbol filters ---
-# Set to False to re-enable all protection gates.
-LEARNING_MODE = True
+# --- TRAINING MODE: full throttle, all filters bypassed ---
+# Bypasses: trading session, high-impact events, circuit breakers,
+# strategy router regime gate, correlation group limit, symbol filter,
+# market context gate, ML meta-filter, confluence gates.
+# Only hard guards remain: market closed, no tick data, insufficient bars.
+# Set to False to re-enable all protection gates for live trading.
+TRAINING_MODE = True
 REGIME_MISMATCH_SIZE_PENALTY = 0.50  # Halve position when regime doesn't match strategy
 GROUP_TENDENCY_SIZE_PENALTY = 0.50   # Halve position when peer pairs disagree with direction
 GROUP_TENDENCY_CACHE_TTL = 300       # Cache correlation check for 5 minutes
@@ -776,18 +780,19 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
         #     logger.info(f"CVD entry blocked by backtest gate for '{custom.name}'.")
         #     return
 
-        if not _is_trading_session():
-            logger.info(f"CVD: Outside trading session (07:00-17:00 UTC), skipping.")
-            return
+        if not TRAINING_MODE:
+            if not _is_trading_session():
+                logger.info(f"CVD: Outside trading session (07:00-17:00 UTC), skipping.")
+                return
 
-        # --- High-impact economic event guard (fast Redis check) ---
-        event_blocked, event_name = _check_high_impact_events()
-        if event_blocked:
-            logger.warning(f"CVD: Entry blocked: high-impact event '{event_name}' within 30min window")
-            return
+            # --- High-impact economic event guard (fast Redis check) ---
+            event_blocked, event_name = _check_high_impact_events()
+            if event_blocked:
+                logger.warning(f"CVD: Entry blocked: high-impact event '{event_name}' within 30min window")
+                return
 
         # --- Global circuit breaker check ---
-        if not LEARNING_MODE:
+        if not TRAINING_MODE:
             cb_ok, cb_reason = _check_circuit_breaker(strategy_config)
             if not cb_ok:
                 logger.warning(f"CVD: {cb_reason}")
@@ -839,35 +844,31 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 continue
 
             # --- Strategy Router gate (regime-based strategy selection) ---
-            # Skip this strategy for this symbol if the router says it doesn't
-            # fit the current market regime. This is the critical fix: the router's
-            # decision is now enforced, not merely advisory.
-            try:
-                from app.quant.algorithms.strategy_router import route_symbol as _route_symbol
-                routing_decision = _route_symbol(pair)
-                if not _match_strategy_name_to_router(
-                    strategy_config.name, routing_decision.selected_strategies
-                ):
-                    logger.info(
-                        f"CVD: ROUTER SKIP: '{strategy_config.name}' not valid for "
-                        f"{pair} ({routing_decision.regime}, conf={routing_decision.regime_confidence:.2f}) "
-                        f"— allowed strategies: {routing_decision.selected_strategies[:3]}"
-                    )
-                    continue
-            except Exception as e:
-                logger.debug(f"Strategy router unavailable for {pair}: {e}")
-                # Fail-open: if router is broken, allow the trade
+            if not TRAINING_MODE:
+                try:
+                    from app.quant.algorithms.strategy_router import route_symbol as _route_symbol
+                    routing_decision = _route_symbol(pair)
+                    if not _match_strategy_name_to_router(
+                        strategy_config.name, routing_decision.selected_strategies
+                    ):
+                        logger.info(
+                            f"CVD: ROUTER SKIP: '{strategy_config.name}' not valid for "
+                            f"{pair} ({routing_decision.regime}, conf={routing_decision.regime_confidence:.2f}) "
+                            f"— allowed strategies: {routing_decision.selected_strategies[:3]}"
+                        )
+                        continue
+                except Exception as e:
+                    logger.debug(f"Strategy router unavailable for {pair}: {e}")
 
             # --- Correlation-group position limit ---
-            # If another symbol in the same correlation group (e.g., METALS)
-            # already has an open position, skip to avoid concentrated exposure.
-            corr_ok, corr_reason = _check_correlation_group_limit(pair)
-            if not corr_ok:
-                logger.info(f"CVD: {corr_reason}")
-                continue
+            if not TRAINING_MODE:
+                corr_ok, corr_reason = _check_correlation_group_limit(pair)
+                if not corr_ok:
+                    logger.info(f"CVD: {corr_reason}")
+                    continue
 
             # --- Per-symbol circuit breaker ---
-            if not LEARNING_MODE:
+            if not TRAINING_MODE:
                 cb_ok, cb_reason = _check_circuit_breaker(strategy_config, symbol=pair)
                 if not cb_ok:
                     logger.warning(f"CVD: {cb_reason}")
@@ -875,7 +876,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
             # --- Symbol performance filter ---
             sym_ok, sym_mult, sym_reason = _check_symbol_performance(pair)
-            if not sym_ok and not LEARNING_MODE:
+            if not sym_ok and not TRAINING_MODE:
                 logger.debug(f"CVD: {sym_reason}")
                 continue
             if sym_mult < 1.0:
@@ -931,14 +932,16 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 continue
 
             # --- Market Context Gate (macro + regime merged) ---
-            ctx_ok, ctx_mult, ctx_reason = _check_market_context(
-                pair, order_type, strategy_config,
-            )
-            if not ctx_ok:
-                logger.warning(f"CVD: {pair} {order_type} — {ctx_reason}")
-                continue
-            if ctx_mult < 1.0:
-                logger.info(f"CVD: {pair} {order_type} — {ctx_reason}")
+            ctx_mult = 1.0
+            if not TRAINING_MODE:
+                ctx_ok, ctx_mult, ctx_reason = _check_market_context(
+                    pair, order_type, strategy_config,
+                )
+                if not ctx_ok:
+                    logger.warning(f"CVD: {pair} {order_type} — {ctx_reason}")
+                    continue
+                if ctx_mult < 1.0:
+                    logger.info(f"CVD: {pair} {order_type} — {ctx_reason}")
 
             logger.info(f"CVD SIGNAL: {pair} {order_type} — {signal_desc}")
 
@@ -981,12 +984,14 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     custom_strategy=custom,
                     tick_info=tick_info_for_ml,
                 )
-                if not ml_accept:
+                if not ml_accept and not TRAINING_MODE:
                     logger.info(f"CVD: ML REJECT {pair} {order_type} score={ml_score:.2f} — {ml_reason}")
-                    # Still store features for learning, but skip the trade
                     _store_rejected_features(pair, ml_score, ml_features)
                     continue
-                logger.info(f"CVD: ML score={ml_score:.2f} — {ml_reason}")
+                if not ml_accept:
+                    logger.info(f"CVD: TRAINING MODE — ML would reject {pair} {order_type} score={ml_score:.2f}, taking anyway")
+                else:
+                    logger.info(f"CVD: ML score={ml_score:.2f} — {ml_reason}")
             except Exception as e:
                 logger.debug(f"ML scoring unavailable: {e}")
 
@@ -1097,22 +1102,26 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 )
                 log_confluence_decision(confluence_score)
 
-                if not confluence_score.should_trade:
-                    logger.info(
-                        f"CVD: Confluence too low for {pair} {order_type}: "
-                        f"{confluence_score.total_score}/{confluence_score.max_possible} "
-                        f"({confluence_score.band}) — skipping"
-                    )
-                    continue
+                if not TRAINING_MODE:
+                    if not confluence_score.should_trade:
+                        logger.info(
+                            f"CVD: Confluence too low for {pair} {order_type}: "
+                            f"{confluence_score.total_score}/{confluence_score.max_possible} "
+                            f"({confluence_score.band}) — skipping"
+                        )
+                        continue
 
-                # Strategy router may require higher confluence for certain regimes
-                # (e.g. VOLATILE requires 9+, RANGING requires 5+)
-                if confluence_score.total_score < router_min_confluence:
+                    if confluence_score.total_score < router_min_confluence:
+                        logger.info(
+                            f"CVD: Router requires min confluence {router_min_confluence} "
+                            f"for {pair}, got {confluence_score.total_score} — skipping"
+                        )
+                        continue
+                else:
                     logger.info(
-                        f"CVD: Router requires min confluence {router_min_confluence} "
-                        f"for {pair}, got {confluence_score.total_score} — skipping"
+                        f"CVD: TRAINING MODE — confluence {confluence_score.total_score}/{confluence_score.max_possible} "
+                        f"({confluence_score.band}), taking trade regardless"
                     )
-                    continue
             except Exception as e:
                 logger.debug(f"Confluence scoring unavailable: {e}")
 
