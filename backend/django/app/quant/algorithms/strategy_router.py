@@ -138,7 +138,7 @@ REGIME_PARAMS = {
     },
     'VOLATILE': {
         'size_multiplier': 0.5,
-        'min_confluence': 9,
+        'min_confluence': 6,
         'sl_multiplier_adj': 1.5,
         'tp_approach': 'trailing',
     },

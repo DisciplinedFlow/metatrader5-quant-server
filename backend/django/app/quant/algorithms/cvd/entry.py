@@ -55,8 +55,8 @@ CIRCUIT_BREAKER_SYMBOL_LOSSES = 3    # Consecutive losses on same symbol → pau
 CIRCUIT_BREAKER_GLOBAL_LOSSES = 5    # Consecutive losses across all symbols → pause
 CIRCUIT_BREAKER_COOLDOWN_HOURS = 1   # How long to pause after circuit breaker trips
 SYMBOL_FILTER_LOOKBACK = 10          # Trades to check for symbol performance
-SYMBOL_FILTER_MIN_WR = 0.35          # Minimum win rate to continue trading a symbol
-SYMBOL_FILTER_COOLDOWN_HOURS = 24    # How long to skip a poorly-performing symbol
+SYMBOL_FILTER_MIN_WR = 0.25          # Minimum win rate to continue trading a symbol
+SYMBOL_FILTER_COOLDOWN_HOURS = 2     # How long to skip a poorly-performing symbol
 
 # --- Learning Mode: bypass circuit breakers & symbol filters ---
 # Set to False to re-enable all protection gates.

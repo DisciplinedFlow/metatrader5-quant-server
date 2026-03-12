@@ -587,7 +587,16 @@ def run_ict_scanner():
 
         from app.quant.algorithms.ict_entry import scan_ict_setups
 
-        symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF']
+        symbols = [
+            # Forex majors
+            'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF',
+            # Forex minors
+            'EURGBP', 'USDCNH', 'USDSEK',
+            # Metals
+            'XAUUSD', 'XAGUSD',
+            # Energy
+            'USOUSD', 'UKOUSDft',
+        ]
         setups = scan_ict_setups(symbols)
 
         # Cache scan results for dashboard (even partial/failed results)
