@@ -174,13 +174,37 @@ def _generate_analysis(trade, features, won, pnl, trade_feature):
     )
 
 
+def _load_existing_trade_ids():
+    """Load trade IDs already in the JSONL file to prevent duplicates."""
+    filepath = os.path.join(LLM_DATA_DIR, 'trade_analyses.jsonl')
+    seen = set()
+    if not os.path.exists(filepath):
+        return seen
+    try:
+        with open(filepath) as f:
+            for line in f:
+                data = json.loads(line)
+                tid = data.get('metadata', {}).get('trade_id')
+                if tid is not None:
+                    seen.add(tid)
+    except Exception:
+        pass
+    return seen
+
+
 def save_training_example(example):
-    """Append a training example to the JSONL file."""
+    """Append a training example to the JSONL file (skips duplicates)."""
     if example is None:
         return
 
     os.makedirs(LLM_DATA_DIR, exist_ok=True)
     filepath = os.path.join(LLM_DATA_DIR, 'trade_analyses.jsonl')
+
+    trade_id = example.get('metadata', {}).get('trade_id')
+    if trade_id is not None:
+        existing = _load_existing_trade_ids()
+        if trade_id in existing:
+            return
 
     try:
         with open(filepath, 'a') as f:
