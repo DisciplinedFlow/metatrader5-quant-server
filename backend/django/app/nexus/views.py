@@ -611,3 +611,92 @@ class HMMRegimeView(views.APIView):
             'per_pair': per_pair,
             'consensus': consensus,
         })
+
+
+class RotationLogView(views.APIView):
+    """Return recent strategy rotation logs and trigger manual rotations."""
+
+    def get(self, request):
+        from .models import RotationLog
+        limit = min(int(request.query_params.get('limit', 20)), 100)
+        logs = RotationLog.objects.all()[:limit]
+        return Response([{
+            'id': log.id,
+            'timestamp': log.timestamp.isoformat(),
+            'session_name': log.session_name,
+            'dominant_regime': log.dominant_regime,
+            'strategies_scored': log.strategies_scored,
+            'strategies_activated': log.strategies_activated,
+            'strategies_deactivated': log.strategies_deactivated,
+            'scores': log.scores,
+            'reason': log.reason,
+            'duration_seconds': log.duration_seconds,
+        } for log in logs])
+
+    def post(self, request):
+        """Trigger a manual rotation run."""
+        session_name = request.data.get('session_name')
+        from app.quant.tasks import run_strategy_rotation
+        run_strategy_rotation.delay(session_name=session_name)
+        return Response({'status': 'Rotation started'}, status=status.HTTP_202_ACCEPTED)
+
+
+class FinnhubEconomicCalendarView(views.APIView):
+    """Return upcoming economic events from Finnhub."""
+
+    def get(self, request):
+        from app.utils.api.finnhub import get_economic_calendar
+        days = int(request.query_params.get('days', 7))
+        events = get_economic_calendar(days_ahead=days)
+        return Response(events)
+
+
+class FinnhubMarketNewsView(views.APIView):
+    """Return latest market news from Finnhub."""
+
+    def get(self, request):
+        from app.utils.api.finnhub import get_market_news
+        category = request.query_params.get('category', 'forex')
+        articles = get_market_news(category=category)
+        return Response(articles)
+
+
+class FinnhubCandlesView(views.APIView):
+    """Return forex candle data from Finnhub (alternative to Yahoo)."""
+
+    def get(self, request):
+        from app.utils.api.finnhub import fetch_forex_candles
+        symbol = request.query_params.get('symbol')
+        resolution = request.query_params.get('resolution', '15')
+        days = int(request.query_params.get('days', 60))
+        if not symbol:
+            return Response({'error': 'symbol required'}, status=status.HTTP_400_BAD_REQUEST)
+        df = fetch_forex_candles(symbol, resolution=resolution, days_back=days)
+        if df is None or df.empty:
+            return Response([])
+        records = []
+        for idx, row in df.iterrows():
+            records.append({
+                'time': idx.isoformat() if hasattr(idx, 'isoformat') else str(idx),
+                'open': row['open'],
+                'high': row['high'],
+                'low': row['low'],
+                'close': row['close'],
+                'volume': row['volume'],
+            })
+        return Response(records)
+
+
+class FinnhubIndicatorsView(views.APIView):
+    """Return aggregate technical indicators from Finnhub."""
+
+    def get(self, request):
+        from app.utils.api.finnhub import get_aggregate_indicators
+        symbol = request.query_params.get('symbol')
+        resolution = request.query_params.get('resolution', '60')
+        if not symbol:
+            return Response({'error': 'symbol required'}, status=status.HTTP_400_BAD_REQUEST)
+        result = get_aggregate_indicators(symbol, resolution=resolution)
+        if result is None:
+            return Response({'error': 'no data'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(result)

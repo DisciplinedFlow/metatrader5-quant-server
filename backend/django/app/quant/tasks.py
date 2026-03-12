@@ -128,16 +128,25 @@ def _check_live_performance(strategy_config):
     - 5 consecutive losing trades → disable
     - Last 10 trades cumulative P&L < -$50 → disable
 
+    Only evaluates trades since the strategy was last activated (respects
+    rotator decisions — old losses before re-activation don't count).
+
     Returns True if strategy is allowed to trade.
     """
     try:
         from app.nexus.models import Trade, CustomStrategy
 
+        # Only evaluate trades since last activation (cooperate with rotator)
+        since = strategy_config.last_activated
+
         # Try strategy_config FK first, fall back to strategy name pattern
         trades_qs = Trade.objects.filter(
             strategy_config=strategy_config,
             close_time__isnull=False,
-        ).order_by('-close_time')
+        )
+        if since:
+            trades_qs = trades_qs.filter(close_time__gte=since)
+        trades_qs = trades_qs.order_by('-close_time')
 
         if trades_qs.count() < 3:
             # Fallback: match by strategy name pattern
@@ -146,7 +155,10 @@ def _check_live_performance(strategy_config):
                 trades_qs = Trade.objects.filter(
                     strategy__icontains=custom.name,
                     close_time__isnull=False,
-                ).order_by('-close_time')
+                )
+                if since:
+                    trades_qs = trades_qs.filter(close_time__gte=since)
+                trades_qs = trades_qs.order_by('-close_time')
 
         recent_pnls = list(trades_qs.values_list('pnl', flat=True)[:10])
 
@@ -758,3 +770,28 @@ def run_ml_retrain():
             logger.debug("ML retrain: not enough new trades since last training")
     except Exception as e:
         logger.error(f"ML retrain error: {e}")
+
+
+@shared_task(name='quant.tasks.run_strategy_rotation', max_retries=1, soft_time_limit=300)
+def run_strategy_rotation(session_name=None):
+    """Strategy Auto-Rotator — backtest all strategies and activate top performers.
+
+    Runs 5x daily at forex session boundaries. Can also be triggered manually.
+    """
+    if is_bot_paused():
+        logger.info("Bot is paused, skipping strategy rotation.")
+        return
+    try:
+        from app.quant.algorithms.strategy_rotator import run_rotation
+        result = run_rotation(session_name=session_name)
+        if result:
+            logger.info(
+                f"Strategy rotation complete ({result.get('session')}): "
+                f"activated={result.get('activated', [])}, "
+                f"deactivated={result.get('deactivated', [])}, "
+                f"duration={result.get('duration', 0):.1f}s"
+            )
+    except SoftTimeLimitExceeded:
+        logger.error("Strategy rotation task timed out.")
+    except Exception as e:
+        logger.error(f"Strategy rotation error: {e}")

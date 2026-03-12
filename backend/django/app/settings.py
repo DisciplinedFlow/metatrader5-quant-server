@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 
 from pathlib import Path
 import os  # Added for environment variables
+from celery.schedules import crontab
 from dotenv import load_dotenv  # Optional: If using a .env file
 
 # Load environment variables from .env file if present
@@ -327,5 +328,31 @@ CELERY_BEAT_SCHEDULE = {
     'run-strategy-orchestrator': {
         'task': 'quant.tasks.run_strategy_orchestrator',
         'schedule': 300.0,  # every 5 minutes
+    },
+    # --- Strategy Auto-Rotator (5x daily at session boundaries, weekdays only) ---
+    'run-rotation-asia-open': {
+        'task': 'quant.tasks.run_strategy_rotation',
+        'schedule': crontab(hour=6, minute=0, day_of_week='1-5'),
+        'args': ('ASIA_OPEN',),
+    },
+    'run-rotation-london-open': {
+        'task': 'quant.tasks.run_strategy_rotation',
+        'schedule': crontab(hour=9, minute=0, day_of_week='1-5'),
+        'args': ('LONDON_OPEN',),
+    },
+    'run-rotation-ny-open': {
+        'task': 'quant.tasks.run_strategy_rotation',
+        'schedule': crontab(hour=13, minute=0, day_of_week='1-5'),
+        'args': ('NY_OPEN',),
+    },
+    'run-rotation-ny-afternoon': {
+        'task': 'quant.tasks.run_strategy_rotation',
+        'schedule': crontab(hour=17, minute=0, day_of_week='1-5'),
+        'args': ('NY_AFTERNOON',),
+    },
+    'run-rotation-asia-close': {
+        'task': 'quant.tasks.run_strategy_rotation',
+        'schedule': crontab(hour=22, minute=0, day_of_week='1-5'),
+        'args': ('ASIA_CLOSE',),
     },
 }

@@ -256,3 +256,27 @@ class MLModel(models.Model):
 
     def __str__(self):
         return f"ML v{self.version} ({self.model_type}) — {self.accuracy:.1%} acc, {self.trade_count} trades"
+
+
+class RotationLog(models.Model):
+    """Tracks each strategy rotation decision for analysis and ML training."""
+    timestamp = models.DateTimeField(auto_now_add=True)
+    session_name = models.CharField(max_length=30)
+    regime_state = models.JSONField(default=dict)
+    dominant_regime = models.CharField(max_length=20, default='UNKNOWN')
+    strategies_scored = models.IntegerField(default=0)
+    strategies_activated = models.JSONField(default=list)
+    strategies_deactivated = models.JSONField(default=list)
+    scores = models.JSONField(default=dict)
+    reason = models.TextField(blank=True)
+    duration_seconds = models.FloatField(default=0)
+
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['session_name']),
+            models.Index(fields=['timestamp']),
+        ]
+
+    def __str__(self):
+        return f"Rotation {self.session_name} @ {self.timestamp}"

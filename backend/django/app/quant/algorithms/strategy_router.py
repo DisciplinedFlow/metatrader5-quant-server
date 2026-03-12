@@ -107,6 +107,12 @@ STRATEGY_POOL = {
         'type': 'structure',
         'min_confluence': 7,
     },
+    'Bollinger Squeeze Breakout M15': {
+        'preferred_regimes': ['RANGING'],
+        'acceptable_regimes': ['TRENDING'],
+        'type': 'breakout',
+        'min_confluence': 5,
+    },
 }
 
 

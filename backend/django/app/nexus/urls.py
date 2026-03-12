@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView, ICTScanView, MLStatusView, MLPredictionsView, MLBackfillLLMView, ConfluenceScoreView, HMMRegimeView
+from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView, ICTScanView, MLStatusView, MLPredictionsView, MLBackfillLLMView, ConfluenceScoreView, HMMRegimeView, RotationLogView, FinnhubEconomicCalendarView, FinnhubMarketNewsView, FinnhubCandlesView, FinnhubIndicatorsView
 
 router = DefaultRouter()
 router.register(r'trades', TradeViewSet)
@@ -25,4 +25,9 @@ urlpatterns = [
     path('ml/backfill-llm/', MLBackfillLLMView.as_view(), name='ml-backfill-llm'),
     path('confluence-scores/', ConfluenceScoreView.as_view(), name='confluence-scores'),
     path('hmm-regimes/', HMMRegimeView.as_view(), name='hmm-regimes'),
+    path('rotation-log/', RotationLogView.as_view(), name='rotation-log'),
+    path('finnhub/calendar/', FinnhubEconomicCalendarView.as_view(), name='finnhub-calendar'),
+    path('finnhub/news/', FinnhubMarketNewsView.as_view(), name='finnhub-news'),
+    path('finnhub/candles/', FinnhubCandlesView.as_view(), name='finnhub-candles'),
+    path('finnhub/indicators/', FinnhubIndicatorsView.as_view(), name='finnhub-indicators'),
 ]

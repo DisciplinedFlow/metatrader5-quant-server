@@ -321,6 +321,38 @@ const api = {
   getHMMRegimes() {
     return this.django('v1/hmm-regimes/')
   },
+
+  // --- Strategy Rotation API ---
+
+  getRotationLogs(limit = 20) {
+    return this.django(`v1/rotation-log/?limit=${limit}`)
+  },
+
+  triggerRotation(sessionName = null) {
+    const body = sessionName ? { session_name: sessionName } : {}
+    return this.django('v1/rotation-log/', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+
+  // --- Finnhub API ---
+
+  getFinnhubCalendar(days = 7) {
+    return this.django(`v1/finnhub/calendar/?days=${days}`)
+  },
+
+  getFinnhubNews(category = 'forex') {
+    return this.django(`v1/finnhub/news/?category=${category}`)
+  },
+
+  getFinnhubCandles(symbol, resolution = '15', days = 60) {
+    return this.django(`v1/finnhub/candles/?symbol=${encodeURIComponent(symbol)}&resolution=${resolution}&days=${days}`)
+  },
+
+  getFinnhubIndicators(symbol, resolution = '60') {
+    return this.django(`v1/finnhub/indicators/?symbol=${encodeURIComponent(symbol)}&resolution=${resolution}`)
+  },
 }
 
 export default api
