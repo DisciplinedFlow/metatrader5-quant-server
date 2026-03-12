@@ -16,7 +16,7 @@ RSI_OVERSOLD = 30
 ATR_PERIOD = 14
 
 SL_ATR_MULTIPLIER = 1.5   # SL at 1.5x ATR from entry
-TP_ATR_MULTIPLIER = 2.0   # TP at 2.0x ATR (1:1.33 R:R)
+TP_ATR_MULTIPLIER = 3.0   # TP at 3.0x ATR (1:2 R:R)
 MIN_WIN_RATE = 0.55        # backtest gate threshold
 
 TRAILING_STOP_STEPS = [

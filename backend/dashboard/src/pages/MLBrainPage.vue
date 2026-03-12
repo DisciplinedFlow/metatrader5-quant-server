@@ -28,6 +28,18 @@ onMounted(refresh)
 const model = computed(() => status.value?.active_model)
 const features = computed(() => status.value?.features || {})
 const llm = computed(() => status.value?.llm_training_data || {})
+const llmRefreshing = ref(false)
+
+async function refreshLLM() {
+  llmRefreshing.value = true
+  try {
+    await api.backfillLLM()
+    await refresh()
+  } catch (err) {
+    console.error('LLM backfill error:', err)
+  }
+  llmRefreshing.value = false
+}
 const history = computed(() => status.value?.model_history || [])
 const learningCurve = computed(() => model.value?.learning_curve || [])
 
@@ -814,8 +826,16 @@ function modelTypeClassFor(type) {
 
       <!-- LLM Fine-Tuning (always visible) -->
       <div class="tp-card" style="margin-top:1rem;">
-        <h4>LLM Fine-Tuning Pipeline</h4>
-        <p class="chart-desc">Every closed trade generates an instruction-tuning example for local LLM fine-tuning.</p>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <h4>LLM Fine-Tuning Pipeline</h4>
+            <p class="chart-desc">Every closed trade generates an instruction-tuning example for local LLM fine-tuning.</p>
+          </div>
+          <button class="tp-btn tp-btn-outline" @click="refreshLLM" :disabled="llmRefreshing">
+            <span class="material-symbols-outlined" :class="{ spinning: llmRefreshing }" style="font-size:16px">refresh</span>
+            {{ llmRefreshing ? 'Syncing...' : 'Sync' }}
+          </button>
+        </div>
         <div class="llm-grid">
           <div class="llm-stat">
             <span class="llm-val">{{ llm.total_examples || 0 }}</span>
@@ -1323,4 +1343,6 @@ function modelTypeClassFor(type) {
 .empty-desc { font-size: 0.8rem; color: var(--tp-text-dim); margin: 0; }
 .progress-wrap { width: 60%; margin: 0.75rem auto 0; height: 6px; background: rgba(128,128,128,0.12); border-radius: 3px; overflow: hidden; }
 .progress-bar { height: 100%; background: var(--tp-primary); border-radius: 3px; transition: width 0.5s; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.spinning { animation: spin 1s linear infinite; }
 </style>

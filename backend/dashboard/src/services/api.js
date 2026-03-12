@@ -306,6 +306,10 @@ const api = {
     return this.django(`v1/ml/predictions/?limit=${limit}`)
   },
 
+  backfillLLM() {
+    return this.django('v1/ml/backfill-llm/', { method: 'POST' })
+  },
+
   // --- Confluence Scores API ---
 
   getConfluenceScores(limit = 200) {

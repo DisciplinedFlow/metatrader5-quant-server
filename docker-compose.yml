@@ -139,6 +139,7 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - quant-logs:/app/logs
+      - ./ml_models:/app/ml_models
     restart: unless-stopped
     ports:
       - 8000:8000
@@ -199,6 +200,7 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - quant-logs:/app/logs
+      - ./ml_models:/app/ml_models
     env_file:
       - .env
     depends_on:

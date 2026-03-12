@@ -81,6 +81,17 @@ def entry_algorithm():
                     type=order_type
                 )
 
+                # TP at 2x the SL distance (1:2 R:R)
+                desired_tp_pnl = abs(desired_sl_pnl) * TP_PNL_MULTIPLIER * 2
+                tp_including_commission, tp_excluding_commission = get_price_at_pnl(
+                    desired_pnl=desired_tp_pnl,
+                    commission=commission,
+                    order_size_usd=order_size_usd,
+                    leverage=LEVERAGE,
+                    entry_price=last_tick_price,
+                    type=order_type
+                )
+
                 if order_type == 'BUY':
                     if sl_including_commission > tick_info['bid'].iloc[0]:
                         error_msg = f"SL is too high for {pair}."
@@ -91,12 +102,13 @@ def entry_algorithm():
                         error_msg = f"SL is too low for {pair}."
                         logger.error({'error_msg': error_msg, 'sl_including_commission': sl_including_commission, 'tick_info': tick_info})
                         continue
-                
+
                 order = send_market_order(
                     symbol=pair,
                     volume=order_volume_lots,
                     order_type=order_type,
                     sl=round(sl_including_commission, price_decimals),
+                    tp=round(tp_including_commission, price_decimals),
                     deviation=DEVIATION,
                     type_filling="ORDER_FILLING_IOC",
                     position_size_usd=order_size_usd,
@@ -136,10 +148,10 @@ def entry_algorithm():
                     }
 
                     try:
-                        create_trade(order, pair, order_capital, order_size_usd, 
+                        create_trade(order, pair, order_capital, order_size_usd,
                                      LEVERAGE, commission, order_type, 'Alpari',
                                      'FOREX', 'MEAN REVERSION', MAIN_TIMEFRAME, order_volume_lots,
-                                     sl_including_commission, None)
+                                     sl_including_commission, tp_including_commission)
                     except Exception as e:
                         error_msg = f"Error creating trade record in DB: {e}\n{traceback.format_exc()}"
                         logger.error(error_msg)

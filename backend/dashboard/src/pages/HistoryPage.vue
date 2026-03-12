@@ -187,7 +187,7 @@ onMounted(fetchTrades)
 
 <style scoped>
 .history-page {
-  padding: 1.5rem 1.5rem 2rem;
+  padding: 1.5rem 1.5rem 1rem;
 }
 .page-header {
   display: flex;
@@ -245,9 +245,24 @@ onMounted(fetchTrades)
   white-space: nowrap;
 }
 
-/* Table */
+/* Table — scrolls vertically within remaining viewport */
 .table-wrapper {
+  max-height: calc(100vh - 21rem); /* viewport minus nav, tabs, header, stats, padding */
+  overflow-y: auto;
   overflow-x: auto;
+}
+.table-wrapper::-webkit-scrollbar {
+  width: 6px;
+}
+.table-wrapper::-webkit-scrollbar-track {
+  background: transparent;
+}
+.table-wrapper::-webkit-scrollbar-thumb {
+  background: var(--tp-border);
+  border-radius: 3px;
+}
+.table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: var(--tp-text-muted);
 }
 .trades-table {
   width: 100%;
@@ -259,6 +274,12 @@ onMounted(fetchTrades)
   letter-spacing: 0.06em;
   color: var(--tp-text-muted);
   white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: var(--tp-bg-glass, var(--tp-bg-card, #0f1729));
+  z-index: 2;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 .trades-table td {
   white-space: nowrap;

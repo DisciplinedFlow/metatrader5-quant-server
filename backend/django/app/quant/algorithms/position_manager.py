@@ -368,6 +368,53 @@ def _check_scale_in(position, trade, profit_distance, minutes_in_trade):
                 cache.set(done_key, True, timeout=3600)
                 cache.delete(remaining_key)
                 cache.delete(atr_key)
+
+                # Create Trade record so close/trailing algorithms can manage it
+                try:
+                    from app.utils.db.create import create_trade
+                    from app.nexus.models import TradeFeature
+
+                    scale_vol = float(remaining_volume)
+                    parent_vol = trade.order_volume or 1
+                    scale_trade, _ = create_trade(
+                        order=order,
+                        symbol=symbol,
+                        capital=trade.capital,
+                        position_size_usd=trade.position_size_usd * (scale_vol / parent_vol),
+                        leverage=trade.leverage,
+                        commission=trade.order_commission or 0,
+                        type=order_type,
+                        broker=trade.broker,
+                        market=trade.market_type,
+                        strategy=trade.strategy,
+                        timeframe=trade.timeframe,
+                        order_volume=scale_vol,
+                        sl=float(sl) if sl and sl != 0 else 0.0,
+                        tp=float(tp) if tp and tp != 0 else None,
+                    )
+                    if scale_trade:
+                        scale_trade.entry_atr = trade.entry_atr
+                        scale_trade.entry_timeframe = trade.entry_timeframe
+                        scale_trade.strategy_config = trade.strategy_config
+                        scale_trade.save(update_fields=['entry_atr', 'entry_timeframe', 'strategy_config'])
+
+                        # Inherit ML features from parent trade
+                        parent_tf = TradeFeature.objects.filter(trade=trade).first()
+                        if parent_tf and parent_tf.features_json:
+                            feat = parent_tf.features_json.copy() if isinstance(parent_tf.features_json, dict) else {}
+                            feat['is_scale_in'] = True
+                            feat['parent_trade_id'] = trade.id
+                            TradeFeature.objects.create(
+                                trade=scale_trade,
+                                features_json=feat,
+                                ml_score=parent_tf.ml_score,
+                                ml_accepted=True,
+                            )
+
+                        logger.info(f"SCALE-IN TRADE RECORD: #{scale_trade.id} created for order {order.get('order')}")
+                except Exception as e:
+                    logger.error(f"SCALE-IN: order placed but Trade record failed: {e}")
+
                 logger.info(
                     f"SCALE-IN SUCCESS: {symbol} ticket={ticket} "
                     f"added {remaining_volume} lots, new order={order.get('order', 'unknown')}"

@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.getenv('MT5_API_URL')
 
 def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp: float = None,
-                      deviation: int = 20, comment: str = 'From Django Server', magic: int = 234000, type_filling: str = 'ORDER_FILLING_IOC', position_size_usd: float = None, commission: float = None, capital: float = None, leverage: int = 500
+                      deviation: int = 20, comment: str = 'From Django Server', magic: int = 234000, type_filling: str = 'ORDER_FILLING_IOC', position_size_usd: float = None, commission: float = None, capital: float = None, leverage: int = 500,
+                      min_rr: float = 2.0
  ) -> Dict:
     try:
         order_type_str = order_type if isinstance(order_type, str) else order_type.name
@@ -27,6 +28,31 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
             error_msg = f"Invalid order type: {order_type_str}. Must be 'BUY' or 'SELL'"
             logger.error(error_msg)
             return None
+
+        # ── R:R validation gate ──────────────────────────────────────
+        if tp is not None and tp != 0 and sl != 0:
+            tick = symbol_info_tick(symbol)
+            if tick is not None and not tick.empty:
+                entry_price = float(tick['ask'].iloc[0]) if order_type_str == 'BUY' else float(tick['bid'].iloc[0])
+                risk = abs(entry_price - sl)
+                reward = abs(tp - entry_price)
+                if risk > 0:
+                    rr = reward / risk
+                    if rr < min_rr:
+                        logger.warning(
+                            f"R:R REJECTED {symbol} {order_type_str}: "
+                            f"entry={entry_price} sl={sl} tp={tp} "
+                            f"R:R={rr:.2f} < min_rr={min_rr} — trade not sent"
+                        )
+                        return None
+                    logger.info(f"R:R OK {symbol} {order_type_str}: R:R={rr:.2f} (min={min_rr})")
+                else:
+                    logger.warning(f"R:R CHECK SKIPPED {symbol}: risk=0 (entry={entry_price} sl={sl})")
+            else:
+                logger.warning(f"R:R CHECK SKIPPED {symbol}: could not fetch tick data")
+        elif tp is None:
+            logger.warning(f"R:R CHECK SKIPPED {symbol} {order_type}: no TP provided — allowing trade")
+        # ─────────────────────────────────────────────────────────────
 
         request = {
             "symbol": symbol,

@@ -24,6 +24,7 @@ class TradeViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Trade.objects.all()
     serializer_class = TradeSerializer
     filterset_class = TradeFilter
+    pagination_class = None  # Return all trades — table handles scrolling
     ordering_fields = ['entry_time', 'close_time', 'pnl', 'symbol']
     ordering = ['-entry_time']  # default ordering
 
@@ -421,6 +422,38 @@ class MLStatusView(views.APIView):
             },
             'llm_training_data': llm_stats,
             'model_history': model_history,
+        })
+
+
+class MLBackfillLLMView(views.APIView):
+    """Backfill LLM training data for closed trades missing examples."""
+
+    def post(self, request):
+        from .models import TradeFeature
+        from app.quant.ml.data_collector import generate_training_example, save_training_example, get_training_data_stats
+
+        # Get count of existing examples before backfill
+        before = get_training_data_stats()
+
+        labeled = TradeFeature.objects.filter(actual_win__isnull=False).select_related('trade')
+        generated = 0
+        skipped = 0
+        for tf in labeled:
+            example = generate_training_example(tf.trade, tf)
+            if example:
+                save_training_example(example)
+                generated += 1
+            else:
+                skipped += 1
+
+        after = get_training_data_stats()
+        new_examples = after['total_examples'] - before['total_examples']
+
+        return Response({
+            'generated': generated,
+            'skipped': skipped,
+            'new_examples': new_examples,
+            'stats': after,
         })
 
 
