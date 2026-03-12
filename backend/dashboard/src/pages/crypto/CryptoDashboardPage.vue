@@ -1,14 +1,19 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { usePolling } from '@/composables/usePolling'
 import api from '@/services/api'
 import SectionNav from '@/components/SectionNav.vue'
 
+const router = useRouter()
+
 const cryptoLinks = [
-  { to: '/crypto', label: 'Dashboard' },
+  { to: '/crypto', label: 'Overview' },
   { to: '/crypto/positions', label: 'Positions' },
+  { to: '/crypto/history', label: 'History' },
+  { to: '/crypto/chart', label: 'Chart' },
   { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategy' },
+  { to: '/crypto/strategy', label: 'Strategies' },
 ]
 
 // Bot state
@@ -26,11 +31,12 @@ const prices = ref([])
 const walletError = ref('')
 const walletLoaded = ref(false)
 
-// DB dashboard data
-const openPositions = ref(0)
+// DB data
+const openPositionsCount = ref(0)
 const totalPnl = ref(0)
+const closedPositions = ref([])
 
-// Allocation computed from live positions
+// Computed values
 const totalPositionValue = computed(() =>
   livePositions.value.reduce((sum, p) => sum + Math.abs(p.size * p.mark_price), 0)
 )
@@ -59,7 +65,71 @@ const shortAddress = computed(() => {
   return walletAddress.value.slice(0, 6) + '...' + walletAddress.value.slice(-4)
 })
 
-// Colors for allocation
+// P&L performance data from closed positions
+const sortedClosed = computed(() =>
+  closedPositions.value
+    .filter(p => p.closed_at && p.pnl_usd != null)
+    .sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at))
+)
+
+const equityCurve = computed(() => {
+  let cumulative = 0
+  return sortedClosed.value.map(p => {
+    cumulative += Number(p.pnl_usd)
+    return { pnl: Number(p.pnl_usd), cumulative, symbol: p.symbol, time: p.closed_at }
+  })
+})
+
+const pnlStats = computed(() => {
+  const ct = sortedClosed.value
+  const wins = ct.filter(p => Number(p.pnl_usd) > 0)
+  const losses = ct.filter(p => Number(p.pnl_usd) <= 0)
+  const total = ct.reduce((s, p) => s + Number(p.pnl_usd), 0)
+  const winRate = ct.length ? (wins.length / ct.length * 100) : 0
+  const bestTrade = ct.length ? Math.max(...ct.map(p => Number(p.pnl_usd))) : 0
+  const worstTrade = ct.length ? Math.min(...ct.map(p => Number(p.pnl_usd))) : 0
+  return { total: ct.length, wins: wins.length, losses: losses.length, totalPnl: total, winRate, bestTrade, worstTrade }
+})
+
+// SVG equity curve
+const chartPath = computed(() => {
+  const pts = equityCurve.value
+  if (pts.length < 2) return ''
+  const w = 280, h = 80, pad = 4
+  const vals = pts.map(p => p.cumulative)
+  const minV = Math.min(0, ...vals)
+  const maxV = Math.max(0, ...vals)
+  const range = maxV - minV || 1
+  const scaleX = i => pad + (i / (pts.length - 1)) * (w - pad * 2)
+  const scaleY = v => pad + (1 - (v - minV) / range) * (h - pad * 2)
+  return pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${scaleX(i).toFixed(1)} ${scaleY(p.cumulative).toFixed(1)}`).join(' ')
+})
+
+const chartFill = computed(() => {
+  const pts = equityCurve.value
+  if (pts.length < 2) return ''
+  const w = 280, h = 80, pad = 4
+  const vals = pts.map(p => p.cumulative)
+  const minV = Math.min(0, ...vals)
+  const maxV = Math.max(0, ...vals)
+  const range = maxV - minV || 1
+  const scaleX = i => pad + (i / (pts.length - 1)) * (w - pad * 2)
+  const scaleY = v => pad + (1 - (v - minV) / range) * (h - pad * 2)
+  const lineParts = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${scaleX(i).toFixed(1)} ${scaleY(p.cumulative).toFixed(1)}`).join(' ')
+  return `${lineParts} L${scaleX(pts.length - 1).toFixed(1)} ${h} L${scaleX(0).toFixed(1)} ${h} Z`
+})
+
+const zeroLineY = computed(() => {
+  const pts = equityCurve.value
+  if (pts.length < 2) return 40
+  const vals = pts.map(p => p.cumulative)
+  const minV = Math.min(0, ...vals)
+  const maxV = Math.max(0, ...vals)
+  const range = maxV - minV || 1
+  return 4 + (1 - (0 - minV) / range) * 72
+})
+
+// Coin colors
 const COIN_COLORS = {
   BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', AVAX: '#e84142',
   DOGE: '#c2a633', ARB: '#28a0f0', MATIC: '#8247e5', LINK: '#2a5ada',
@@ -71,17 +141,18 @@ function getCoinColor(coin) {
 }
 
 async function refresh() {
-  const [botResult, dashResult, walletResult] = await Promise.allSettled([
+  const [botResult, dashResult, walletResult, closedResult] = await Promise.allSettled([
     api.getCryptoBotStatus(),
     api.getCryptoDashboard(),
     api.getCryptoWallet(),
+    api.getCryptoPositions('closed'),
   ])
 
   if (botResult.status === 'fulfilled') {
     botPaused.value = botResult.value.paused
   }
   if (dashResult.status === 'fulfilled') {
-    openPositions.value = dashResult.value.open_positions ?? 0
+    openPositionsCount.value = dashResult.value.open_positions ?? 0
     totalPnl.value = dashResult.value.total_pnl ?? 0
   }
   if (walletResult.status === 'fulfilled') {
@@ -98,6 +169,9 @@ async function refresh() {
   } else if (walletResult.status === 'rejected') {
     walletError.value = walletResult.reason?.message || 'Failed to load wallet'
     walletLoaded.value = true
+  }
+  if (closedResult.status === 'fulfilled') {
+    closedPositions.value = closedResult.value.results ?? closedResult.value ?? []
   }
 }
 
@@ -132,227 +206,316 @@ function fmtPct(val) {
   return (val * 100).toFixed(1) + '%'
 }
 
-usePolling(refresh, 15000)
+onMounted(refresh)
+usePolling(refresh, 10000)
 </script>
 
 <template>
-  <div class="tp-page">
-    <SectionNav :links="cryptoLinks" />
+  <SectionNav :links="cryptoLinks" />
+  <div class="tp-page dashboard-page">
 
-    <!-- Page Header -->
-    <div class="dash-header">
-      <div>
-        <h1 class="dash-title">Crypto Portfolio</h1>
-        <p class="dash-subtitle">Hyperliquid Perpetuals</p>
+    <!-- Bot Status + Account Stats — full-width glass strip -->
+    <div class="top-row">
+      <div class="tp-card bot-card">
+        <div class="bot-header">
+          <div class="bot-label-row">
+            <div class="bot-icon" :class="botPaused ? 'bot-icon-paused' : 'bot-icon-running'">
+              <span class="material-symbols-outlined">currency_bitcoin</span>
+            </div>
+            <div>
+              <p class="micro-label">Crypto Bot</p>
+              <div class="bot-status-row">
+                <span class="status-dot" :class="botPaused ? 'dot-paused' : 'dot-running'"></span>
+                <p class="bot-status-text">{{ botPaused ? 'PAUSED' : 'RUNNING' }}</p>
+              </div>
+            </div>
+          </div>
+          <button
+            class="tp-btn tp-btn-outline"
+            :aria-busy="botStatusLoading"
+            @click="toggleBot"
+          >
+            <span class="material-symbols-outlined" style="font-size:16px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
+            {{ botPaused ? 'Resume' : 'Pause' }}
+          </button>
+        </div>
       </div>
-      <div class="dash-header-right">
-        <!-- Wallet badge -->
-        <div v-if="walletAddress" class="wallet-badge">
-          <span class="wallet-dot"></span>
-          <span class="wallet-addr">{{ shortAddress }}</span>
-          <span class="wallet-chain">Arbitrum</span>
+
+      <div class="tp-card stats-row-card">
+        <div class="mini-stat">
+          <p class="micro-label">Account Value</p>
+          <p class="mini-stat-value">${{ fmt(accountValue) }}</p>
         </div>
-        <div v-else-if="walletLoaded && walletError" class="wallet-badge wallet-badge-error">
-          <span class="material-symbols-outlined" style="font-size: 14px;">error</span>
-          <span>Disconnected</span>
+        <div class="mini-stat">
+          <p class="micro-label">Unrealized P&L</p>
+          <p class="mini-stat-value" :class="totalUnrealizedPnl >= 0 ? 'text-success' : 'text-danger'">
+            {{ totalUnrealizedPnl >= 0 ? '+' : '' }}${{ fmt(totalUnrealizedPnl) }}
+          </p>
         </div>
-        <!-- Bot control -->
-        <button
-          class="tp-btn"
-          :class="botPaused ? 'tp-btn-success' : 'tp-btn-outline'"
-          :disabled="botStatusLoading"
-          @click="toggleBot"
-        >
-          <span class="material-symbols-outlined">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
-          {{ botPaused ? 'Resume Bot' : 'Pause Bot' }}
-        </button>
+        <div class="mini-stat">
+          <p class="micro-label">Margin Level</p>
+          <p class="mini-stat-value">{{ marginUsedPct.toFixed(1) }}%</p>
+        </div>
+        <div class="mini-stat">
+          <p class="micro-label">Withdrawable</p>
+          <p class="mini-stat-value">${{ fmt(withdrawable) }}</p>
+        </div>
       </div>
     </div>
 
-    <!-- Portfolio Summary Row -->
-    <div class="portfolio-row">
-      <!-- Account Value Card (hero) -->
-      <div class="portfolio-hero">
-        <div class="hero-label">Account Equity</div>
-        <div class="hero-value">${{ fmt(accountValue) }}</div>
-        <div class="hero-pnl" :class="totalUnrealizedPnl >= 0 ? 'positive' : 'negative'">
-          <span class="material-symbols-outlined" style="font-size: 16px;">
-            {{ totalUnrealizedPnl >= 0 ? 'trending_up' : 'trending_down' }}
-          </span>
-          {{ totalUnrealizedPnl >= 0 ? '+' : '' }}${{ fmt(totalUnrealizedPnl) }} unrealized
-        </div>
-        <div class="hero-meta">
-          <div class="hero-meta-item">
-            <span class="meta-label">Withdrawable</span>
-            <span class="meta-value">${{ fmt(withdrawable) }}</span>
-          </div>
-          <div class="hero-meta-item">
-            <span class="meta-label">Closed P&L</span>
-            <span class="meta-value" :style="{ color: totalPnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
-              {{ totalPnl >= 0 ? '+' : '' }}${{ fmt(totalPnl) }}
+    <div class="dash-grid">
+
+      <!-- ===== LEFT COLUMN ===== -->
+      <div class="left-col">
+
+        <!-- Live Prices -->
+        <div class="tp-card prices-card">
+          <div class="prices-header">
+            <h3>
+              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">show_chart</span>
+              Live Prices
+            </h3>
+            <span class="tp-badge tp-badge-success" style="font-size: 0.6rem;">
+              <span class="pulse-dot"></span> Real-time
             </span>
           </div>
+          <div class="prices-grid">
+            <div v-for="p in prices" :key="p.coin" class="price-item">
+              <div class="price-coin-row">
+                <div class="coin-icon" :style="{ background: getCoinColor(p.coin) + '22', color: getCoinColor(p.coin) }">
+                  {{ p.coin.slice(0, 2) }}
+                </div>
+                <div>
+                  <div class="price-coin-name">{{ p.coin }}</div>
+                  <div class="price-coin-pair">{{ p.coin }}/USD</div>
+                </div>
+              </div>
+              <div class="price-value">${{ fmtPrice(p.price) }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- On-Chain Positions -->
+        <div class="tp-card positions-card">
+          <div class="positions-header">
+            <h3>On-Chain Positions</h3>
+            <div class="positions-header-right">
+              <span class="tp-badge tp-badge-primary">{{ livePositions.length }} active</span>
+              <button class="view-history-btn" @click="router.push('/crypto/history')">View History</button>
+            </div>
+          </div>
+          <div class="positions-body">
+            <template v-if="livePositions.length > 0">
+              <div style="overflow-x: auto;">
+                <table class="tp-table">
+                  <thead>
+                    <tr>
+                      <th>Asset</th>
+                      <th>Side</th>
+                      <th>Size</th>
+                      <th>Entry</th>
+                      <th>Mark</th>
+                      <th>Lev</th>
+                      <th>Margin</th>
+                      <th>P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="p in livePositions" :key="p.coin">
+                      <td>
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                          <div class="coin-icon-sm" :style="{ background: getCoinColor(p.coin) + '22', color: getCoinColor(p.coin) }">
+                            {{ p.coin.slice(0, 2) }}
+                          </div>
+                          <span style="font-weight: 700;">{{ p.coin }}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="tp-badge" :class="p.side === 'LONG' ? 'tp-badge-success' : 'tp-badge-danger'">
+                          {{ p.side }}
+                        </span>
+                      </td>
+                      <td style="font-weight: 600;">{{ fmt(Math.abs(p.size), 4) }}</td>
+                      <td style="font-weight: 500;">${{ fmtPrice(p.entry_price) }}</td>
+                      <td style="font-weight: 500;">${{ fmtPrice(p.mark_price) }}</td>
+                      <td>{{ p.leverage }}x</td>
+                      <td>${{ fmt(p.margin_used) }}</td>
+                      <td>
+                        <span style="font-weight: 700;" :style="{ color: p.unrealized_pnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
+                          {{ p.unrealized_pnl >= 0 ? '+' : '' }}${{ fmt(p.unrealized_pnl) }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <div v-else class="empty-positions">
+              <div class="empty-icon">
+                <span class="material-symbols-outlined" style="font-size:2rem;color:var(--tp-text-dim)">account_balance_wallet</span>
+              </div>
+              <p class="empty-title">No open positions</p>
+              <p class="empty-desc">Live positions from Hyperliquid will appear here.</p>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- Margin & Risk Card -->
-      <div class="tp-stat-card portfolio-card">
-        <div class="stat-label">Margin Usage</div>
-        <div class="stat-value">${{ fmt(totalMarginUsed) }}</div>
-        <div class="margin-bar-wrap">
-          <div class="margin-bar">
-            <div
-              class="margin-bar-fill"
-              :style="{ width: Math.min(marginUsedPct, 100) + '%' }"
-              :class="{
-                'bar-safe': marginUsedPct < 50,
-                'bar-warning': marginUsedPct >= 50 && marginUsedPct < 80,
-                'bar-danger': marginUsedPct >= 80,
-              }"
+      <!-- ===== RIGHT COLUMN ===== -->
+      <div class="right-col">
+
+        <!-- P&L Performance Card -->
+        <div class="tp-card pnl-card">
+          <div class="pnl-header">
+            <div>
+              <h3 class="pnl-title">Performance</h3>
+              <p class="pnl-subtitle">{{ pnlStats.total }} closed trades</p>
+            </div>
+            <div class="pnl-total" :class="pnlStats.totalPnl >= 0 ? 'text-success' : 'text-danger'">
+              {{ pnlStats.totalPnl >= 0 ? '+' : '' }}${{ pnlStats.totalPnl.toFixed(2) }}
+            </div>
+          </div>
+
+          <!-- Equity Curve -->
+          <div class="equity-chart" v-if="equityCurve.length >= 2">
+            <svg viewBox="0 0 280 80" preserveAspectRatio="none" class="equity-svg">
+              <line x1="4" :y1="zeroLineY" x2="276" :y2="zeroLineY" stroke="var(--tp-border)" stroke-width="0.5" stroke-dasharray="4 2" />
+              <path :d="chartFill" :fill="pnlStats.totalPnl >= 0 ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)'" />
+              <path :d="chartPath" fill="none" :stroke="pnlStats.totalPnl >= 0 ? '#22c55e' : '#ef4444'" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+          <div v-else class="equity-empty">
+            <span class="material-symbols-outlined" style="font-size:1.5rem;color:var(--tp-text-dim)">show_chart</span>
+            <p>Waiting for closed trades...</p>
+          </div>
+
+          <!-- Trade Bars -->
+          <div class="trade-bars" v-if="sortedClosed.length">
+            <div v-for="(t, i) in sortedClosed.slice(-20)" :key="i"
+                 class="trade-bar"
+                 :class="Number(t.pnl_usd) >= 0 ? 'bar-win' : 'bar-loss'"
+                 :style="{ height: Math.min(100, Math.max(8, Math.abs(Number(t.pnl_usd)) * 3)) + '%' }"
+                 :title="`${t.symbol} ${Number(t.pnl_usd) >= 0 ? '+' : ''}$${Number(t.pnl_usd).toFixed(2)}`"
             ></div>
           </div>
-          <span class="margin-pct">{{ marginUsedPct.toFixed(1) }}%</span>
-        </div>
-        <div class="card-detail-row">
-          <span class="meta-label">Notional Exposure</span>
-          <span class="meta-value">${{ fmt(Math.abs(totalNtlPos)) }}</span>
-        </div>
-      </div>
 
-      <!-- Bot & Positions Card -->
-      <div class="tp-stat-card portfolio-card">
-        <div class="stat-label">Trading Bot</div>
-        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem;">
-          <span class="tp-badge" :class="botPaused ? 'tp-badge-warning' : 'tp-badge-success'">
-            <span v-if="!botPaused" class="pulse-dot"></span>
-            {{ botPaused ? 'Paused' : 'Running' }}
-          </span>
-        </div>
-        <div class="card-detail-row">
-          <span class="meta-label">Open Positions</span>
-          <span class="meta-value" style="font-weight: 700;">{{ livePositions.length || openPositions }}</span>
-        </div>
-        <div class="card-detail-row">
-          <span class="meta-label">Position Value</span>
-          <span class="meta-value">${{ fmt(totalPositionValue) }}</span>
-        </div>
-        <div style="margin-top: 0.75rem;">
-          <RouterLink to="/crypto/positions" class="tp-btn tp-btn-outline" style="width: 100%; font-size: 0.75rem;">
-            View All Positions
-          </RouterLink>
-        </div>
-      </div>
-    </div>
-
-    <!-- Live Prices Grid -->
-    <div class="section-header">
-      <h2 class="section-title">Live Prices</h2>
-      <span class="tp-badge tp-badge-success" style="font-size: 0.6rem;">
-        <span class="pulse-dot"></span> Real-time
-      </span>
-    </div>
-    <div class="prices-grid">
-      <div v-for="p in prices" :key="p.coin" class="price-card">
-        <div class="price-coin-row">
-          <div class="coin-icon" :style="{ background: getCoinColor(p.coin) + '22', color: getCoinColor(p.coin) }">
-            {{ p.coin.slice(0, 2) }}
+          <!-- Stats Grid -->
+          <div class="pnl-stats-grid">
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">Win Rate</span>
+              <span class="pnl-stat-value">{{ pnlStats.winRate.toFixed(0) }}%</span>
+            </div>
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">W / L</span>
+              <span class="pnl-stat-value">{{ pnlStats.wins }} / {{ pnlStats.losses }}</span>
+            </div>
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">Best</span>
+              <span class="pnl-stat-value text-success">+${{ pnlStats.bestTrade.toFixed(2) }}</span>
+            </div>
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">Worst</span>
+              <span class="pnl-stat-value text-danger">${{ pnlStats.worstTrade.toFixed(2) }}</span>
+            </div>
           </div>
-          <div>
-            <div class="price-coin-name">{{ p.coin }}</div>
-            <div class="price-coin-pair">{{ p.coin }}/USD</div>
-          </div>
-        </div>
-        <div class="price-value">${{ fmtPrice(p.price) }}</div>
-      </div>
-    </div>
 
-    <!-- Allocation Bar (only if positions exist) -->
-    <div v-if="allocation.length" class="tp-card" style="margin-bottom: 1.5rem;">
-      <div style="padding: 1.25rem;">
-        <div class="section-header" style="margin-bottom: 1rem;">
-          <h3 class="section-title" style="font-size: 1rem;">Portfolio Allocation</h3>
+          <button class="tp-btn tp-btn-outline pnl-history-btn" @click="router.push('/crypto/history')">
+            <span class="material-symbols-outlined" style="font-size:16px">history</span>
+            View Full History
+          </button>
         </div>
-        <!-- Stacked bar -->
-        <div class="alloc-bar">
-          <div
-            v-for="a in allocation"
-            :key="a.coin"
-            class="alloc-segment"
-            :style="{ width: fmtPct(a.pct), background: getCoinColor(a.coin) }"
-            :title="a.coin + ' – ' + fmtPct(a.pct)"
-          ></div>
-        </div>
-        <!-- Legend -->
-        <div class="alloc-legend">
-          <div v-for="a in allocation" :key="a.coin" class="alloc-legend-item">
-            <span class="alloc-dot" :style="{ background: getCoinColor(a.coin) }"></span>
-            <span class="alloc-coin">{{ a.coin }}</span>
-            <span class="alloc-pct">{{ fmtPct(a.pct) }}</span>
-            <span class="alloc-val">${{ fmt(a.value) }}</span>
+
+        <!-- Margin & Risk Card -->
+        <div class="tp-card margin-card">
+          <div class="margin-header">
+            <h3>
+              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">shield</span>
+              Margin & Risk
+            </h3>
+          </div>
+          <div class="margin-body">
+            <div class="margin-bar-wrap">
+              <div class="margin-bar">
+                <div
+                  class="margin-bar-fill"
+                  :style="{ width: Math.min(marginUsedPct, 100) + '%' }"
+                  :class="{
+                    'bar-safe': marginUsedPct < 50,
+                    'bar-warning': marginUsedPct >= 50 && marginUsedPct < 80,
+                    'bar-danger': marginUsedPct >= 80,
+                  }"
+                ></div>
+              </div>
+              <span class="margin-pct">{{ marginUsedPct.toFixed(1) }}%</span>
+            </div>
+            <div class="margin-detail-row">
+              <span class="meta-label">Margin Used</span>
+              <span class="meta-value">${{ fmt(totalMarginUsed) }}</span>
+            </div>
+            <div class="margin-detail-row">
+              <span class="meta-label">Notional Exposure</span>
+              <span class="meta-value">${{ fmt(Math.abs(totalNtlPos)) }}</span>
+            </div>
+            <div class="margin-detail-row">
+              <span class="meta-label">Position Value</span>
+              <span class="meta-value">${{ fmt(totalPositionValue) }}</span>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
 
-    <!-- Live Positions Table -->
-    <div class="tp-card">
-      <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--tp-border); display: flex; align-items: center; justify-content: space-between;">
-        <h3 style="font-size: 1.1rem; font-weight: 700; margin: 0;">On-Chain Positions</h3>
-        <span class="tp-badge tp-badge-primary">{{ livePositions.length }} active</span>
-      </div>
-      <div style="overflow-x: auto;">
-        <table class="tp-table">
-          <thead>
-            <tr>
-              <th>Asset</th>
-              <th>Side</th>
-              <th>Size</th>
-              <th>Entry Price</th>
-              <th>Mark Price</th>
-              <th>Leverage</th>
-              <th>Margin Used</th>
-              <th>Unrealized P&L</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="!livePositions.length">
-              <td colspan="8" style="padding: 3rem 2rem; text-align: center;">
-                <div style="display: flex; flex-direction: column; align-items: center;">
-                  <div class="empty-icon">
-                    <span class="material-symbols-outlined" style="font-size: 2rem; color: var(--tp-text-dim);">account_balance_wallet</span>
-                  </div>
-                  <p style="font-weight: 600; margin-bottom: 0.25rem;">No open positions</p>
-                  <p style="font-size: 0.8rem; color: var(--tp-text-dim); margin: 0;">Live positions from Hyperliquid will appear here.</p>
-                </div>
-              </td>
-            </tr>
-            <tr v-for="p in livePositions" :key="p.coin">
-              <td>
-                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                  <div class="coin-icon-sm" :style="{ background: getCoinColor(p.coin) + '22', color: getCoinColor(p.coin) }">
-                    {{ p.coin.slice(0, 2) }}
-                  </div>
-                  <span style="font-weight: 700;">{{ p.coin }}</span>
-                </div>
-              </td>
-              <td>
-                <span class="tp-badge" :class="p.side === 'LONG' ? 'tp-badge-success' : 'tp-badge-danger'">
-                  {{ p.side }}
-                </span>
-              </td>
-              <td style="font-weight: 600;">{{ fmt(Math.abs(p.size), 4) }}</td>
-              <td style="font-weight: 500;">${{ fmtPrice(p.entry_price) }}</td>
-              <td style="font-weight: 500;">${{ fmtPrice(p.mark_price) }}</td>
-              <td>{{ p.leverage }}x</td>
-              <td>${{ fmt(p.margin_used) }}</td>
-              <td>
-                <span style="font-weight: 700;" :style="{ color: p.unrealized_pnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
-                  {{ p.unrealized_pnl >= 0 ? '+' : '' }}${{ fmt(p.unrealized_pnl) }}
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <!-- Portfolio Allocation -->
+        <div v-if="allocation.length" class="tp-card alloc-card">
+          <div class="alloc-header">
+            <h3>
+              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">pie_chart</span>
+              Portfolio Allocation
+            </h3>
+          </div>
+          <div class="alloc-body">
+            <div class="alloc-bar">
+              <div
+                v-for="a in allocation"
+                :key="a.coin"
+                class="alloc-segment"
+                :style="{ width: fmtPct(a.pct), background: getCoinColor(a.coin) }"
+                :title="a.coin + ' – ' + fmtPct(a.pct)"
+              ></div>
+            </div>
+            <div class="alloc-legend">
+              <div v-for="a in allocation" :key="a.coin" class="alloc-legend-item">
+                <span class="alloc-dot" :style="{ background: getCoinColor(a.coin) }"></span>
+                <span class="alloc-coin">{{ a.coin }}</span>
+                <span class="alloc-pct">{{ fmtPct(a.pct) }}</span>
+                <span class="alloc-val">${{ fmt(a.value) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Wallet Info -->
+        <div class="tp-card wallet-card" v-if="walletAddress">
+          <div class="wallet-header">
+            <h3>
+              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">wallet</span>
+              Wallet
+            </h3>
+          </div>
+          <div class="wallet-body">
+            <div class="wallet-address-row">
+              <span class="wallet-dot"></span>
+              <span class="wallet-addr">{{ shortAddress }}</span>
+              <span class="wallet-chain">Arbitrum</span>
+            </div>
+            <div class="wallet-detail-row">
+              <span class="meta-label">Network</span>
+              <span class="meta-value">Hyperliquid L1</span>
+            </div>
+            <div class="wallet-detail-row">
+              <span class="meta-label">Open Positions</span>
+              <span class="meta-value" style="font-weight: 700;">{{ livePositions.length || openPositionsCount }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -365,184 +528,413 @@ usePolling(refresh, 15000)
 </template>
 
 <style scoped>
-/* Dashboard Header */
-.dash-header {
+.dashboard-page {
+  padding: 1rem 1.5rem 2rem;
+}
+
+/* ===== Grid Layout ===== */
+.dash-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+}
+@media (min-width: 1024px) {
+  .dash-grid {
+    grid-template-columns: 1.65fr 1fr;
+  }
+}
+.left-col, .right-col {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 2rem;
-  flex-wrap: wrap;
-  gap: 1rem;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
 }
-.dash-title {
-  font-size: 2.25rem;
-  font-weight: 900;
-  letter-spacing: -0.02em;
+
+/* ===== Top Row: Bot + Stats — full-width strip above grid ===== */
+.top-row {
+  display: flex;
+  gap: 0;
+  border-radius: var(--tp-radius);
+  overflow: hidden;
+  background: var(--tp-bg-glass);
+  backdrop-filter: var(--tp-glass-blur);
+  -webkit-backdrop-filter: var(--tp-glass-blur);
+  border: var(--tp-glass-border);
+  box-shadow: var(--tp-glass-shadow);
+  margin-bottom: 1.25rem;
 }
-.dash-subtitle {
-  color: var(--tp-text-dim);
-  margin-top: 0.25rem;
-  font-size: 0.9rem;
+
+.bot-card {
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-right: 1px solid var(--tp-border);
+  background: none;
+  backdrop-filter: none;
+  border-radius: 0;
+  border-top: none;
+  border-bottom: none;
+  border-left: none;
+  box-shadow: none;
+  flex-shrink: 0;
 }
-.dash-header-right {
+.bot-header {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  flex-wrap: wrap;
 }
-
-/* Wallet Badge */
-.wallet-badge {
-  display: inline-flex;
+.bot-label-row {
+  display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.85rem;
-  background: var(--tp-bg-glass);
-  border: 1px solid var(--tp-border);
-  border-radius: 9999px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--tp-text-muted);
-  backdrop-filter: var(--tp-glass-blur);
+  gap: 0.6rem;
 }
-.wallet-badge-error {
-  border-color: var(--tp-danger);
-  color: var(--tp-danger);
-}
-.wallet-dot {
-  width: 8px;
-  height: 8px;
+.bot-icon {
+  width: 2rem; height: 2rem;
   border-radius: 50%;
-  background: var(--tp-success);
-  box-shadow: 0 0 6px var(--tp-success);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
-.wallet-addr {
-  font-family: var(--tp-font-mono);
-  font-size: 0.78rem;
-  letter-spacing: 0.02em;
+.bot-icon .material-symbols-outlined { font-size: 18px; }
+.bot-icon-running {
+  background: rgba(34,197,94,0.12);
+  color: var(--tp-success);
 }
-.wallet-chain {
+.bot-icon-paused {
+  background: rgba(245,158,11,0.12);
+  color: var(--tp-warning);
+}
+.micro-label {
   font-size: 0.6rem;
-  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  font-weight: 700;
   color: var(--tp-text-dim);
-  background: var(--tp-bg-surface);
-  padding: 0.1rem 0.4rem;
-  border-radius: 4px;
+  margin: 0;
+}
+.bot-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.1rem;
+}
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot-running { background: var(--tp-success); }
+.dot-paused { background: var(--tp-warning); }
+.bot-status-text {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--tp-text);
+  margin: 0;
 }
 
-/* Portfolio Summary Row */
-.portfolio-row {
-  display: grid;
-  grid-template-columns: 1.5fr 1fr 1fr;
-  gap: 1rem;
-  margin-bottom: 2rem;
+.stats-row-card {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  backdrop-filter: none;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  align-items: stretch;
 }
-@media (max-width: 900px) {
-  .portfolio-row {
-    grid-template-columns: 1fr;
+.mini-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.2rem;
+  padding: 1rem 1.25rem;
+  border-right: 1px solid var(--tp-border);
+  min-width: 0;
+}
+.mini-stat:last-child {
+  border-right: none;
+}
+.mini-stat-value {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: var(--tp-text);
+  margin: 0;
+  line-height: 1;
+  font-feature-settings: 'tnum' 1;
+  white-space: nowrap;
+}
+.text-success { color: var(--tp-success) !important; }
+.text-danger { color: var(--tp-danger) !important; }
+
+@media (max-width: 768px) {
+  .top-row {
+    flex-direction: column;
+  }
+  .bot-card {
+    border-right: none;
+    border-bottom: 1px solid var(--tp-border);
+  }
+  .stats-row-card {
+    flex-wrap: wrap;
+  }
+  .mini-stat {
+    min-width: 45%;
   }
 }
 
-/* Hero Card */
-.portfolio-hero {
-  padding: 1.5rem;
-  background: var(--tp-gradient-primary);
-  border-radius: var(--tp-radius);
-  color: white;
-  position: relative;
-  overflow: hidden;
+/* ===== Prices Card ===== */
+.prices-card {
+  padding: 1.25rem;
 }
-.portfolio-hero::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at 80% 20%, rgba(255,255,255,0.1), transparent 60%);
-  pointer-events: none;
-}
-.hero-label {
-  font-size: 0.8rem;
-  font-weight: 500;
-  opacity: 0.85;
-  margin-bottom: 0.25rem;
-}
-.hero-value {
-  font-size: 2.2rem;
-  font-weight: 900;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-  margin-bottom: 0.5rem;
-}
-.hero-pnl {
-  display: inline-flex;
+.prices-header {
+  display: flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  padding: 0.2rem 0.6rem;
-  border-radius: 6px;
+  justify-content: space-between;
   margin-bottom: 1rem;
 }
-.hero-pnl.positive {
-  background: rgba(52, 211, 153, 0.2);
-  color: #6ee7b7;
-}
-.hero-pnl.negative {
-  background: rgba(248, 113, 113, 0.2);
-  color: #fca5a5;
-}
-.hero-meta {
+.prices-header h3 {
   display: flex;
-  gap: 1.5rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid rgba(255,255,255,0.15);
-}
-.hero-meta-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-.hero-meta .meta-label {
-  font-size: 0.7rem;
-  opacity: 0.7;
-  font-weight: 500;
-}
-.hero-meta .meta-value {
-  font-size: 1rem;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
   font-weight: 700;
 }
-
-/* Portfolio cards */
-.portfolio-card {
-  display: flex;
-  flex-direction: column;
+.prices-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.5rem;
 }
-.card-detail-row {
+.price-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.35rem 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--tp-bg-surface);
+  border-radius: var(--tp-radius-sm);
+  transition: transform var(--tp-transition);
 }
-.card-detail-row + .card-detail-row {
-  border-top: 1px solid var(--tp-border);
+.price-item:hover {
+  transform: translateY(-1px);
 }
-.meta-label {
-  font-size: 0.78rem;
+.price-coin-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.coin-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+.coin-icon-sm {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.55rem;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.price-coin-name {
+  font-weight: 700;
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+.price-coin-pair {
+  font-size: 0.6rem;
   color: var(--tp-text-dim);
 }
-.meta-value {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--tp-text);
+.price-value {
+  font-size: 0.9rem;
+  font-weight: 800;
+  font-feature-settings: 'tnum' 1;
 }
 
-/* Margin bar */
+/* ===== Positions Card ===== */
+.positions-card {
+  overflow: hidden;
+}
+.positions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem;
+  border-bottom: 1px solid var(--tp-border);
+}
+.positions-header h3 {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.positions-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.view-history-btn {
+  background: none;
+  border: none;
+  color: var(--tp-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--tp-font);
+}
+.view-history-btn:hover { text-decoration: underline; }
+.positions-body {
+  padding: 0;
+}
+.empty-positions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2rem;
+  text-align: center;
+}
+.empty-icon {
+  width: 4rem; height: 4rem;
+  border-radius: 50%;
+  background: var(--tp-bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+.empty-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--tp-text) !important;
+  margin-bottom: 0.25rem;
+}
+.empty-desc {
+  font-size: 0.85rem;
+  color: var(--tp-text-dim) !important;
+}
+
+/* ===== Right Column: P&L Card ===== */
+.pnl-card {
+  padding: 1.25rem;
+}
+.pnl-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+.pnl-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin: 0;
+}
+.pnl-subtitle {
+  font-size: 0.7rem;
+  color: var(--tp-text-dim);
+  margin: 0.15rem 0 0;
+}
+.pnl-total {
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-family: 'Inter', monospace;
+}
+
+.equity-chart {
+  width: 100%;
+  height: 5rem;
+  margin-bottom: 0.75rem;
+  background: var(--tp-bg-surface);
+  border-radius: var(--tp-radius-sm);
+  overflow: hidden;
+}
+.equity-svg {
+  width: 100%;
+  height: 100%;
+}
+.equity-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1.5rem;
+  color: var(--tp-text-dim);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.trade-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 2.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0 2px;
+}
+.trade-bar {
+  flex: 1;
+  border-radius: 2px 2px 0 0;
+  min-height: 3px;
+  transition: opacity 0.15s;
+  cursor: default;
+}
+.trade-bar:hover { opacity: 0.7; }
+.bar-win { background: #22c55e; }
+.bar-loss { background: #ef4444; }
+
+.pnl-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.pnl-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--tp-border);
+  font-size: 0.78rem;
+}
+.pnl-stat-label { color: var(--tp-text-dim); }
+.pnl-stat-value { font-weight: 700; font-family: 'Inter', monospace; }
+
+.pnl-history-btn {
+  width: 100%;
+  justify-content: center;
+  font-size: 0.8rem;
+}
+
+/* ===== Margin Card ===== */
+.margin-card {
+  padding: 1.25rem;
+}
+.margin-header {
+  margin-bottom: 1rem;
+}
+.margin-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
 .margin-bar-wrap {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin: 0.75rem 0;
+  margin-bottom: 1rem;
 }
 .margin-bar {
   flex: 1;
@@ -566,92 +958,46 @@ usePolling(refresh, 15000)
   min-width: 3rem;
   text-align: right;
 }
-
-/* Section Headers */
-.section-header {
+.margin-detail-row {
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
+  padding: 0.35rem 0;
 }
-.section-title {
-  font-size: 1.15rem;
-  font-weight: 800;
-  letter-spacing: -0.01em;
+.margin-detail-row + .margin-detail-row {
+  border-top: 1px solid var(--tp-border);
 }
-
-/* Live Prices Grid */
-.prices-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 2rem;
-}
-.price-card {
-  padding: 1rem;
-  background: var(--tp-bg-glass);
-  backdrop-filter: var(--tp-glass-blur);
-  border: 1px solid var(--tp-border);
-  border-radius: var(--tp-radius);
-  transition: transform var(--tp-transition), box-shadow var(--tp-transition);
-}
-.price-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-}
-.price-coin-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-bottom: 0.6rem;
-}
-.coin-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  flex-shrink: 0;
-}
-.coin-icon-sm {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.55rem;
-  font-weight: 800;
-  flex-shrink: 0;
-}
-.price-coin-name {
-  font-weight: 700;
-  font-size: 0.9rem;
-  line-height: 1.2;
-}
-.price-coin-pair {
-  font-size: 0.65rem;
+.meta-label {
+  font-size: 0.78rem;
   color: var(--tp-text-dim);
 }
-.price-value {
-  font-size: 1.1rem;
-  font-weight: 800;
-  font-family: var(--tp-font);
-  font-feature-settings: 'tnum' 1;
+.meta-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--tp-text);
 }
 
-/* Allocation Bar */
+/* ===== Allocation Card ===== */
+.alloc-card {
+  padding: 1.25rem;
+}
+.alloc-header {
+  margin-bottom: 1rem;
+}
+.alloc-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
 .alloc-bar {
   display: flex;
-  height: 12px;
-  border-radius: 6px;
+  height: 10px;
+  border-radius: 5px;
   overflow: hidden;
   gap: 2px;
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
 }
 .alloc-segment {
   min-width: 4px;
@@ -661,17 +1007,17 @@ usePolling(refresh, 15000)
 .alloc-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem 1.5rem;
+  gap: 0.5rem 1rem;
 }
 .alloc-legend-item {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.8rem;
+  gap: 0.35rem;
+  font-size: 0.75rem;
 }
 .alloc-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
@@ -685,19 +1031,64 @@ usePolling(refresh, 15000)
 }
 .alloc-val {
   color: var(--tp-text-dim);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
 }
 
-/* Empty state */
-.empty-icon {
-  width: 3.5rem;
-  height: 3.5rem;
-  border-radius: 50%;
-  background: var(--tp-bg-surface);
+/* ===== Wallet Card ===== */
+.wallet-card {
+  padding: 1.25rem;
+}
+.wallet-header {
+  margin-bottom: 1rem;
+}
+.wallet-header h3 {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.wallet-address-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--tp-bg-surface);
+  border-radius: var(--tp-radius-sm);
   margin-bottom: 0.75rem;
+}
+.wallet-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tp-success);
+  box-shadow: 0 0 6px var(--tp-success);
+}
+.wallet-addr {
+  font-family: var(--tp-font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.wallet-chain {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tp-text-dim);
+  background: var(--tp-bg-glass);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  margin-left: auto;
+}
+.wallet-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.35rem 0;
+}
+.wallet-detail-row + .wallet-detail-row {
+  border-top: 1px solid var(--tp-border);
 }
 
 /* Error banner */
@@ -715,9 +1106,6 @@ usePolling(refresh, 15000)
 }
 
 @media (max-width: 480px) {
-  .dash-title { font-size: 1.75rem; }
-  .hero-value { font-size: 1.5rem; }
-  .hero-meta { flex-direction: column; gap: 0.5rem; }
   .prices-grid { grid-template-columns: repeat(2, 1fr); }
 }
 </style>

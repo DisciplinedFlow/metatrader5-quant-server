@@ -5,10 +5,12 @@ import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
 
 const cryptoLinks = [
-  { to: '/crypto', label: 'Dashboard' },
+  { to: '/crypto', label: 'Overview' },
   { to: '/crypto/positions', label: 'Positions' },
+  { to: '/crypto/history', label: 'History' },
+  { to: '/crypto/chart', label: 'Chart' },
   { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategy' },
+  { to: '/crypto/strategy', label: 'Strategies' },
 ]
 
 const lines = ref('200')

@@ -56,6 +56,14 @@ const routes = [
     component: () => import('@/pages/crypto/CryptoPositionsPage.vue'),
   },
   {
+    path: '/crypto/history',
+    component: () => import('@/pages/crypto/CryptoHistoryPage.vue'),
+  },
+  {
+    path: '/crypto/chart',
+    component: () => import('@/pages/crypto/CryptoChartPage.vue'),
+  },
+  {
     path: '/crypto/logs',
     component: () => import('@/pages/crypto/CryptoLogsPage.vue'),
   },

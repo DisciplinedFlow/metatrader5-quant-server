@@ -194,7 +194,7 @@ usePolling(() => hmmRegime.fetch(), 30000)
           <p class="mini-stat-value">{{ positionsStore.positions.length }}</p>
         </div>
         <div class="mini-stat">
-          <p class="micro-label">Total Profit</p>
+          <p class="micro-label">Current Profit</p>
           <p class="mini-stat-value" :class="positionsStore.totalProfit >= 0 ? 'text-success' : 'text-danger'">
             ${{ positionsStore.totalProfit.toFixed(2) }}
           </p>

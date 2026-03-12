@@ -12,10 +12,12 @@ import StrategyBuilder from '@/components/StrategyBuilder.vue'
 import StrategyLibrary from '@/components/StrategyLibrary.vue'
 
 const cryptoLinks = [
-  { to: '/crypto', label: 'Dashboard' },
+  { to: '/crypto', label: 'Overview' },
   { to: '/crypto/positions', label: 'Positions' },
+  { to: '/crypto/history', label: 'History' },
+  { to: '/crypto/chart', label: 'Chart' },
   { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategy' },
+  { to: '/crypto/strategy', label: 'Strategies' },
 ]
 
 const toast = useToast()
