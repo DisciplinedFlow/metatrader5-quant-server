@@ -43,7 +43,8 @@ LABEL_VOLATILE = 'VOLATILE'
 LABEL_UNKNOWN = 'UNKNOWN'
 
 # Leader pairs get 2x weight in consensus (Livermore: group leaders matter)
-CONSENSUS_LEADERS = {'EURUSD', 'GBPUSD'}
+# XAUUSD added as commodity leader — gold telegraphs risk sentiment
+CONSENSUS_LEADERS = {'EURUSD', 'GBPUSD', 'XAUUSD'}
 LEADER_WEIGHT = 2
 
 

@@ -9,6 +9,7 @@ from app.utils.arithmetics import (
     get_price_at_pnl,
     get_pnl_at_price,
     convert_usd_to_lots,
+    get_symbol_contract_info,
 )
 from app.utils.api.data import fetch_data_pos, symbol_info_tick
 from app.utils.api.positions import get_positions
@@ -186,14 +187,18 @@ def entry_algorithm():
                 )
                 logger.info(f"Clamped SL for {pair} to limit loss to ${order_capital:.2f}")
 
-            # Convert to lots
+            # Convert to lots — uses trade_contract_size from MT5
             order_volume_lots = convert_usd_to_lots(pair, order_size_usd, order_type)
 
             if isinstance(order_volume_lots, (pd.Series, pd.DataFrame)):
                 order_volume_lots = order_volume_lots.iloc[0] if not order_volume_lots.empty else 0.0
 
-            if order_volume_lots < 0.01:
-                logger.error(f"Order volume too low for {pair}: {order_volume_lots}")
+            # Validate against broker's volume_min (varies per symbol)
+            contract_info = get_symbol_contract_info(pair)
+            broker_volume_min = contract_info['volume_min'] if contract_info else 0.01
+
+            if order_volume_lots < broker_volume_min:
+                logger.error(f"Order volume too low for {pair}: {order_volume_lots:.4f} < broker min {broker_volume_min}")
                 continue
 
             # Validate SL direction

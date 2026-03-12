@@ -148,7 +148,6 @@ class CustomStrategy(models.Model):
     DOMAIN_CHOICES = [
         ('FOREX', 'Forex'),
         ('CRYPTO', 'Crypto'),
-        ('POLYMARKET', 'Polymarket'),
     ]
 
     name = models.CharField(max_length=100)

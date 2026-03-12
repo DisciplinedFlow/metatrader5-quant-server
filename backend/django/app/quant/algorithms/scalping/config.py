@@ -1,6 +1,6 @@
 from app.utils.constants import MT5Timeframe
 
-PAIRS = ['NG', 'BRN', 'WTI', 'XAGUSD', 'XAUUSD', 'XAUEUR', 'EURUSD',
+PAIRS = ['NG-C', 'UKOUSDft', 'USOUSD', 'XAGUSD', 'XAUUSD', 'XAUEUR', 'EURUSD',
          'EURGBP', 'USDJPY', 'USDCAD', 'USDCHF', 'AUDUSD', 'NZDUSD']
 MAIN_TIMEFRAME = MT5Timeframe.M5
 LEVERAGE = 100

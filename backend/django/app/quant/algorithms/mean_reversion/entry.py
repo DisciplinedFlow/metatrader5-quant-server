@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 import traceback
 
-from app.utils.arithmetics import calculate_order_capital, calculate_order_size_usd, calculate_commission, get_price_at_pnl, get_pnl_at_price, convert_usd_to_lots
+from app.utils.arithmetics import calculate_order_capital, calculate_order_size_usd, calculate_commission, get_price_at_pnl, get_pnl_at_price, convert_usd_to_lots, get_symbol_contract_info
 from app.utils.constants import MT5Timeframe
 from app.utils.api.data import fetch_data_pos, symbol_info_tick
 from app.utils.api.positions import get_positions
@@ -59,8 +59,12 @@ def entry_algorithm():
             if isinstance(order_volume_lots, (pd.Series, pd.DataFrame)):
                 order_volume_lots = order_volume_lots.iloc[0] if not order_volume_lots.empty else 0.0
 
-            if order_volume_lots < 0.01:
-                error_msg = f"Order volume is too low for {pair}."
+            # Fetch broker volume constraints (volume_min varies: 0.01 forex, 0.1 NG-C)
+            contract_info = get_symbol_contract_info(pair)
+            broker_volume_min = contract_info['volume_min'] if contract_info else 0.01
+
+            if order_volume_lots < broker_volume_min:
+                error_msg = f"Order volume is too low for {pair}: {order_volume_lots:.4f} < broker min {broker_volume_min}."
                 logger.error({'error_msg': error_msg, 'order_volume_lots': order_volume_lots})
                 continue
 

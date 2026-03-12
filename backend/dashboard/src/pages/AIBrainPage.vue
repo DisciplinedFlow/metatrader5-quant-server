@@ -184,17 +184,6 @@ usePolling(refresh, 15000)
           </ul>
         </div>
 
-        <!-- Polymarket -->
-        <div class="tp-card">
-          <div class="card-section-header">
-            <span class="material-symbols-outlined" style="font-size:18px">casino</span>
-            Polymarket Analysis
-          </div>
-          <p class="analysis-summary">{{ analysis.polymarket_analysis?.summary }}</p>
-          <ul v-if="analysis.polymarket_analysis?.recommendations?.length" class="rec-list">
-            <li v-for="(r, i) in analysis.polymarket_analysis.recommendations" :key="i">{{ r }}</li>
-          </ul>
-        </div>
       </div>
 
       <!-- Strategy Insights -->

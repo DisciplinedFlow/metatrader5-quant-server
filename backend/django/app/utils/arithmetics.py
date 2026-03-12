@@ -87,64 +87,124 @@ def calculate_order_capital(symbol, volume_lots, leverage, price_open):
     capital_used = order_size_usd / leverage
     return capital_used
 
+
+def _extract_scalar(value, default=None):
+    """Extract a scalar float from a pandas Series or return the value directly."""
+    if isinstance(value, pd.Series):
+        return float(value.iloc[0]) if not value.empty else default
+    if value is None:
+        return default
+    return float(value)
+
+
 def convert_lots_to_usd(symbol, lots, price_open):
     """
     Convert volume size from lots to USD amount.
-    
-    :param symbol: The trading symbol (e.g., 'BITCOIN', 'ETHEREUM')
+
+    Uses trade_contract_size from MT5 — handles forex (100k), metals
+    (XAUUSD=100, XAGUSD=5000), energy (NG-C=10000, oils=1000), etc.
+
+    :param symbol: The trading symbol (e.g., 'EURUSD', 'XAGUSD', 'NG-C')
     :param lots: The volume size in lots
-    :return: The equivalent USD amount
+    :param price_open: The price at which to calculate notional value
+    :return: The equivalent USD amount (notional)
     """
     # Get the contract size for the symbol
     symbol_info_data = symbol_info(symbol)
     if symbol_info_data is None:
         raise ValueError(f"Symbol {symbol} not found in MetaTrader 5")
-    
-    contract_size = symbol_info_data.get('trade_contract_size', 100000)
-    
-    # For USD-base pairs (USDJPY, USDCHF, USDCAD), 1 lot = 100,000 USD
+
+    contract_size = _extract_scalar(symbol_info_data.get('trade_contract_size'), 100000)
+
+    # For USD-base pairs (USDJPY, USDCHF, USDCAD), base currency is USD
+    # so notional = lots * contract_size (already in USD).
+    # For everything else (EURUSD, XAUUSD, XAGUSD, NG-C, oils...),
+    # notional = lots * contract_size * price (converting base to USD).
     if symbol.startswith('USD') and symbol != 'USDX':
         usd_amount = lots * contract_size
     else:
         usd_amount = lots * contract_size * price_open
-    
+
     return usd_amount
+
+
+def get_symbol_contract_info(symbol: str) -> dict:
+    """Fetch contract specification from MT5 for position sizing.
+
+    Returns a dict with:
+        trade_contract_size, volume_min, volume_max, volume_step,
+        ask, bid, point, digits
+    or None if the symbol could not be found.
+    """
+    try:
+        symbol_info_data = symbol_info(symbol)
+        if symbol_info_data is None:
+            logger.error(f"get_symbol_contract_info: {symbol} not found in MT5")
+            return None
+
+        return {
+            'trade_contract_size': _extract_scalar(symbol_info_data.get('trade_contract_size'), 100000),
+            'volume_min': _extract_scalar(symbol_info_data.get('volume_min'), 0.01),
+            'volume_max': _extract_scalar(symbol_info_data.get('volume_max'), 100.0),
+            'volume_step': _extract_scalar(symbol_info_data.get('volume_step'), 0.01),
+            'ask': _extract_scalar(symbol_info_data.get('ask'), 0.0),
+            'bid': _extract_scalar(symbol_info_data.get('bid'), 0.0),
+            'point': _extract_scalar(symbol_info_data.get('point'), 0.00001),
+            'digits': _extract_scalar(symbol_info_data.get('digits'), 5),
+        }
+    except Exception as e:
+        logger.error(f"get_symbol_contract_info failed for {symbol}: {e}\n{traceback.format_exc()}")
+        return None
+
 
 def convert_usd_to_lots(symbol: str, usd_amount: float, type: str) -> float:
     """
     Convert USD amount to lots for a given symbol.
 
-    :param symbol: The trading symbol (e.g., 'BITCOIN', 'ETHEREUM')
-    :param usd_amount: The amount in USD to convert
+    Uses trade_contract_size from MT5 symbol info so that commodity CFDs
+    (XAUUSD=100 oz, XAGUSD=5000 oz, NG-C=10000, oils=1000) are sized
+    correctly alongside forex (contract_size=100,000 base currency).
+
+    Also enforces volume_min/volume_max/volume_step from the broker.
+
+    :param symbol: The trading symbol (e.g., 'EURUSD', 'XAGUSD', 'NG-C')
+    :param usd_amount: The desired notional exposure in USD
     :param type: The type of order ('BUY' or 'SELL')
-    :return: The equivalent amount in lots
+    :return: The equivalent amount in lots (clamped to broker limits)
     """
     try:
         # Get the symbol information
         symbol_info_data = symbol_info(symbol)
         if symbol_info_data is None:
             raise ValueError(f"Symbol {symbol} not found in MetaTrader 5")
-        
+
         # Ensure that 'ask' and 'bid' are scalar values
-        ask_price = symbol_info_data.ask.iloc[0] if isinstance(symbol_info_data.ask, pd.Series) else symbol_info_data.ask
-        bid_price = symbol_info_data.bid.iloc[0] if isinstance(symbol_info_data.bid, pd.Series) else symbol_info_data.bid
-        
+        ask_price = _extract_scalar(symbol_info_data.get('ask'), 0.0)
+        bid_price = _extract_scalar(symbol_info_data.get('bid'), 0.0)
+
         price_dict = {
             'BUY': ask_price,
             'SELL': bid_price
         }
-        
-        # Get the contract size and calculate lots (extract scalar from Series)
-        contract_size = symbol_info_data.get('trade_contract_size', 100000)
-        if isinstance(contract_size, pd.Series):
-            contract_size = float(contract_size.iloc[0])
-        else:
-            contract_size = float(contract_size)
 
-        # For USD-base pairs (USDJPY, USDCHF, USDCAD), 1 lot = 100,000 USD
-        # so lots = usd_amount / contract_size (no price conversion needed).
-        # For non-USD-base pairs (EURUSD, GBPUSD), 1 lot = 100,000 base currency
-        # so lots = usd_amount / (contract_size * price).
+        # Get the contract size — this is the key field that varies by asset class:
+        # Forex: 100,000 (1 lot = 100k base currency)
+        # XAUUSD: 100 (1 lot = 100 oz)
+        # XAGUSD: 5,000 (1 lot = 5,000 oz)
+        # NG-C: 10,000 (1 lot = 10,000 MMBtu)
+        # Oils: 1,000 (1 lot = 1,000 barrels)
+        contract_size = _extract_scalar(symbol_info_data.get('trade_contract_size'), 100000)
+
+        # Broker volume constraints
+        volume_min = _extract_scalar(symbol_info_data.get('volume_min'), 0.01)
+        volume_max = _extract_scalar(symbol_info_data.get('volume_max'), 100.0)
+        lot_step = _extract_scalar(symbol_info_data.get('volume_step'), 0.01)
+
+        # Calculate lots: notional_usd = lots * contract_size * price
+        # => lots = notional_usd / (contract_size * price)
+        #
+        # For USD-base pairs (USDJPY, USDCHF, USDCAD), base currency IS USD,
+        # so 1 lot = contract_size USD (no price conversion needed).
         price = price_dict[type]
         if symbol.startswith('USD') and symbol != 'USDX':
             lots = usd_amount / contract_size
@@ -152,29 +212,36 @@ def convert_usd_to_lots(symbol: str, usd_amount: float, type: str) -> float:
             lots = usd_amount / (contract_size * price)
 
         # Round to the nearest lot step
-        lot_step = symbol_info_data.get('volume_step', 0.01)
-        if isinstance(lot_step, pd.Series):
-            lot_step = float(lot_step.iloc[0])
-        else:
-            lot_step = float(lot_step)
         lots = round(lots / lot_step) * lot_step
-        
-        symbol_info_dict = {
-            'ask': float(ask_price),
-            'bid': float(bid_price),
-            'spread': float(symbol_info_data.spread.iloc[0]) if isinstance(symbol_info_data.spread, pd.Series) else float(symbol_info_data.spread),
-            'volume': float(symbol_info_data.volume.iloc[0]) if isinstance(symbol_info_data.volume, pd.Series) else float(symbol_info_data.volume),
-            'trade_contract_size': contract_size,
-            'volume_step': lot_step
-        }
+
+        # Clamp to broker volume limits
+        if lots < volume_min:
+            logger.warning(
+                f"convert_usd_to_lots: {symbol} computed {lots:.4f} lots < volume_min {volume_min}, "
+                f"clamping up (usd={usd_amount:.2f}, contract_size={contract_size}, price={price:.4f})"
+            )
+            lots = volume_min
+        if lots > volume_max:
+            logger.warning(
+                f"convert_usd_to_lots: {symbol} computed {lots:.4f} lots > volume_max {volume_max}, "
+                f"clamping down"
+            )
+            lots = volume_max
+
+        notional_usd = lots * contract_size * price if not (symbol.startswith('USD') and symbol != 'USDX') else lots * contract_size
 
         logger.info({
             'message': 'Lots converted from USD to lots',
             'symbol': symbol,
-            'symbol_info': symbol_info_dict,
             'usd_amount': usd_amount,
             'type': type,
-            'lots': float(lots)  # Convert to float for proper JSON serialization
+            'lots': float(lots),
+            'contract_size': contract_size,
+            'price': float(price),
+            'notional_usd': float(notional_usd),
+            'volume_min': volume_min,
+            'volume_max': volume_max,
+            'volume_step': lot_step,
         })
 
         return lots

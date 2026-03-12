@@ -65,11 +65,6 @@ LOGGING = {
             'filename': os.path.join(BASE_DIR, 'logs/quant.log'),
             'formatter': 'verbose',
         },
-        'polymarket_file': {
-            'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs/polymarket.log'),
-            'formatter': 'verbose',
-        },
         'crypto_file': {
             'class': 'logging.FileHandler',
             'filename': os.path.join(BASE_DIR, 'logs/crypto.log'),
@@ -89,11 +84,6 @@ LOGGING = {
     'loggers': {
         'app.quant': {
             'handlers': ['console', 'file'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'app.polymarket': {
-            'handlers': ['console', 'polymarket_file'],
             'level': 'INFO',
             'propagate': False,
         },
@@ -131,7 +121,6 @@ INSTALLED_APPS = [
     'django_extensions',
     'app.nexus',
     'app.quant',
-    'app.polymarket',
     'app.crypto',
 ]
 
@@ -277,30 +266,19 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.run_backtest',
         'schedule': 60.0 * 60 * 6,  # every 6 hours
     },
-    'sync-polymarket-markets': {
-        'task': 'polymarket.tasks.sync_polymarket_markets',
-        'schedule': 60.0 * 30,  # every 30 minutes
-    },
-    'run-polymarket-entry': {
-        'task': 'polymarket.tasks.run_polymarket_entry',
-        'schedule': 60.0 * 5,  # every 5 minutes
-    },
-    'run-polymarket-exit': {
-        'task': 'polymarket.tasks.run_polymarket_exit',
-        'schedule': 60.0 * 2,  # every 2 minutes
-    },
-    'sync-crypto-prices': {
-        'task': 'crypto.tasks.sync_crypto_prices',
-        'schedule': 60.0,  # every 1 minute
-    },
-    'run-crypto-entry': {
-        'task': 'crypto.tasks.run_crypto_entry',
-        'schedule': 60.0,  # every 1 minute
-    },
-    'run-crypto-exit': {
-        'task': 'crypto.tasks.run_crypto_exit',
-        'schedule': 30.0,  # every 30 seconds
-    },
+    # --- Hyperliquid tasks DISABLED: using Lighter.xyz instead ---
+    # 'sync-crypto-prices': {
+    #     'task': 'crypto.tasks.sync_crypto_prices',
+    #     'schedule': 60.0,
+    # },
+    # 'run-crypto-entry': {
+    #     'task': 'crypto.tasks.run_crypto_entry',
+    #     'schedule': 60.0,
+    # },
+    # 'run-crypto-exit': {
+    #     'task': 'crypto.tasks.run_crypto_exit',
+    #     'schedule': 30.0,
+    # },
     'run-lighter-entry': {
         'task': 'crypto.tasks.run_lighter_entry',
         'schedule': 60.0,  # every 1 minute

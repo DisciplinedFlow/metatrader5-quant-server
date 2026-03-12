@@ -1,7 +1,7 @@
 """
 AI Quant Brain v2 — Comprehensive trading intelligence system.
 
-Continuously monitors all trading domains (Forex, Crypto, Polymarket),
+Continuously monitors all trading domains (Forex, Crypto),
 correlates with macro analysis, tracks strategy health, identifies
 position-macro conflicts, and suggests strategy improvements.
 
@@ -37,7 +37,6 @@ def gather_snapshot():
         'timestamp': timezone.now().isoformat(),
         'forex': _gather_forex(),
         'crypto': _gather_crypto(),
-        'polymarket': _gather_polymarket(),
         'strategies': _gather_strategies(),
         'macro_analysis': _gather_macro_analysis(),
         'strategy_performance': _gather_strategy_performance(),
@@ -111,39 +110,6 @@ def _gather_crypto():
         }
     except Exception as e:
         logger.error(f"Error gathering crypto data: {e}")
-        return {'error': str(e)}
-
-
-def _gather_polymarket():
-    """Gather Polymarket positions and market opportunities."""
-    try:
-        from app.polymarket.models import PolyPosition, PolyMarket
-        from app.polymarket.bot_control import is_polymarket_bot_paused
-
-        open_positions = PolyPosition.objects.filter(status='OPEN').values(
-            'market__question', 'side', 'entry_price', 'shares', 'cost_basis_usd'
-        )[:20]
-
-        # Top EV opportunities
-        markets = PolyMarket.objects.filter(
-            is_active=True,
-            model_probability__isnull=False,
-        ).order_by('-model_probability')[:10]
-        opportunities = [{
-            'question': m.question[:80],
-            'market_price': float(m.market_price),
-            'model_prob': float(m.model_probability),
-            'ev': float(m.model_probability) - float(m.market_price),
-        } for m in markets]
-
-        return {
-            'bot_paused': is_polymarket_bot_paused(),
-            'open_positions': list(open_positions),
-            'top_opportunities': opportunities,
-            'total_open': PolyPosition.objects.filter(status='OPEN').count(),
-        }
-    except Exception as e:
-        logger.error(f"Error gathering polymarket data: {e}")
         return {'error': str(e)}
 
 
@@ -503,7 +469,6 @@ def _build_system_prompt():
     return """You are the head of a quantitative trading desk managing a multi-asset portfolio across:
 1. **Forex** (MetaTrader 5) -- currency pairs with CVD-based, mean reversion & scalping strategies
 2. **Crypto** (Hyperliquid) -- BTC, ETH, SOL etc with momentum & CVD-based strategies
-3. **Polymarket** -- prediction markets with EV-based Kelly criterion betting
 
 You receive a comprehensive snapshot including:
 - Open positions and recent trades across all domains
@@ -536,10 +501,6 @@ RESPOND WITH ONLY A JSON OBJECT (no markdown, no backticks) with this structure:
         "summary": "brief assessment",
         "recommendations": ["actionable items"]
     },
-    "polymarket_analysis": {
-        "summary": "brief assessment",
-        "recommendations": ["actionable items"]
-    },
     "strategy_insights": ["observations about strategy performance"],
     "strategy_improvements": [
         {
@@ -563,7 +524,7 @@ RESPOND WITH ONLY A JSON OBJECT (no markdown, no backticks) with this structure:
     "new_strategy_ideas": [
         {
             "name": "strategy name",
-            "domain": "FOREX|CRYPTO|POLYMARKET",
+            "domain": "FOREX|CRYPTO",
             "description": "what it does",
             "edge": "why it should work",
             "parameters": {"key": "value"}

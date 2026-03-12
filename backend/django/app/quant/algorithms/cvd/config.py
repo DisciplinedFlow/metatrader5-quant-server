@@ -3,7 +3,7 @@ from app.utils.constants import MT5Timeframe
 # Default config for CVD strategies — overridden by CustomStrategy.definition
 DEFAULT_TIMEFRAME = MT5Timeframe.M15
 LEVERAGE = 200
-CAPITAL_PER_TRADE = 500
+CAPITAL_PER_TRADE = 2000
 MAX_LOT_SIZE = 1.0     # Hard safety cap — never exceed this regardless of sizing math
 DEVIATION = 20
 MAX_OPEN_TRADES = 5    # Reduced from 10 — less exposure with only 3 active strategies

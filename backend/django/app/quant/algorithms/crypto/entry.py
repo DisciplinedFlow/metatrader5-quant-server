@@ -8,11 +8,32 @@ from .config import (
     CRYPTO_LOOKBACK, CRYPTO_MAX_POSITION_PCT, CRYPTO_STRATEGY,
     CRYPTO_STOP_LOSS_PCT, CRYPTO_TAKE_PROFIT_PCT,
 )
-from .client import get_all_mids, get_candles, place_market_order
+from .client import get_all_mids, get_candles, get_info, place_market_order
 from .strategy import MomentumStrategy
 from .sizing import check_position_limits
 
 logger = logging.getLogger('app.crypto')
+
+_sz_decimals_cache: dict = {}
+
+
+def _get_sz_decimals(pair: str) -> int:
+    """Get the size decimal precision for a Hyperliquid asset (cached)."""
+    if not _sz_decimals_cache:
+        try:
+            meta = get_info().meta()
+            for asset in meta.get('universe', []):
+                _sz_decimals_cache[asset['name']] = asset.get('szDecimals', 2)
+        except Exception as e:
+            logger.warning(f"Failed to fetch meta for sz_decimals: {e}")
+    return _sz_decimals_cache.get(pair, 2)
+
+
+def _round_size(pair: str, size: float) -> float:
+    """Round size to the correct number of decimals for the asset."""
+    decimals = _get_sz_decimals(pair)
+    import math
+    return math.floor(size * 10**decimals) / 10**decimals
 
 
 def sync_prices():
@@ -85,14 +106,15 @@ def entry_algorithm():
             if current_price <= 0:
                 continue
 
-            size = abs(strategy.calculate_position_size(signal, CRYPTO_CAPITAL_USD, current_price))
+            raw_size = abs(strategy.calculate_position_size(signal, CRYPTO_CAPITAL_USD, current_price))
+            size = _round_size(pair, raw_size)
             if size <= 0:
                 continue
 
             is_buy = signal > 0
             side = 'LONG' if is_buy else 'SHORT'
 
-            logger.info(f"Entry signal: {pair} {side} size={size:.6f} price={current_price}")
+            logger.info(f"Entry signal: {pair} {side} size={size} price={current_price}")
 
             result = place_market_order(pair, is_buy, size, CRYPTO_LEVERAGE)
 

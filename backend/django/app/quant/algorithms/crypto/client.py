@@ -1,5 +1,6 @@
 import logging
 from typing import Optional
+from eth_account import Account
 from hyperliquid.info import Info
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants
@@ -27,11 +28,14 @@ def get_exchange() -> Exchange:
     """Get the Exchange instance. Prefers agent key (trade-only, no withdrawals) over master key."""
     global _exchange_instance
     if _exchange_instance is None:
-        trading_key = HYPERLIQUID_AGENT_KEY or HYPERLIQUID_PRIVATE_KEY
+        # Filter out placeholder values like "..." that are truthy but invalid
+        agent_key = HYPERLIQUID_AGENT_KEY if HYPERLIQUID_AGENT_KEY and len(HYPERLIQUID_AGENT_KEY) > 10 else ''
+        trading_key = agent_key or HYPERLIQUID_PRIVATE_KEY
         if not trading_key:
             raise ValueError("Neither HYPERLIQUID_AGENT_KEY nor HYPERLIQUID_PRIVATE_KEY is set")
+        wallet = Account.from_key(trading_key)
         _exchange_instance = Exchange(
-            trading_key,
+            wallet,
             get_base_url(),
             account_address=HYPERLIQUID_WALLET_ADDRESS or None,
         )
@@ -48,7 +52,8 @@ def create_agent_wallet(name: str = "quant_bot") -> dict:
     """
     if not HYPERLIQUID_PRIVATE_KEY:
         raise ValueError("HYPERLIQUID_PRIVATE_KEY (master key) required to create agent wallet")
-    master_exchange = Exchange(HYPERLIQUID_PRIVATE_KEY, get_base_url())
+    master_wallet = Account.from_key(HYPERLIQUID_PRIVATE_KEY)
+    master_exchange = Exchange(master_wallet, get_base_url())
     result = master_exchange.approve_agent(name=name)
     logger.info("Agent wallet created: name=%s, result=%s", name, result[0] if result else None)
     return {"status": result[0], "agent_key": result[1] if len(result) > 1 else None}

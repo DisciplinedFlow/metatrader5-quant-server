@@ -138,7 +138,7 @@ REGIME_PARAMS = {
     },
     'UNKNOWN': {
         'size_multiplier': 0.7,
-        'min_confluence': 5,
+        'min_confluence': 3,
         'sl_multiplier_adj': 1.2,
         'tp_approach': 'trailing',
     },
@@ -365,7 +365,7 @@ def route_all_symbols(symbols: List[str]) -> Dict[str, RoutingDecision]:
                 regime_direction='NEUTRAL',
                 selected_strategies=['CVD Lack of Participants'],
                 size_multiplier=0.7,
-                min_confluence=5,
+                min_confluence=3,
                 sl_multiplier_adj=1.2,
                 tp_approach='trailing',
                 reason='Error fallback -> conservative defaults',
@@ -402,21 +402,29 @@ def is_strategy_valid_for_symbol(strategy_name: str, symbol: str) -> bool:
     Returns True if the strategy appears in the routing decision's selected
     strategies for the given symbol. Used by the entry pipeline to validate
     that a strategy should actually fire for a particular pair.
+
+    Handles domain suffix mismatch: StrategyConfig.name may include a domain
+    like '(FOREX)' while STRATEGY_POOL keys are bare names. Uses prefix
+    matching so 'CVD Lack of Participants (FOREX)' matches 'CVD Lack of Participants'.
     """
     decision = route_symbol(symbol)
-    return strategy_name in decision.selected_strategies
+    # Exact match first, then prefix match for domain-suffixed names
+    for router_name in decision.selected_strategies:
+        if strategy_name == router_name or strategy_name.startswith(router_name):
+            return True
+    return False
 
 
 def get_regime_summary() -> Dict[str, str]:
-    """Get a quick regime label for all forex pairs.
+    """Get a quick regime label for all scanned symbols (forex + commodities).
 
-    Returns: {'EURUSD': 'TRENDING', 'GBPUSD': 'RANGING', ...}
+    Returns: {'EURUSD': 'TRENDING', 'GBPUSD': 'RANGING', 'XAUUSD': 'TRENDING', ...}
     Useful for dashboard display and logging.
     """
-    from app.quant.algorithms.regime import FOREX_PAIRS
+    from app.quant.algorithms.regime import SCANNED_SYMBOLS
 
     summary = {}
-    for symbol in FOREX_PAIRS:
+    for symbol in SCANNED_SYMBOLS:
         hmm = _read_hmm_regime(symbol)
         summary[symbol] = _normalize_regime(hmm['label'])
     return summary

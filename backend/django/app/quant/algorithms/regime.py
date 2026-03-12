@@ -190,9 +190,18 @@ FOREX_PAIRS = [
     'NZDUSD', 'USDCAD', 'USDCHF',
 ]
 
+# Metals and energy symbols available in MT5 — same OHLC data, same HMM model
+COMMODITY_SYMBOLS = [
+    'XAUUSD', 'XAGUSD',              # Metals
+    'NG-C', 'UKOUSDft', 'USOUSD',    # Energy
+]
+
+# All symbols that get regime-scanned (forex + commodities)
+SCANNED_SYMBOLS = FOREX_PAIRS + COMMODITY_SYMBOLS
+
 
 def scan_all_pairs():
-    """Scan all forex pairs and classify their market regime.
+    """Scan all traded symbols (forex + metals + energy) and classify their market regime.
 
     Stores results in the MarketRegime model so that other modules
     (entry dispatcher, AI brain, dashboard) can query the latest regime
@@ -202,7 +211,7 @@ def scan_all_pairs():
     """
     from app.nexus.models import MarketRegime
 
-    for pair in FOREX_PAIRS:
+    for pair in SCANNED_SYMBOLS:
         try:
             df = fetch_data_pos(pair, MT5Timeframe.H1, 100)
             if df is None or len(df) < 50:
@@ -233,7 +242,7 @@ def scan_all_pairs():
     # Caches per-pair detail + cross-pair consensus in Redis
     try:
         from app.quant.ml.regime_hmm import scan_all_hmm_regimes
-        hmm_results = scan_all_hmm_regimes(FOREX_PAIRS, fetch_data_pos, MT5Timeframe.H1)
+        hmm_results = scan_all_hmm_regimes(SCANNED_SYMBOLS, fetch_data_pos, MT5Timeframe.H1)
 
         # Store HMM results alongside rule-based in MarketRegime model
         if hmm_results:

@@ -26,6 +26,7 @@ from app.utils.arithmetics import (
     get_price_at_pnl,
     get_pnl_at_price,
     convert_usd_to_lots,
+    get_symbol_contract_info,
 )
 from app.utils.constants import MT5Timeframe
 from app.utils.api.data import fetch_data_pos, symbol_info_tick
@@ -64,18 +65,100 @@ GROUP_TENDENCY_CACHE_TTL = 300       # Cache correlation check for 5 minutes
 INITIAL_SIZE_FRACTION = 0.60  # Enter at 60%, add remaining 40% on confirmation
 
 # --- Cross-Pair Correlation (Livermore's "Group Tendency") ---
-# Pairs that move together based on shared USD dynamics.
+# Pairs/instruments that move together based on shared dynamics.
 # USD_WEAKNESS pairs go UP when USD weakens; USD_STRENGTH pairs go UP when USD strengthens.
+# METALS correlate (gold/silver); ENERGY instruments trade independently for now.
 PAIR_CORRELATION_MAP = {
-    'EURUSD':  {'group': 'USD_WEAKNESS',  'check_peers': ['GBPUSD', 'AUDUSD']},
-    'GBPUSD':  {'group': 'USD_WEAKNESS',  'check_peers': ['EURUSD', 'AUDUSD']},
-    'AUDUSD':  {'group': 'USD_WEAKNESS',  'check_peers': ['EURUSD', 'GBPUSD']},
-    'NZDUSD':  {'group': 'USD_WEAKNESS',  'check_peers': ['AUDUSD', 'EURUSD']},
-    'USDJPY':  {'group': 'USD_STRENGTH',  'check_peers': ['USDCHF', 'USDCAD']},
-    'USDCHF':  {'group': 'USD_STRENGTH',  'check_peers': ['USDJPY', 'USDCAD']},
-    'USDCAD':  {'group': 'USD_STRENGTH',  'check_peers': ['USDJPY', 'USDCHF']},
-    'XAUUSD':  {'group': None,            'check_peers': []},  # Gold trades independently
+    # Forex — USD dynamics
+    'EURUSD':   {'group': 'USD_WEAKNESS',  'check_peers': ['GBPUSD', 'AUDUSD']},
+    'GBPUSD':   {'group': 'USD_WEAKNESS',  'check_peers': ['EURUSD', 'AUDUSD']},
+    'AUDUSD':   {'group': 'USD_WEAKNESS',  'check_peers': ['EURUSD', 'GBPUSD']},
+    'NZDUSD':   {'group': 'USD_WEAKNESS',  'check_peers': ['AUDUSD', 'EURUSD']},
+    'USDJPY':   {'group': 'USD_STRENGTH',  'check_peers': ['USDCHF', 'USDCAD']},
+    'USDCHF':   {'group': 'USD_STRENGTH',  'check_peers': ['USDJPY', 'USDCAD']},
+    'USDCAD':   {'group': 'USD_STRENGTH',  'check_peers': ['USDJPY', 'USDCHF']},
+    # Metals — gold/silver correlate strongly
+    'XAUUSD':   {'group': 'METALS',        'check_peers': ['XAGUSD']},
+    'XAGUSD':   {'group': 'METALS',        'check_peers': ['XAUUSD']},
+    'XAUEUR':   {'group': 'METALS',        'check_peers': ['XAUUSD']},
+    'XAUJPY':   {'group': 'METALS',        'check_peers': ['XAUUSD']},
+    'XAUAUD':   {'group': 'METALS',        'check_peers': ['XAUUSD']},
+    # Energy — no strong peer correlation yet
+    'NG-C':     {'group': None,            'check_peers': []},
+    'UKOUSDft': {'group': 'ENERGY',        'check_peers': []},
 }
+
+# Symbols that are NOT forex — used to tag trades with the correct market_type.
+# Everything else defaults to 'FOREX' (the MT5 broker's primary market).
+_COMMODITY_SYMBOLS = frozenset(
+    k for k, v in PAIR_CORRELATION_MAP.items()
+    if v.get('group') in ('METALS', 'ENERGY') or k in ('NG-C',)
+)
+
+
+def _get_market_type(symbol):
+    """Return 'FOREX' or 'OTHER' based on the symbol for Trade.market_type."""
+    if symbol in _COMMODITY_SYMBOLS:
+        return 'OTHER'
+    return 'FOREX'
+
+
+# Build a reverse map from group name -> set of symbols in that group.
+# Used for correlation-based position limiting (skip XAGUSD if XAUUSD is open).
+_CORRELATION_GROUPS = {}
+for _sym, _info in PAIR_CORRELATION_MAP.items():
+    _grp = _info.get('group')
+    if _grp:
+        _CORRELATION_GROUPS.setdefault(_grp, set()).add(_sym)
+
+
+def _match_strategy_name_to_router(config_name, selected_strategies):
+    """Check if a StrategyConfig.name matches any name in the router's selected list.
+
+    StrategyConfig.name includes a domain suffix like '(FOREX)' while the router's
+    STRATEGY_POOL keys are bare names like 'CVD Lack of Participants'.
+    We do a prefix match: 'CVD Lack of Participants (FOREX)' matches 'CVD Lack of Participants'.
+    """
+    for router_name in selected_strategies:
+        if config_name == router_name or config_name.startswith(router_name):
+            return True
+    return False
+
+
+def _check_correlation_group_limit(symbol):
+    """Check if another symbol in the same correlation group already has an open position.
+
+    Returns (allowed: bool, reason: str).
+
+    Uses PairLock (fast DB check) to see if any peer in the same group is locked.
+    E.g., if XAUUSD has an open position, skip XAGUSD/XAUEUR/XAUJPY/XAUAUD.
+    """
+    mapping = PAIR_CORRELATION_MAP.get(symbol)
+    if mapping is None:
+        return True, f"Correlation: {symbol} not in map (exempt)"
+
+    group = mapping.get('group')
+    if not group:
+        return True, f"Correlation: {symbol} has no group (exempt)"
+
+    group_symbols = _CORRELATION_GROUPS.get(group, set())
+    peer_symbols = group_symbols - {symbol}
+    if not peer_symbols:
+        return True, f"Correlation: {symbol} group '{group}' has no peers"
+
+    try:
+        from app.nexus.models import PairLock
+        locked_peers = PairLock.objects.filter(symbol__in=list(peer_symbols))
+        if locked_peers.exists():
+            locked_list = list(locked_peers.values_list('symbol', flat=True))
+            return False, (
+                f"Correlation limit: {symbol} blocked — peer(s) {locked_list} "
+                f"in group '{group}' already have open positions"
+            )
+        return True, f"Correlation: {symbol} group '{group}' clear (no peer positions)"
+    except Exception as e:
+        logger.debug(f"Correlation group check failed: {e}")
+        return True, "Correlation check failed, allowing trade"
 
 
 
@@ -191,24 +274,14 @@ def _compute_sl_tp(symbol, entry_price, order_type, atr_val, sl_mult, tp_mult):
 def _is_trading_session():
     """Check if current UTC hour is within allowed trading sessions.
 
-    Only trade during London open through London close: 07:00-17:00 UTC.
-    Research shows >50% of daily forex volume occurs in the London-NY
-    overlap (12:00-17:00). Post-London-close volume drops sharply and
-    CVD momentum signals become unreliable.
+    Currently disabled — trading 24/7 across all sessions to support
+    commodities (XAUUSD, NG-C, UKOUSDft) which trade 23:00-22:00 UTC.
+    Only blocks Sunday when all markets are closed.
     """
     from datetime import datetime, timezone as tz
     now = datetime.now(tz.utc)
-    # Block all Sunday trading (weekday 6 = Sunday)
+    # Block all Sunday trading (weekday 6 = Sunday, markets closed)
     if now.weekday() == 6:
-        return False
-    # Block Monday before 00:00 UTC (markets barely open)
-    if now.weekday() == 0 and now.hour < 1:
-        return False
-    # Only trade 07:00-17:00 UTC (London open → London close)
-    if now.hour < 7 or now.hour >= 17:
-        return False
-    # Block 09:00 UTC (10am CET) — London open chaos: -$743 in 10 trades historically
-    if now.hour == 9:
         return False
     return True
 
@@ -757,6 +830,34 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 logger.info(f"CVD: Skipping {pair} — market closed.")
                 continue
 
+            # --- Strategy Router gate (regime-based strategy selection) ---
+            # Skip this strategy for this symbol if the router says it doesn't
+            # fit the current market regime. This is the critical fix: the router's
+            # decision is now enforced, not merely advisory.
+            try:
+                from app.quant.algorithms.strategy_router import route_symbol as _route_symbol
+                routing_decision = _route_symbol(pair)
+                if not _match_strategy_name_to_router(
+                    strategy_config.name, routing_decision.selected_strategies
+                ):
+                    logger.info(
+                        f"CVD: ROUTER SKIP: '{strategy_config.name}' not valid for "
+                        f"{pair} ({routing_decision.regime}, conf={routing_decision.regime_confidence:.2f}) "
+                        f"— allowed strategies: {routing_decision.selected_strategies[:3]}"
+                    )
+                    continue
+            except Exception as e:
+                logger.debug(f"Strategy router unavailable for {pair}: {e}")
+                # Fail-open: if router is broken, allow the trade
+
+            # --- Correlation-group position limit ---
+            # If another symbol in the same correlation group (e.g., METALS)
+            # already has an open position, skip to avoid concentrated exposure.
+            corr_ok, corr_reason = _check_correlation_group_limit(pair)
+            if not corr_ok:
+                logger.info(f"CVD: {corr_reason}")
+                continue
+
             # --- Per-symbol circuit breaker ---
             cb_ok, cb_reason = _check_circuit_breaker(strategy_config, symbol=pair)
             if not cb_ok:
@@ -832,9 +933,9 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
             logger.info(f"CVD SIGNAL: {pair} {order_type} — {signal_desc}")
 
-            # --- Strategy Router (dynamic regime-based strategy selection) ---
-            # Reads HMM regime from Redis, selects strategies that fit,
-            # adjusts sizing/SL/confluence thresholds per regime.
+            # --- Strategy Router parameters (sizing, SL, confluence thresholds) ---
+            # Router validity was already enforced above (pre-signal gate).
+            # Here we just read the regime-based parameters for sizing/SL/confluence.
             router_mult = 1.0
             router_min_confluence = 4
             router_sl_adj = 1.0
@@ -844,14 +945,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 router_mult = routing.size_multiplier
                 router_min_confluence = routing.min_confluence
                 router_sl_adj = routing.sl_multiplier_adj
-                if strategy_config.name not in routing.selected_strategies:
-                    logger.info(
-                        f"CVD: ROUTER advisory: '{strategy_config.name}' not ideal for "
-                        f"{pair} ({routing.regime}, conf={routing.regime_confidence:.2f}) "
-                        f"— preferred: {routing.selected_strategies[:2]}"
-                    )
-                else:
-                    logger.info(f"CVD: ROUTER: {routing.reason}")
+                logger.info(f"CVD: ROUTER params: {routing.reason}")
             except Exception as e:
                 logger.debug(f"Strategy router unavailable: {e}")
 
@@ -973,7 +1067,9 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 # Regime favorability from router (strategy fits current regime?)
                 regime_ok = None
                 try:
-                    regime_ok = strategy_config.name in routing.selected_strategies
+                    regime_ok = _match_strategy_name_to_router(
+                        strategy_config.name, routing.selected_strategies
+                    )
                 except Exception:
                     pass
 
@@ -1095,30 +1191,55 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     )
                     logger.info(f"CVD: Clamped SL for {pair} to limit loss to ${order_capital:.2f}")
 
-                # Convert to lots (full intended size)
+                # --- Fetch broker contract specs for this symbol ---
+                # Contract sizes vary wildly: forex=100k, XAUUSD=100oz,
+                # XAGUSD=5000oz, NG-C=10000, oils=1000 barrels.
+                # We use these to validate volume_min/max from the broker.
+                contract_info = get_symbol_contract_info(pair)
+                if contract_info:
+                    broker_volume_min = contract_info['volume_min']
+                    broker_volume_max = contract_info['volume_max']
+                    broker_volume_step = contract_info['volume_step']
+                    broker_contract_size = contract_info['trade_contract_size']
+                else:
+                    # Fallback: assume forex defaults if MT5 info unavailable
+                    broker_volume_min = 0.01
+                    broker_volume_max = 100.0
+                    broker_volume_step = 0.01
+                    broker_contract_size = 100000
+
+                # Convert to lots — uses trade_contract_size from MT5
                 full_volume_lots = convert_usd_to_lots(pair, order_size_usd, order_type)
                 if isinstance(full_volume_lots, (pd.Series, pd.DataFrame)):
                     full_volume_lots = full_volume_lots.iloc[0] if not full_volume_lots.empty else 0.0
 
-                if full_volume_lots < 0.01:
-                    logger.error(f"CVD: Order volume too low for {pair}: {full_volume_lots}")
+                # Validate against broker's volume_min (not hard-coded 0.01)
+                if full_volume_lots < broker_volume_min:
+                    logger.error(
+                        f"CVD: Order volume too low for {pair}: {full_volume_lots:.4f} lots "
+                        f"< broker minimum {broker_volume_min} "
+                        f"(contract_size={broker_contract_size}, notional=${order_size_usd:.2f})"
+                    )
                     PairLock.objects.filter(symbol=pair).delete()
                     continue
 
-                # Hard safety cap — prevent catastrophic sizing regardless of upstream math
-                if full_volume_lots > MAX_LOT_SIZE:
+                # Hard safety cap — use the stricter of MAX_LOT_SIZE and broker volume_max
+                effective_max_lots = min(MAX_LOT_SIZE, broker_volume_max)
+                if full_volume_lots > effective_max_lots:
                     logger.warning(
-                        f"CVD: CAPPING {pair} from {full_volume_lots:.2f} to {MAX_LOT_SIZE} lots "
-                        f"(capital=${order_capital:.2f}, size_usd=${order_size_usd:.2f})"
+                        f"CVD: CAPPING {pair} from {full_volume_lots:.2f} to {effective_max_lots} lots "
+                        f"(MAX_LOT_SIZE={MAX_LOT_SIZE}, broker_max={broker_volume_max}, "
+                        f"contract_size={broker_contract_size}, capital=${order_capital:.2f})"
                     )
-                    full_volume_lots = MAX_LOT_SIZE
+                    full_volume_lots = effective_max_lots
 
                 # Livermore scale-in: enter at 60%, add 40% on confirmation
-                order_volume_lots = round(full_volume_lots * INITIAL_SIZE_FRACTION, 2)
-                remaining_volume_lots = round(full_volume_lots - order_volume_lots, 2)
+                # Round to broker's volume_step (e.g. 0.1 for NG-C, 0.01 for forex)
+                order_volume_lots = round(full_volume_lots * INITIAL_SIZE_FRACTION / broker_volume_step) * broker_volume_step
+                remaining_volume_lots = round((full_volume_lots - order_volume_lots) / broker_volume_step) * broker_volume_step
 
-                # Ensure initial size is still tradeable
-                if order_volume_lots < 0.01:
+                # Ensure initial size is still tradeable (use broker volume_min)
+                if order_volume_lots < broker_volume_min:
                     order_volume_lots = full_volume_lots  # Too small to split, use full size
                     remaining_volume_lots = 0.0
 
@@ -1185,7 +1306,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         trade_result = create_trade(
                             order, pair, order_capital, order_size_usd,
                             LEVERAGE, commission, order_type, 'Alpari',
-                            'FOREX', f'CVD_{custom.name}', timeframe, order_volume_lots,
+                            _get_market_type(pair), f'CVD_{custom.name}', timeframe, order_volume_lots,
                             sl_price, tp_price,
                         )
 

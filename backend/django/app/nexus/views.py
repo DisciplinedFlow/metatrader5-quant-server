@@ -272,16 +272,7 @@ class CustomStrategyViewSet(viewsets.ModelViewSet):
 
         r = redis.Redis.from_url(settings.CACHES.get('default', {}).get('LOCATION', 'redis://redis:6379/0'))
 
-        if domain == 'POLYMARKET':
-            config = {
-                'ev_threshold': definition.get('ev_threshold', 0.05),
-                'kelly_fraction': definition.get('kelly_fraction', 0.15),
-                'max_positions': definition.get('max_positions', 5),
-                'capital_usd': definition.get('capital_usd', 500),
-                'stop_loss_threshold': definition.get('stop_loss_threshold', 0.15),
-            }
-            r.set('polymarket:strategy:config', json.dumps(config))
-        elif domain == 'CRYPTO':
+        if domain == 'CRYPTO':
             config = {
                 'pairs': definition.get('pairs', ['BTC', 'ETH', 'SOL']),
                 'capital_usd': definition.get('capital_usd', 1000),

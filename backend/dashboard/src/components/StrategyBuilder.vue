@@ -27,13 +27,6 @@ const PLATFORM_CONFIG = {
     longLabel: 'Entry Rules - Long',
     shortLabel: 'Entry Rules - Short',
   },
-  POLYMARKET: {
-    pairs: ['POLITICS', 'CRYPTO_PRICE', 'MACRO', 'SPORTS', 'ENTERTAINMENT'],
-    timeframes: ['H1', 'H4', 'D1'],
-    pairLabel: 'Market Categories',
-    longLabel: 'Entry Rules - Buy Yes',
-    shortLabel: 'Entry Rules - Buy No',
-  },
 }
 
 const platformConfig = computed(() => PLATFORM_CONFIG[props.domain] || PLATFORM_CONFIG.FOREX)
