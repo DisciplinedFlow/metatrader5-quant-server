@@ -67,6 +67,11 @@ PROFIT_PROTECT_GIVEBACK = 0.25  # Tight: close if giving back 25%+ from peak (wa
 ATR_FLOOR_TRAIL_MULT = 1.0     # Trail 1.0x current ATR behind best price (tightened from 1.5)
 ATR_FLOOR_MIN_PROFIT_R = 1.0   # Only activate after 1R profit (breakeven first)
 
+# -- TP Removal: let trailing SL handle exits for high-edge symbols --
+# Data shows XAUUSD is 95% of alpha (+$980). Fixed TP caps outlier winners.
+# Trailing SL (MFE Lock + ATR Floor + Swing) replaces TP as the exit mechanism.
+NO_TP_SYMBOLS = {'XAUUSD'}
+
 # -- Hard dollar loss ceiling (O'Neil: "Cut all losses at 7-8%") --
 MAX_LOSS_PER_TRADE_USD = 50.0  # Absolute ceiling — close immediately if unrealized loss hits this
 
@@ -134,6 +139,15 @@ def _manage_single_position(position):
 
     # 2. Determine position type (numeric from MT5 DataFrame)
     position_type = position.type  # 0=BUY, 1=SELL
+
+    # 2b. Remove TP for symbols where trailing SL replaces fixed TP
+    if position.symbol in NO_TP_SYMBOLS and position.tp and position.tp != 0:
+        result = modify_sl_tp(position, position.sl, tp=0.0)
+        if result is not None and result != 'MARKET_CLOSED':
+            logger.info(
+                f"TP REMOVED: {position.symbol} ticket={position.ticket} "
+                f"old_tp={position.tp:.5f} — trailing SL handles exit"
+            )
 
     # 3. Calculate profit distance in price units
     entry_price = position.price_open
