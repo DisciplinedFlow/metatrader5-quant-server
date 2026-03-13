@@ -400,3 +400,305 @@ def brent_wti_spread(df, params=None):
         return 'spread_narrow'
 
     return 'normal'
+
+
+# ---------------------------------------------------------------------------
+# Indicator 7: energy_volatility_regime
+# ---------------------------------------------------------------------------
+
+def energy_volatility_regime(df, params=None):
+    """ATR-based volatility regime classifier for energy instruments.
+
+    Replaces OVX (not available in MT5) with an ATR-ratio proxy.  Compares
+    current ATR to its 50-period average to detect compression, normal, or
+    expansion regimes.  This drives strategy selection and position sizing.
+
+    Research: OVX regime filter doubled avg trade profit and cut drawdown 73%.
+    ATR ratio correlates ~0.85 with OVX when calculated on H4 bars.
+
+    Params:
+        atr_period    (int):   ATR lookback            (default 14)
+        avg_period    (int):   Long-term ATR average    (default 50)
+        low_ratio     (float): Below this → compression (default 0.7)
+        high_ratio    (float): Above this → elevated    (default 1.5)
+        crisis_ratio  (float): Above this → crisis      (default 2.5)
+
+    Returns:
+        str: 'compression'  - ATR < 70% of avg (expect breakout)
+             'normal'       - standard conditions
+             'elevated'     - ATR 1.5-2.5x avg (trend only, 75% size)
+             'high'         - ATR 2.5x+ avg (trend only, 50% size)
+             'crisis'       - ATR 3.5x+ avg (no new positions recommended)
+    """
+    params = params or {}
+    atr_period = params.get('atr_period', 14)
+    avg_period = params.get('avg_period', 50)
+    low_ratio = params.get('low_ratio', 0.7)
+    high_ratio = params.get('high_ratio', 1.5)
+    crisis_ratio = params.get('crisis_ratio', 2.5)
+
+    min_bars = max(atr_period, avg_period) + 5
+    if len(df) < min_bars:
+        return 'normal'
+
+    atr_series = _atr(df, atr_period)
+    atr_avg = atr_series.rolling(window=avg_period).mean()
+
+    atr_now = atr_series.iloc[-1]
+    atr_avg_now = atr_avg.iloc[-1]
+
+    if pd.isna(atr_now) or pd.isna(atr_avg_now) or atr_avg_now == 0:
+        return 'normal'
+
+    ratio = atr_now / atr_avg_now
+
+    if ratio >= crisis_ratio * 1.4:
+        return 'crisis'
+    if ratio >= crisis_ratio:
+        return 'high'
+    if ratio >= high_ratio:
+        return 'elevated'
+    if ratio < low_ratio:
+        return 'compression'
+
+    return 'normal'
+
+
+# ---------------------------------------------------------------------------
+# Indicator 8: ng_seasonal_filter
+# ---------------------------------------------------------------------------
+
+def ng_seasonal_filter(df, params=None):
+    """Natural gas seasonal bias based on month of year.
+
+    NG has the clearest seasonality of any major commodity.  The September
+    rally (Sep 1 - Oct 25) averaged 56% return over 10 years with 7/10
+    years positive and 1:3.2 R:R.
+
+    Uses the timestamp of the last bar to determine the current month.
+
+    Params:  (none -- seasonal rules are fixed)
+
+    Returns:
+        str: 'strong_bullish' - September (best month historically)
+             'bullish'        - March, April, October (pre-winter buildup)
+             'bearish'        - May, June, November (injection ramp / sell-the-news)
+             'neutral'        - other months (mixed signals)
+    """
+    if len(df) == 0:
+        return 'neutral'
+
+    last_idx = df.index[-1]
+    if hasattr(last_idx, 'month'):
+        month = last_idx.month
+    elif 'time' in df.columns:
+        try:
+            month = pd.Timestamp(df['time'].iloc[-1]).month
+        except Exception:
+            return 'neutral'
+    else:
+        return 'neutral'
+
+    seasonal_map = {
+        1: 'neutral',          # Jan: bearish late, mixed overall
+        2: 'neutral',          # Feb: weather-dependent
+        3: 'bullish',          # Mar: end of withdrawal = supply uncertainty
+        4: 'bullish',          # Apr: transition month, often rallies
+        5: 'bearish',          # May: injection ramps up
+        6: 'bearish',          # Jun: peak injection, prices sink
+        7: 'neutral',          # Jul: cooling demand can surprise
+        8: 'neutral',          # Aug: prices find floor
+        9: 'strong_bullish',   # Sep: MOST BULLISH -- pre-winter positioning
+        10: 'bullish',         # Oct: winter premium pricing in
+        11: 'bearish',         # Nov: "buy the rumor, sell the news"
+        12: 'neutral',         # Dec: weather-driven swings
+    }
+
+    return seasonal_map.get(month, 'neutral')
+
+
+# ---------------------------------------------------------------------------
+# Indicator 9: energy_squeeze_detector
+# ---------------------------------------------------------------------------
+
+def energy_squeeze_detector(df, params=None):
+    """Bollinger Band / Keltner Channel squeeze detection for energy.
+
+    When Bollinger Bands contract INSIDE Keltner Channels, it signals
+    extreme volatility compression -- an imminent explosive move.
+
+    A "fire" signal occurs when the squeeze releases (BB expand back
+    outside KC) with directional momentum.
+
+    Params:
+        bb_period  (int):   Bollinger Band period     (default 20)
+        bb_std     (float): BB standard deviations     (default 2.0)
+        kc_period  (int):   Keltner Channel EMA period (default 20)
+        kc_mult    (float): KC ATR multiplier          (default 1.5)
+        atr_period (int):   ATR period for KC          (default 14)
+        min_squeeze_bars (int): Min consecutive squeeze bars (default 5)
+
+    Returns:
+        str: 'squeeze'              - BB inside KC (squeeze active)
+             'squeeze_bullish_fire' - squeeze just released upward
+             'squeeze_bearish_fire' - squeeze just released downward
+             'no_squeeze'           - normal conditions
+    """
+    params = params or {}
+    bb_period = params.get('bb_period', 20)
+    bb_std = params.get('bb_std', 2.0)
+    kc_period = params.get('kc_period', 20)
+    kc_mult = params.get('kc_mult', 1.5)
+    atr_period = params.get('atr_period', 14)
+    min_squeeze_bars = params.get('min_squeeze_bars', 5)
+
+    min_bars = max(bb_period, kc_period, atr_period) + min_squeeze_bars + 2
+    if len(df) < min_bars:
+        return 'no_squeeze'
+
+    close = df['close']
+
+    # Bollinger Bands
+    bb_mid = close.rolling(window=bb_period).mean()
+    bb_rolling_std = close.rolling(window=bb_period).std()
+    bb_upper = bb_mid + bb_std * bb_rolling_std
+    bb_lower = bb_mid - bb_std * bb_rolling_std
+
+    # Keltner Channels
+    kc_mid = close.ewm(span=kc_period, adjust=False).mean()
+    atr_series = _atr(df, atr_period)
+    kc_upper = kc_mid + kc_mult * atr_series
+    kc_lower = kc_mid - kc_mult * atr_series
+
+    # Detect squeeze: BB inside KC
+    squeeze = (bb_upper < kc_upper) & (bb_lower > kc_lower)
+
+    # Count consecutive squeeze bars (looking backward from second-to-last)
+    consecutive = 0
+    for i in range(len(squeeze) - 2, -1, -1):
+        if squeeze.iloc[i]:
+            consecutive += 1
+        else:
+            break
+
+    is_squeeze_now = bool(squeeze.iloc[-1]) if not pd.isna(squeeze.iloc[-1]) else False
+    was_squeeze_prev = bool(squeeze.iloc[-2]) if not pd.isna(squeeze.iloc[-2]) else False
+
+    # Squeeze just fired (was in squeeze, now released)
+    if was_squeeze_prev and not is_squeeze_now and consecutive >= min_squeeze_bars - 1:
+        close_now = close.iloc[-1]
+        kc_mid_now = kc_mid.iloc[-1]
+        if pd.isna(close_now) or pd.isna(kc_mid_now):
+            return 'no_squeeze'
+        if close_now > kc_mid_now:
+            return 'squeeze_bullish_fire'
+        else:
+            return 'squeeze_bearish_fire'
+
+    if is_squeeze_now and consecutive >= min_squeeze_bars:
+        return 'squeeze'
+
+    return 'no_squeeze'
+
+
+# ---------------------------------------------------------------------------
+# Indicator 10: energy_session_filter
+# ---------------------------------------------------------------------------
+
+def energy_session_filter(df, params=None):
+    """Session filter for energy instruments.
+
+    Energy markets have distinct liquidity profiles by session.  This
+    indicator returns the current session to allow strategies to trade
+    only during peak liquidity windows.
+
+    Sessions (UTC):
+        london:     08:00-12:59  -- Brent primary liquidity
+        overlap:    13:00-16:59  -- PEAK: London-NY overlap, tightest spreads
+        new_york:   17:00-20:59  -- WTI primary
+        dead_zone:  21:00-01:59  -- AVOID: widest spreads
+        asian:      02:00-07:59  -- low volume, avoid new entries
+
+    Params:  (none -- session times are fixed)
+
+    Returns:
+        str: 'london' | 'overlap' | 'new_york' | 'dead_zone' | 'asian'
+    """
+    if len(df) == 0:
+        return 'dead_zone'
+
+    last_idx = df.index[-1]
+    if hasattr(last_idx, 'hour'):
+        hour = last_idx.hour
+    elif 'time' in df.columns:
+        try:
+            hour = pd.Timestamp(df['time'].iloc[-1]).hour
+        except Exception:
+            return 'dead_zone'
+    else:
+        return 'dead_zone'
+
+    if 8 <= hour <= 12:
+        return 'london'
+    if 13 <= hour <= 16:
+        return 'overlap'
+    if 17 <= hour <= 20:
+        return 'new_york'
+    if hour >= 21 or hour <= 1:
+        return 'dead_zone'
+    return 'asian'
+
+
+# ---------------------------------------------------------------------------
+# Indicator 11: energy_momentum_roc
+# ---------------------------------------------------------------------------
+
+def energy_momentum_roc(df, params=None):
+    """Rate of Change momentum indicator for energy trend confirmation.
+
+    Time-series momentum achieves Sharpe > 1.20 on commodity futures
+    (academic research). This ROC indicator with signal line provides
+    momentum confirmation for trend-following entries.
+
+    Params:
+        roc_period    (int): ROC lookback period        (default 14)
+        signal_period (int): Signal line SMA period     (default 5)
+
+    Returns:
+        str: 'strong_bullish'  - ROC > 0, above signal, and accelerating
+             'bullish'         - ROC > 0 and above signal
+             'strong_bearish'  - ROC < 0, below signal, and accelerating
+             'bearish'         - ROC < 0 and below signal
+             'neutral'         - ROC near zero or conflicting with signal
+    """
+    params = params or {}
+    roc_period = params.get('roc_period', 14)
+    signal_period = params.get('signal_period', 5)
+
+    min_bars = roc_period + signal_period + 2
+    if len(df) < min_bars:
+        return 'neutral'
+
+    close = df['close']
+
+    roc = ((close - close.shift(roc_period)) / close.shift(roc_period)) * 100
+    signal_line = roc.rolling(window=signal_period).mean()
+
+    roc_now = roc.iloc[-1]
+    roc_prev = roc.iloc[-2]
+    signal_now = signal_line.iloc[-1]
+
+    if pd.isna(roc_now) or pd.isna(roc_prev) or pd.isna(signal_now):
+        return 'neutral'
+
+    if roc_now > 0 and roc_now > signal_now:
+        if roc_now > roc_prev:
+            return 'strong_bullish'
+        return 'bullish'
+
+    if roc_now < 0 and roc_now < signal_now:
+        if roc_now < roc_prev:
+            return 'strong_bearish'
+        return 'bearish'
+
+    return 'neutral'

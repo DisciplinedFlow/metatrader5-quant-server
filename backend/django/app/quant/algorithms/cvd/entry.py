@@ -46,6 +46,9 @@ from app.quant.algorithms.cvd.config import (
     ATR_PERIOD,
     SL_ATR_MULTIPLIER,
     TP_ATR_MULTIPLIER,
+    ENERGY_SYMBOLS,
+    NG_SYMBOLS,
+    ENERGY_RISK_CONFIG,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,9 +97,10 @@ PAIR_CORRELATION_MAP = {
     'XAUEUR':   {'group': 'METALS',        'check_peers': ['XAUUSD']},
     'XAUJPY':   {'group': 'METALS',        'check_peers': ['XAUUSD']},
     'XAUAUD':   {'group': 'METALS',        'check_peers': ['XAUUSD']},
-    # Energy — no strong peer correlation yet
-    'NG-C':     {'group': None,            'check_peers': []},
-    'UKOUSDft': {'group': 'ENERGY',        'check_peers': []},
+    # Energy — oil pairs are highly correlated (0.95+), NG is independent
+    'NG-C':     {'group': None,             'check_peers': []},
+    'UKOUSDft': {'group': 'ENERGY_OIL',     'check_peers': ['USOUSD']},
+    'USOUSD':   {'group': 'ENERGY_OIL',     'check_peers': ['UKOUSDft']},
 }
 
 # Symbols that are NOT forex — used to tag trades with the correct market_type.
@@ -112,6 +116,136 @@ def _get_market_type(symbol):
     if symbol in _COMMODITY_SYMBOLS:
         return 'OTHER'
     return 'FOREX'
+
+
+def _get_energy_overrides(symbol):
+    """Return energy-specific risk parameter overrides for a symbol.
+
+    When a symbol is in ENERGY_SYMBOLS, returns a dict with overridden
+    CAPITAL_PER_TRADE, SL/TP multipliers, and a volatility regime sizing
+    multiplier based on current ATR conditions.
+
+    Returns None for non-energy symbols (use default params).
+    """
+    if symbol not in ENERGY_SYMBOLS:
+        return None
+
+    overrides = {
+        'capital_per_trade': ENERGY_RISK_CONFIG['CAPITAL_PER_TRADE'],
+        'sl_atr_multiplier': ENERGY_RISK_CONFIG['SL_ATR_MULTIPLIER'],
+        'tp_atr_multiplier': ENERGY_RISK_CONFIG['TP_ATR_MULTIPLIER'],
+        'vol_regime_mult': 1.0,
+    }
+
+    # Check ATR-based volatility regime for energy-specific sizing
+    try:
+        from app.quant.indicators.energy import energy_volatility_regime
+        df = fetch_data_pos(symbol, MT5Timeframe.H4, 100)
+        if df is not None and len(df) >= 55:
+            regime = energy_volatility_regime(df)
+            if regime == 'crisis':
+                overrides['vol_regime_mult'] = 0.0  # No new positions
+                logger.warning(
+                    f"ENERGY RISK: {symbol} in CRISIS volatility regime — "
+                    f"blocking new entries (ATR > 3.5x average)"
+                )
+            elif regime == 'high':
+                overrides['vol_regime_mult'] = ENERGY_RISK_CONFIG['CRISIS_SIZE_MULT']
+                logger.info(
+                    f"ENERGY RISK: {symbol} in HIGH volatility — "
+                    f"sizing at {ENERGY_RISK_CONFIG['CRISIS_SIZE_MULT']:.0%}"
+                )
+            elif regime == 'elevated':
+                overrides['vol_regime_mult'] = ENERGY_RISK_CONFIG['HIGH_VOL_SIZE_MULT']
+                logger.info(
+                    f"ENERGY RISK: {symbol} in ELEVATED volatility — "
+                    f"sizing at {ENERGY_RISK_CONFIG['HIGH_VOL_SIZE_MULT']:.0%}"
+                )
+            else:
+                logger.debug(f"ENERGY RISK: {symbol} regime={regime}, normal sizing")
+    except Exception as e:
+        logger.debug(f"Energy volatility regime check failed for {symbol}: {e}")
+
+    # Check energy session filter
+    try:
+        from app.quant.indicators.energy import energy_session_filter
+        if df is not None and len(df) > 0:
+            session = energy_session_filter(df)
+            if session == 'dead_zone':
+                overrides['vol_regime_mult'] = 0.0
+                logger.info(
+                    f"ENERGY RISK: {symbol} in dead zone session (21:00-01:59 UTC) — "
+                    f"blocking new entries"
+                )
+            elif session == 'asian':
+                overrides['vol_regime_mult'] *= 0.5
+                logger.info(
+                    f"ENERGY RISK: {symbol} in Asian session — halving size"
+                )
+    except Exception as e:
+        logger.debug(f"Energy session check failed for {symbol}: {e}")
+
+    # NG seasonal awareness
+    if symbol in NG_SYMBOLS:
+        try:
+            from app.quant.indicators.energy import ng_seasonal_filter
+            if df is not None and len(df) > 0:
+                seasonal = ng_seasonal_filter(df)
+                if seasonal == 'bearish':
+                    overrides['vol_regime_mult'] *= 0.5
+                    logger.info(
+                        f"ENERGY RISK: {symbol} in BEARISH seasonal window — "
+                        f"halving size (injection season)"
+                    )
+                elif seasonal == 'strong_bullish':
+                    logger.info(
+                        f"ENERGY RISK: {symbol} in STRONG BULLISH seasonal window — "
+                        f"September rally, full size"
+                    )
+        except Exception as e:
+            logger.debug(f"NG seasonal check failed for {symbol}: {e}")
+
+    return overrides
+
+
+def _check_energy_position_limits(symbol):
+    """Check energy-specific position limits.
+
+    Oil: Max 2 positions total across WTI+Brent (0.95 correlation).
+    NG: Max 1 position (independent but very volatile).
+
+    Returns (allowed: bool, reason: str).
+    """
+    if symbol not in ENERGY_SYMBOLS:
+        return True, "Not energy — no limit"
+
+    try:
+        positions = get_positions()
+        if positions is None or positions.empty:
+            return True, "No open positions"
+
+        open_symbols = positions['symbol'].tolist() if 'symbol' in positions.columns else []
+
+        if symbol in NG_SYMBOLS:
+            ng_open = sum(1 for s in open_symbols if s in NG_SYMBOLS)
+            if ng_open >= ENERGY_RISK_CONFIG['MAX_OPEN_NG']:
+                return False, (
+                    f"Energy limit: {ng_open} NG position(s) open "
+                    f"(max {ENERGY_RISK_CONFIG['MAX_OPEN_NG']})"
+                )
+        else:
+            oil_symbols = ENERGY_SYMBOLS - NG_SYMBOLS
+            oil_open = sum(1 for s in open_symbols if s in oil_symbols)
+            if oil_open >= ENERGY_RISK_CONFIG['MAX_OPEN_OIL']:
+                return False, (
+                    f"Energy limit: {oil_open} oil position(s) open "
+                    f"(max {ENERGY_RISK_CONFIG['MAX_OPEN_OIL']})"
+                )
+
+        return True, "Energy position limits OK"
+    except Exception as e:
+        logger.debug(f"Energy position limit check failed: {e}")
+        return True, "Energy limit check failed, allowing trade"
 
 
 # Build a reverse map from group name -> set of symbols in that group.
@@ -850,6 +984,21 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 logger.info(f"CVD: Skipping {pair} — market closed.")
                 continue
 
+            # --- Energy-specific position limits ---
+            energy_ok, energy_reason = _check_energy_position_limits(pair)
+            if not energy_ok:
+                logger.info(f"CVD: {energy_reason}")
+                continue
+
+            # --- Energy risk overrides (vol regime, session, seasonal) ---
+            energy_overrides = _get_energy_overrides(pair)
+            if energy_overrides and energy_overrides['vol_regime_mult'] <= 0:
+                logger.info(
+                    f"CVD: Skipping {pair} — energy risk filter blocked "
+                    f"(vol_regime_mult=0)"
+                )
+                continue
+
             # --- Strategy Router gate (regime-based strategy selection) ---
             if not TRAINING_MODE:
                 try:
@@ -1172,10 +1321,20 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 price_decimals = len(str(last_tick_price).split('.')[-1])
 
                 # --- Dynamic SL/TP: S/R levels first, ATR fallback ---
+                # Energy symbols use wider stops from research config
+                pair_sl_mult = sl_mult
+                pair_tp_mult = tp_mult
+                if energy_overrides:
+                    pair_sl_mult = energy_overrides['sl_atr_multiplier']
+                    pair_tp_mult = energy_overrides['tp_atr_multiplier']
+                    logger.info(
+                        f"CVD: Energy SL/TP override for {pair}: "
+                        f"SL={pair_sl_mult}x ATR, TP={pair_tp_mult}x ATR"
+                    )
                 # router_sl_adj widens SL in volatile regimes (1.5x) for breathing room
-                effective_sl_mult = sl_mult * router_sl_adj
+                effective_sl_mult = pair_sl_mult * router_sl_adj
                 sl_price, tp_price, sl_tp_source = _compute_sl_tp(
-                    pair, last_tick_price, order_type, atr_val, effective_sl_mult, tp_mult,
+                    pair, last_tick_price, order_type, atr_val, effective_sl_mult, pair_tp_mult,
                 )
 
                 # --- Dynamic Position Sizing (vol + streak + symbol + context + group) ---
@@ -1203,9 +1362,12 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 except Exception:
                     kz_mult = 1.0
                     kz_name, kz_info = None, None
-                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult * kz_mult * router_mult
+                # Energy volatility regime multiplier
+                energy_mult = energy_overrides['vol_regime_mult'] if energy_overrides else 1.0
+                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult * kz_mult * router_mult * energy_mult
                 size_multiplier = max(0.1, min(2.0, size_multiplier))
-                order_capital = CAPITAL_PER_TRADE * size_multiplier
+                base_capital = energy_overrides['capital_per_trade'] if energy_overrides else CAPITAL_PER_TRADE
+                order_capital = base_capital * size_multiplier
 
                 kz_desc = kz_info['description'] if kz_info else 'no kill zone'
                 if size_multiplier != 1.0:

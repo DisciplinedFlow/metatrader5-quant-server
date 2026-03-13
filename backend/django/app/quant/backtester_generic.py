@@ -35,6 +35,9 @@ from app.quant.indicators.session_hybrid import (
 from app.quant.indicators.energy import (
     energy_trend_follow, energy_range_detect, energy_range_trade,
     energy_breakout, keltner_channel, brent_wti_spread,
+    energy_volatility_regime, ng_seasonal_filter,
+    energy_squeeze_detector, energy_session_filter,
+    energy_momentum_roc,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,6 +93,12 @@ INDICATOR_REGISTRY = {
     'ENERGY_BREAKOUT': lambda df, params: energy_breakout(df, params),
     'KELTNER_CHANNEL': lambda df, params: keltner_channel(df, params),
     'BRENT_WTI_SPREAD': lambda df, params: brent_wti_spread(df, params),
+    # ── Energy: Research-backed enhancements ──
+    'ENERGY_VOLATILITY_REGIME': lambda df, params: energy_volatility_regime(df, params),
+    'NG_SEASONAL_FILTER': lambda df, params: ng_seasonal_filter(df, params),
+    'ENERGY_SQUEEZE_DETECTOR': lambda df, params: energy_squeeze_detector(df, params),
+    'ENERGY_SESSION_FILTER': lambda df, params: energy_session_filter(df, params),
+    'ENERGY_MOMENTUM_ROC': lambda df, params: energy_momentum_roc(df, params),
 }
 
 CONDITION_OPS = {
