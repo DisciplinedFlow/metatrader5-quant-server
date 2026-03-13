@@ -223,7 +223,7 @@ services:
       context: backend/django
       dockerfile: Dockerfile
     container_name: celery
-    command: celery -A app worker --loglevel=info --concurrency=8 -Q default,critical,analysis
+    command: bash -c "python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=8 -Q default,critical,analysis"
     volumes:
       - static_volume:/app/staticfiles
       - quant-logs:/app/logs

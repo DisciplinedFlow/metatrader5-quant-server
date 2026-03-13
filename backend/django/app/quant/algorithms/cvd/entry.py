@@ -61,6 +61,12 @@ SYMBOL_FILTER_LOOKBACK = 10          # Trades to check for symbol performance
 SYMBOL_FILTER_MIN_WR = 0.35          # Minimum win rate to continue trading a symbol
 SYMBOL_FILTER_COOLDOWN_HOURS = 8     # How long to skip a poorly-performing symbol
 
+# --- Anti-Churn (prevent re-entering same dying signal, allow fresh setups) ---
+SYMBOL_COOLDOWN_MINUTES = 15         # Min wait after closing a trade on same symbol
+SYMBOL_DAILY_TRADE_CAP = 8           # Max trades per symbol per day
+GLOBAL_DAILY_TRADE_CAP = 40          # Max total trades per day across all symbols
+SIGNAL_LOOKBACK = 3                  # Check last N completed bars (balance freshness vs coverage)
+
 # --- TRAINING MODE: full throttle, all filters bypassed ---
 # Bypasses: trading session, high-impact events, circuit breakers,
 # strategy router regime gate, correlation group limit, symbol filter,
@@ -605,6 +611,107 @@ def _check_symbol_performance(symbol):
         return True, 1.0, "Symbol check failed, allowing trade"
 
 
+def _check_symbol_cooldown(symbol):
+    """Check if symbol is in post-trade cooldown (anti-churn).
+
+    After closing a trade on a symbol, enforce a minimum wait period before
+    re-entering. Prevents the churn loop where SIGNAL_LOOKBACK keeps
+    re-triggering the same signal every 60s celery cycle.
+
+    Livermore: "The desire for constant action irrespective of underlying
+    conditions is responsible for many losses."
+
+    Returns (ok, reason).
+    """
+    try:
+        from django.core.cache import cache
+        cooldown_key = f'trade_cooldown:{symbol}'
+        if cache.get(cooldown_key):
+            return False, f"Symbol {symbol} in cooldown ({SYMBOL_COOLDOWN_MINUTES}min post-trade)"
+    except Exception as e:
+        logger.debug(f"Cooldown check failed for {symbol}: {e}")
+    return True, ""
+
+
+def _set_symbol_cooldown(symbol):
+    """Set post-trade cooldown for a symbol."""
+    try:
+        from django.core.cache import cache
+        cache.set(
+            f'trade_cooldown:{symbol}',
+            True,
+            timeout=SYMBOL_COOLDOWN_MINUTES * 60,
+        )
+    except Exception as e:
+        logger.debug(f"Failed to set cooldown for {symbol}: {e}")
+
+
+def _check_daily_trade_cap(symbol=None):
+    """Check per-symbol and global daily trade caps.
+
+    Bruce Kovner: "Undertrade, undertrade, undertrade."
+    Jim Rogers: "Most people trade too much -- the best trades are rare."
+
+    Returns (ok, reason).
+    """
+    try:
+        from app.nexus.models import Trade
+        from django.utils import timezone
+        today = timezone.now().date()
+
+        if symbol:
+            symbol_count = Trade.objects.filter(
+                symbol=symbol, created_at__date=today,
+            ).count()
+            if symbol_count >= SYMBOL_DAILY_TRADE_CAP:
+                return False, (
+                    f"Daily cap: {symbol} has {symbol_count}/{SYMBOL_DAILY_TRADE_CAP} "
+                    f"trades today — no more entries"
+                )
+
+        global_count = Trade.objects.filter(created_at__date=today).count()
+        if global_count >= GLOBAL_DAILY_TRADE_CAP:
+            return False, (
+                f"Global daily cap: {global_count}/{GLOBAL_DAILY_TRADE_CAP} "
+                f"trades today — halting all entries"
+            )
+    except Exception as e:
+        logger.debug(f"Daily trade cap check failed: {e}")
+    return True, ""
+
+
+def _check_signal_consumed(symbol, bar_timestamp):
+    """Check if we already acted on this signal bar (prevent re-firing).
+
+    A CVD signal on bar N should only trigger ONE trade. Without this,
+    the same bar's signal persists for up to SIGNAL_LOOKBACK * timeframe
+    minutes, causing the bot to re-enter every 60s after each stop-out.
+
+    Returns (ok, reason).
+    """
+    try:
+        from django.core.cache import cache
+        consumed_key = f'signal_consumed:{symbol}:{bar_timestamp}'
+        if cache.get(consumed_key):
+            return False, f"Signal already consumed for {symbol} at bar {bar_timestamp}"
+    except Exception as e:
+        logger.debug(f"Signal consumed check failed for {symbol}: {e}")
+    return True, ""
+
+
+def _mark_signal_consumed(symbol, bar_timestamp):
+    """Mark a signal bar as consumed so it won't re-trigger."""
+    try:
+        from django.core.cache import cache
+        cache.set(
+            f'signal_consumed:{symbol}:{bar_timestamp}',
+            True,
+            timeout=3600,  # Expire after 1 hour (signals are stale by then)
+        )
+    except Exception as e:
+        logger.debug(f"Failed to mark signal consumed for {symbol}: {e}")
+
+
 def _check_group_tendency(symbol, direction):
     """Check if correlated currency pairs confirm the trade direction.
 
@@ -941,6 +1048,13 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 logger.warning(f"CVD: {cb_reason}")
                 return
 
+        # --- Global daily trade cap (Kovner: "undertrade, undertrade") ---
+        if not TRAINING_MODE:
+            cap_ok, cap_reason = _check_daily_trade_cap()
+            if not cap_ok:
+                logger.warning(f"CVD: {cap_reason}")
+                return
+
         # --- Streak multiplier (computed once per cycle, vol-targeting is per-pair) ---
         streak_multiplier = _get_dynamic_size_multiplier(strategy_config)
         if streak_multiplier < 1.0:
@@ -1032,6 +1146,20 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     logger.warning(f"CVD: {cb_reason}")
                     continue
 
+            # --- Anti-churn: post-trade cooldown ---
+            if not TRAINING_MODE:
+                cd_ok, cd_reason = _check_symbol_cooldown(pair)
+                if not cd_ok:
+                    logger.info(f"CVD: {cd_reason}")
+                    continue
+
+            # --- Anti-churn: per-symbol daily trade cap ---
+            if not TRAINING_MODE:
+                cap_ok, cap_reason = _check_daily_trade_cap(symbol=pair)
+                if not cap_ok:
+                    logger.info(f"CVD: {cap_reason}")
+                    continue
+
             # --- Symbol performance filter ---
             sym_ok, sym_mult, sym_reason = _check_symbol_performance(pair)
             if not sym_ok and not TRAINING_MODE:
@@ -1053,7 +1181,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             df['_atr'] = atr(df, period=atr_period)
 
             # Check signal on last N completed bars (most recent first)
-            SIGNAL_LOOKBACK = 4
+            # SIGNAL_LOOKBACK is now a module constant (was 4, reduced to 2)
             order_type = None
             signal_desc = None
             check_idx = None
@@ -1108,6 +1236,14 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             if atr_val is None:
                 logger.info(f"CVD ({custom.name}): Signal found for {pair} but ATR not valid.")
                 continue
+
+            # --- Anti-churn: check if we already acted on this signal bar ---
+            if not TRAINING_MODE and check_idx is not None:
+                bar_ts = str(df.index[check_idx]) if hasattr(df.index, '__getitem__') else str(check_idx)
+                sig_ok, sig_reason = _check_signal_consumed(pair, bar_ts)
+                if not sig_ok:
+                    logger.info(f"CVD: {sig_reason}")
+                    continue
 
             # --- Market Context Gate (macro + regime merged) ---
             ctx_mult = 1.0
@@ -1570,6 +1706,12 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     order_ticket = order.get('order', 0)
                     PairLock.objects.filter(symbol=pair).update(ticket=order_ticket)
                     positions_opened += 1
+
+                    # Anti-churn: set cooldown and mark signal as consumed
+                    _set_symbol_cooldown(pair)
+                    if check_idx is not None:
+                        bar_ts = str(df.index[check_idx]) if hasattr(df.index, '__getitem__') else str(check_idx)
+                        _mark_signal_consumed(pair, bar_ts)
 
                     logger.info({
                         'event': 'cvd_trade_opened',

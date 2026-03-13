@@ -833,11 +833,11 @@ def _compute_ict_grade(rr_ratio, confluence_score):
 
 def _execute_ict_setup(setup):
     """Place an order for a confirmed ICT setup."""
-    from app.nexus.models import PairLock, Trade
+    from app.nexus.models import PairLock, Trade, StrategyConfig
     from app.utils.api.order import send_order
 
     # Check pair lock
-    if PairLock.objects.filter(pair=setup.symbol).exists():
+    if PairLock.objects.filter(symbol=setup.symbol).exists():
         logger.info(f"ICT: {setup.symbol} already has open position, skipping")
         return
 
@@ -861,8 +861,10 @@ def _execute_ict_setup(setup):
     )
 
     if result and result.get('success'):
-        # Create pair lock
-        PairLock.objects.create(pair=setup.symbol)
+        # Create pair lock — use first active ICT strategy config
+        ict_config = StrategyConfig.objects.filter(name__icontains='ICT', is_active=True).first()
+        if ict_config:
+            PairLock.objects.create(symbol=setup.symbol, strategy=ict_config, ticket=result.get('ticket', 0))
 
         # Log trade
         Trade.objects.create(

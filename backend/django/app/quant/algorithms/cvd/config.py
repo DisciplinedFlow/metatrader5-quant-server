@@ -8,8 +8,8 @@ MAX_LOT_SIZE = 1.0     # Hard safety cap — never exceed this regardless of siz
 DEVIATION = 20
 MAX_OPEN_TRADES = 5    # Reduced from 10 — less exposure with only 3 active strategies
 ATR_PERIOD = 14
-SL_ATR_MULTIPLIER = 1.2   # Tighter SL (was 1.5) — cut losers faster, reduce avg loss
-TP_ATR_MULTIPLIER = 2.5   # Keep TP wide — let winners run to full target
+SL_ATR_MULTIPLIER = 1.8   # Room to breathe — noise stops at 1.2x killed 7-min median trades
+TP_ATR_MULTIPLIER = 3.5   # 2:1 R:R minimum — let winners develop, compound the edge
 
 # ---------------------------------------------------------------------------
 # Energy-Specific Risk Configuration
