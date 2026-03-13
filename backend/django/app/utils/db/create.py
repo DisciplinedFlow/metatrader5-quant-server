@@ -13,14 +13,13 @@ def create_trade(order, symbol: str, capital: float, position_size_usd: float,
     try:
         entry_price = order.get('price')
 
-        # Use deal ticket (matches MT5 position.ticket) over order ticket.
-        # order_send() returns both: 'order' (order ticket) and 'deal' (deal ticket).
-        # position.ticket in MT5 == deal ticket, so lookups must use deal.
-        broker_ticket = order.get('deal') or order.get('order')
+        # Use ORDER ticket — matches MT5 position.ticket on Alpari/Vantage.
+        # Deal ticket is a different number on this broker.
+        broker_ticket = order.get('order')
         if order.get('deal') and order.get('order') and order['deal'] != order['order']:
             logger.info(
-                f"Ticket divergence: order={order['order']} deal={order['deal']} "
-                f"— using deal ticket {broker_ticket} as transaction_broker_id"
+                f"Ticket info: order={order['order']} deal={order['deal']} "
+                f"— using order ticket {broker_ticket} as transaction_broker_id"
             )
 
         # Create Trade instance

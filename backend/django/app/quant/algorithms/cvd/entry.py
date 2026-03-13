@@ -1526,8 +1526,8 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 )
 
                 if order is not None:
-                    # Update PairLock with deal ticket (matches MT5 position.ticket)
-                    order_ticket = order.get('deal') or order.get('order', 0)
+                    # Update PairLock with order ticket (matches MT5 position.ticket on Alpari)
+                    order_ticket = order.get('order', 0)
                     PairLock.objects.filter(symbol=pair).update(ticket=order_ticket)
                     positions_opened += 1
 
