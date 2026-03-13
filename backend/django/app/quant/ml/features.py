@@ -303,8 +303,20 @@ def extract_features(
 
         # --- Signal strength ---
         if 'CVD' in df.columns and not pd.isna(df['CVD'].iloc[-1]):
-            cvd_val = abs(float(df['CVD'].iloc[-1]))
-            features['signal_strength'] = min(cvd_val / 100.0, 1.0)
+            raw_cvd = df['CVD'].iloc[-1]
+            try:
+                cvd_val = abs(float(raw_cvd))
+                features['signal_strength'] = min(cvd_val / 100.0, 1.0)
+            except (ValueError, TypeError):
+                # CVD_EXTREMES returns strings like 'bearish_extreme' —
+                # map signal names to strength values
+                strength_map = {
+                    'bullish_extreme': 0.9, 'bearish_extreme': 0.9,
+                    'bullish_divergence': 0.7, 'bearish_divergence': 0.7,
+                    'leading_divergence': 0.8, 'cross_market_divergence': 0.6,
+                    'mtf_divergence': 0.75, 'cross_side_divergence': 0.6,
+                }
+                features['signal_strength'] = strength_map.get(str(raw_cvd), 0.5)
         else:
             features['signal_strength'] = 0.5
 

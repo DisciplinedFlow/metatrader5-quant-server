@@ -746,7 +746,7 @@ def check_tick_consumer_health():
     cache.set('tick_consumer:alive', alive, timeout=120)
 
     if not alive:
-        logger.warning("TICK CONSUMER: No recent real-time CVD data detected. Consumer may be down.")
+        logger.debug("TICK CONSUMER: No recent real-time CVD data detected. Consumer may be down.")
 
 
 def _cache_ict_scan_results(symbols, setups):

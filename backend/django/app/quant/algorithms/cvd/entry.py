@@ -1458,15 +1458,41 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         f"remaining={remaining_volume_lots} lots (40%) pending confirmation"
                     )
 
-                # Validate SL direction
-                if order_type == 'BUY' and sl_price >= tick_info['bid'].iloc[0]:
-                    logger.error(f"CVD: SL too high for BUY on {pair}.")
-                    PairLock.objects.filter(symbol=pair).delete()
-                    continue
-                if order_type == 'SELL' and sl_price <= tick_info['ask'].iloc[0]:
-                    logger.error(f"CVD: SL too low for SELL on {pair}.")
-                    PairLock.objects.filter(symbol=pair).delete()
-                    continue
+                # Validate SL direction — if S/R-based SL is invalid, force ATR fallback
+                bid_price = tick_info['bid'].iloc[0]
+                ask_price = tick_info['ask'].iloc[0]
+                spread = ask_price - bid_price
+
+                sl_invalid = False
+                if order_type == 'BUY' and sl_price >= bid_price:
+                    sl_invalid = True
+                if order_type == 'SELL' and sl_price <= ask_price:
+                    sl_invalid = True
+
+                if sl_invalid:
+                    # Force ATR-based SL with minimum distance = 2x spread
+                    min_distance = max(atr_val * pair_sl_mult * router_sl_adj, spread * 3)
+                    if order_type == 'BUY':
+                        sl_price = last_tick_price - min_distance
+                        tp_price = last_tick_price + (min_distance * pair_tp_mult / pair_sl_mult)
+                    else:
+                        sl_price = last_tick_price + min_distance
+                        tp_price = last_tick_price - (min_distance * pair_tp_mult / pair_sl_mult)
+                    logger.warning(
+                        f"CVD: SL was invalid for {order_type} on {pair} "
+                        f"(spread={spread:.5f}), forced ATR fallback: "
+                        f"SL={sl_price:.5f}, TP={tp_price:.5f}"
+                    )
+
+                    # Re-validate after fix
+                    if order_type == 'BUY' and sl_price >= bid_price:
+                        logger.error(f"CVD: SL still invalid for BUY on {pair} after fix, skipping.")
+                        PairLock.objects.filter(symbol=pair).delete()
+                        continue
+                    if order_type == 'SELL' and sl_price <= ask_price:
+                        logger.error(f"CVD: SL still invalid for SELL on {pair} after fix, skipping.")
+                        PairLock.objects.filter(symbol=pair).delete()
+                        continue
 
                 # --- Pre-trade margin safety check ---
                 try:
