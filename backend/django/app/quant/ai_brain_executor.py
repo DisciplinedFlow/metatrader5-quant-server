@@ -240,12 +240,14 @@ def _should_pause_strategy(strategy_config):
             ).order_by('-close_time')
 
     # Check 1: 24h loss exceeds threshold
+    from django.db.models import Sum
     since_24h = timezone.now() - timedelta(hours=24)
-    recent_24h = trades_qs.filter(close_time__gte=since_24h)
-    if recent_24h.exists():
-        total_24h_pnl = sum(t.pnl for t in recent_24h if t.pnl is not None)
-        if total_24h_pnl < -MAX_24H_LOSS_USD:
-            return f"Lost ${abs(total_24h_pnl):.2f} in last 24h (threshold: ${MAX_24H_LOSS_USD})"
+    total_24h_pnl = trades_qs.filter(
+        close_time__gte=since_24h,
+        pnl__isnull=False,
+    ).aggregate(total=Sum('pnl'))['total']
+    if total_24h_pnl is not None and total_24h_pnl < -MAX_24H_LOSS_USD:
+        return f"Lost ${abs(total_24h_pnl):.2f} in last 24h (threshold: ${MAX_24H_LOSS_USD})"
 
     # Check 2: Consecutive losses
     recent_pnls = list(trades_qs.values_list('pnl', flat=True)[:20])

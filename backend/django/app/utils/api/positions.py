@@ -5,6 +5,7 @@ import logging
 import time
 
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 
 from app.utils.constants import MT5Timeframe

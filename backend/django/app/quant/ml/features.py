@@ -559,12 +559,13 @@ def _get_performance_context(symbol, strategy_config):
         from app.nexus.models import Trade
         from app.utils.api.positions import get_positions
 
-        recent = Trade.objects.filter(
+        # Use values_list to avoid hydrating full model instances
+        recent_pnls = list(Trade.objects.filter(
             close_time__isnull=False, pnl__isnull=False,
-        ).order_by('-close_time')[:10]
+        ).order_by('-close_time').values_list('pnl', flat=True)[:10])
         streak = 0
-        for t in recent:
-            if t.pnl > 0:
+        for pnl in recent_pnls:
+            if pnl > 0:
                 if streak >= 0:
                     streak += 1
                 else:
@@ -576,19 +577,17 @@ def _get_performance_context(symbol, strategy_config):
                     break
         result['streak'] = streak
 
-        sym_trades = Trade.objects.filter(
+        sym_pnls = list(Trade.objects.filter(
             symbol=symbol, close_time__isnull=False, pnl__isnull=False,
-        ).order_by('-close_time')[:10]
-        sym_pnls = [t.pnl for t in sym_trades]
+        ).order_by('-close_time').values_list('pnl', flat=True)[:10])
         if sym_pnls:
             result['symbol_wr'] = sum(1 for p in sym_pnls if p > 0) / len(sym_pnls)
 
         if strategy_config:
-            strat_trades = Trade.objects.filter(
+            strat_pnls = list(Trade.objects.filter(
                 strategy_config=strategy_config,
                 close_time__isnull=False, pnl__isnull=False,
-            ).order_by('-close_time')[:20]
-            strat_pnls = [t.pnl for t in strat_trades]
+            ).order_by('-close_time').values_list('pnl', flat=True)[:20])
             if strat_pnls:
                 result['strategy_wr'] = sum(1 for p in strat_pnls if p > 0) / len(strat_pnls)
 

@@ -9,7 +9,7 @@ from rest_framework import viewsets, status, views
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import Trade, TradeClosePricesMutation, StrategyConfig, BacktestResult, CustomStrategy
+from .models import Trade, TradeClosePricesMutation, StrategyConfig, BacktestResult, CustomStrategy, MarketRegime
 from .serializers import (
     TradeSerializer,
     TradeClosePricesMutationSerializer,
@@ -29,8 +29,14 @@ class TradeViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ['-entry_time']  # default ordering
 
     def get_queryset(self):
-        # Ensure we prefetch the related mutations to avoid N+1 queries
-        return Trade.objects.prefetch_related('close_prices_mutations').all()
+        # select_related for FK (strategy_config accessed by serializer)
+        # prefetch_related for reverse FK (close_prices_mutations)
+        return (
+            Trade.objects
+            .select_related('strategy_config')
+            .prefetch_related('close_prices_mutations')
+            .all()
+        )
 
 class SendMarketOrderView(views.APIView):
     def post(self, request):
@@ -131,6 +137,14 @@ class StrategyViewSet(viewsets.ReadOnlyModelViewSet):
     """List built-in strategies with their latest backtest result."""
     queryset = StrategyConfig.objects.filter(custom_definition__isnull=True)
     serializer_class = StrategyConfigSerializer
+
+    def get_queryset(self):
+        # prefetch backtest_results to avoid N+1 in serializer's get_latest_backtest
+        return (
+            StrategyConfig.objects
+            .filter(custom_definition__isnull=True)
+            .prefetch_related('backtest_results')
+        )
 
     @action(detail=True, methods=['post'], url_path='activate')
     def activate(self, request, pk=None):
@@ -239,7 +253,8 @@ class CustomStrategyViewSet(viewsets.ModelViewSet):
     serializer_class = CustomStrategySerializer
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        # select_related for FK (strategy_config accessed by serializer for is_active)
+        qs = CustomStrategy.objects.select_related('strategy_config')
         domain = self.request.query_params.get('domain')
         if domain:
             qs = qs.filter(domain=domain.upper())
@@ -353,6 +368,17 @@ class ICTScanView(views.APIView):
 class MLStatusView(views.APIView):
     """ML learning pipeline status — model info, training data stats, predictions."""
 
+    @staticmethod
+    def _safe_float(val):
+        """Convert to float, replacing NaN/inf with None for JSON safety."""
+        if val is None:
+            return None
+        import math
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+
     def get(self, request):
         from .models import MLModel, TradeFeature
 
@@ -364,21 +390,22 @@ class MLStatusView(views.APIView):
             fi = active_model.feature_importance or {}
             shap_summary = fi.pop('_shap_summary', [])
             walk_forward_accuracy = fi.pop('_walk_forward_accuracy', None)
+            sf = self._safe_float
             model_info = {
                 'version': active_model.version,
                 'model_type': active_model.model_type,
                 'trade_count': active_model.trade_count,
-                'accuracy': active_model.accuracy,
-                'cv_accuracy': active_model.cv_accuracy,
-                'cv_std': active_model.cv_std,
-                'walk_forward_accuracy': walk_forward_accuracy,
-                'precision': active_model.precision,
-                'recall': active_model.recall,
-                'f1_score': active_model.f1_score,
+                'accuracy': sf(active_model.accuracy),
+                'cv_accuracy': sf(active_model.cv_accuracy),
+                'cv_std': sf(active_model.cv_std),
+                'walk_forward_accuracy': sf(walk_forward_accuracy),
+                'precision': sf(active_model.precision),
+                'recall': sf(active_model.recall),
+                'f1_score': sf(active_model.f1_score),
                 'feature_importance': fi,
                 'shap_summary': shap_summary,
                 'learning_curve': active_model.learning_curve,
-                'win_rate_baseline': active_model.win_rate_baseline,
+                'win_rate_baseline': sf(active_model.win_rate_baseline),
                 'trained_at': active_model.trained_at.isoformat() if active_model.trained_at else None,
             }
 
@@ -399,13 +426,14 @@ class MLStatusView(views.APIView):
         for m in all_models:
             m_fi = m.feature_importance or {}
             wf_acc = m_fi.get('_walk_forward_accuracy', None)
+            sf = self._safe_float
             model_history.append({
                 'version': m.version,
                 'model_type': m.model_type,
                 'trade_count': m.trade_count,
-                'accuracy': m.accuracy,
-                'cv_accuracy': m.cv_accuracy,
-                'walk_forward_accuracy': wf_acc,
+                'accuracy': sf(m.accuracy),
+                'cv_accuracy': sf(m.cv_accuracy),
+                'walk_forward_accuracy': sf(wf_acc),
                 'trained_at': m.trained_at.isoformat() if m.trained_at else None,
                 'is_active': m.is_active,
             })
@@ -579,6 +607,33 @@ class HMMRegimeView(views.APIView):
 
     FOREX_PAIRS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF']
 
+    # Map DB regime → HMM-style label + direction (matching widget's REGIME_COLORS/DIRECTION_ARROWS keys)
+    REGIME_MAP = {
+        'TRENDING_UP':   ('TRENDING', 'UP'),
+        'TRENDING_DOWN': ('TRENDING', 'DOWN'),
+        'RANGING':       ('RANGING',  'NEUTRAL'),
+        'VOLATILE':      ('VOLATILE', 'NEUTRAL'),
+        'UNKNOWN':       ('UNKNOWN',  'NEUTRAL'),
+    }
+
+    def _db_fallback(self, symbol):
+        """Fall back to MarketRegime DB model when Redis cache is empty."""
+        try:
+            mr = MarketRegime.objects.filter(symbol=symbol, timeframe='H1').first()
+            if mr:
+                label, direction = self.REGIME_MAP.get(mr.regime, ('UNKNOWN', 'NEUTRAL'))
+                return {
+                    'label': label,
+                    'confidence': mr.confidence,  # 0-1 float, widget multiplies by 100
+                    'direction': direction,
+                    'atr_override': False,
+                    'state': None,
+                    'source': 'db',
+                }
+        except Exception:
+            pass
+        return {'label': 'UNKNOWN', 'confidence': 0, 'direction': 'NEUTRAL'}
+
     def get(self, request):
         per_pair = {}
         for symbol in self.FOREX_PAIRS:
@@ -594,11 +649,11 @@ class HMMRegimeView(views.APIView):
                         'state': detail.get('state'),
                     }
                 except (json.JSONDecodeError, TypeError):
-                    per_pair[symbol] = {'label': 'UNKNOWN', 'confidence': 0, 'direction': 'NEUTRAL'}
+                    per_pair[symbol] = self._db_fallback(symbol)
             else:
-                per_pair[symbol] = {'label': 'UNKNOWN', 'confidence': 0, 'direction': 'NEUTRAL'}
+                per_pair[symbol] = self._db_fallback(symbol)
 
-        # Cross-pair consensus
+        # Cross-pair consensus — build from per_pair data if Redis empty
         consensus_raw = cache.get('hmm_regime_consensus')
         consensus = {'dominant_regime': 'UNKNOWN', 'consensus_pct': 0, 'weighted_votes': {}}
         if consensus_raw:
@@ -606,6 +661,21 @@ class HMMRegimeView(views.APIView):
                 consensus = json.loads(consensus_raw) if isinstance(consensus_raw, str) else consensus_raw
             except (json.JSONDecodeError, TypeError):
                 pass
+
+        if consensus.get('dominant_regime') == 'UNKNOWN' and per_pair:
+            # Build consensus from available per_pair data
+            votes = {}
+            for data in per_pair.values():
+                label = data.get('label', 'UNKNOWN')
+                if label != 'UNKNOWN':
+                    votes[label] = votes.get(label, 0) + 1
+            if votes:
+                dominant = max(votes, key=votes.get)
+                consensus = {
+                    'dominant_regime': dominant,
+                    'consensus_pct': votes[dominant] / len(per_pair),  # 0-1 float, widget multiplies by 100
+                    'weighted_votes': votes,
+                }
 
         return Response({
             'per_pair': per_pair,
@@ -700,3 +770,141 @@ class FinnhubIndicatorsView(views.APIView):
         if result is None:
             return Response({'error': 'no data'}, status=status.HTTP_404_NOT_FOUND)
         return Response(result)
+
+
+class MultiSourceBacktestView(views.APIView):
+    """Trigger multi-source backtest for a strategy and poll results."""
+
+    VALID_SOURCES = ('auto', 'mt5', 'yahoo', 'finnhub')
+
+    def post(self, request):
+        strategy_id = request.data.get('strategy_id')
+        if not strategy_id:
+            return Response({'error': 'strategy_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate strategy exists
+        try:
+            strategy = StrategyConfig.objects.get(id=strategy_id)
+        except StrategyConfig.DoesNotExist:
+            return Response({'error': f'Strategy {strategy_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        period_days = request.data.get('period_days', 90)
+        try:
+            period_days = int(period_days)
+            if not (30 <= period_days <= 365):
+                return Response(
+                    {'error': 'period_days must be between 30 and 365'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except (TypeError, ValueError):
+            return Response({'error': 'period_days must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
+
+        data_source = request.data.get('data_source', 'auto')
+        if data_source not in self.VALID_SOURCES:
+            return Response(
+                {'error': f'data_source must be one of: {", ".join(self.VALID_SOURCES)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        walk_forward = request.data.get('walk_forward', True)
+        if isinstance(walk_forward, str):
+            walk_forward = walk_forward.lower() in ('true', '1', 'yes')
+
+        from app.quant.tasks import run_multi_source_backtest
+        task = run_multi_source_backtest.delay(
+            strategy_config_id=strategy.id,
+            period_days=period_days,
+            data_source=data_source,
+            walk_forward=bool(walk_forward),
+        )
+
+        return Response(
+            {
+                'task_id': task.id,
+                'strategy': strategy.name,
+                'period_days': period_days,
+                'data_source': data_source,
+                'walk_forward': walk_forward,
+                'status': 'PENDING',
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    def get(self, request):
+        task_id = request.query_params.get('task_id')
+        if not task_id:
+            return Response({'error': 'task_id query parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from celery.result import AsyncResult
+        result = AsyncResult(task_id)
+
+        response = {'task_id': task_id, 'status': result.status}
+
+        if result.ready():
+            if result.successful():
+                response['result'] = result.result
+            else:
+                response['error'] = str(result.result)
+        elif result.status == 'PENDING':
+            response['message'] = 'Task is queued or does not exist'
+
+        return Response(response)
+
+
+class BacktestAllView(views.APIView):
+    """Backtest ALL active strategies and return comparative results."""
+
+    VALID_SOURCES = ('auto', 'mt5', 'yahoo', 'finnhub')
+
+    def post(self, request):
+        period_days = request.data.get('period_days', 90)
+        try:
+            period_days = int(period_days)
+            if not (30 <= period_days <= 365):
+                return Response(
+                    {'error': 'period_days must be between 30 and 365'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except (TypeError, ValueError):
+            return Response({'error': 'period_days must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
+
+        data_source = request.data.get('data_source', 'auto')
+        if data_source not in self.VALID_SOURCES:
+            return Response(
+                {'error': f'data_source must be one of: {", ".join(self.VALID_SOURCES)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        walk_forward = request.data.get('walk_forward', True)
+        if isinstance(walk_forward, str):
+            walk_forward = walk_forward.lower() in ('true', '1', 'yes')
+
+        active_strategies = StrategyConfig.objects.filter(is_active=True)
+        if not active_strategies.exists():
+            return Response({'error': 'No active strategies found'}, status=status.HTTP_404_NOT_FOUND)
+
+        from app.quant.tasks import run_multi_source_backtest
+        tasks = []
+        for strategy in active_strategies:
+            task = run_multi_source_backtest.delay(
+                strategy_config_id=strategy.id,
+                period_days=period_days,
+                data_source=data_source,
+                walk_forward=bool(walk_forward),
+            )
+            tasks.append({
+                'task_id': task.id,
+                'strategy_id': strategy.id,
+                'strategy_name': strategy.name,
+            })
+
+        return Response(
+            {
+                'total_strategies': len(tasks),
+                'period_days': period_days,
+                'data_source': data_source,
+                'walk_forward': walk_forward,
+                'tasks': tasks,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )

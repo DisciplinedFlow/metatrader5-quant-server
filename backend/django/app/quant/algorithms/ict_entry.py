@@ -798,10 +798,10 @@ def evaluate_ict_setup(symbol: str) -> Optional[ICTSetup]:
     # Fetch M15 data for steps 2-5
     # -----------------------------------------------------------------------
     try:
-        from app.utils.api.data import fetch_data_pos
+        from app.utils.api.data import fetch_data_pos_cached
         from app.utils.constants import MT5Timeframe
 
-        df_m15 = fetch_data_pos(symbol, MT5Timeframe.M15, 100)
+        df_m15 = fetch_data_pos_cached(symbol, MT5Timeframe.M15, 100)
         if df_m15 is None or len(df_m15) < 30:
             logger.debug(
                 f"ICT {symbol}: insufficient M15 data "

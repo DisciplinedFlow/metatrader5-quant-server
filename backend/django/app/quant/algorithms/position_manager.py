@@ -550,7 +550,9 @@ def _check_breakeven(position, trade, profit_distance, current_atr):
         return
 
     result = modify_sl_tp(position, new_sl, current_tp if current_tp and current_tp != 0 else None)
-    if result is not None:
+    if result == 'MARKET_CLOSED':
+        return  # Market closed — will retry on next cycle when market reopens
+    elif result is not None:
         trade.breakeven_moved = True
         trade.save(update_fields=['breakeven_moved'])
         logger.info(
@@ -727,6 +729,8 @@ def _check_swing_trail(position, trade, df, current_atr):
             position, candidate_sl,
             current_tp if current_tp and current_tp != 0 else None
         )
+        if result == 'MARKET_CLOSED':
+            return  # Market closed — will retry when market reopens
         if result is not None:
             logger.info(
                 f"{trail_label} TRAIL: {position.symbol} ticket={position.ticket} "

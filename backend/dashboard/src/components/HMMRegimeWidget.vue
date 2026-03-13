@@ -218,6 +218,8 @@ const pairs = computed(() => {
 .pair-list {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  justify-content: space-evenly;
   gap: 0.35rem;
 }
 

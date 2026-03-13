@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView, ICTScanView, MLStatusView, MLPredictionsView, MLBackfillLLMView, ConfluenceScoreView, HMMRegimeView, RotationLogView, FinnhubEconomicCalendarView, FinnhubMarketNewsView, FinnhubCandlesView, FinnhubIndicatorsView
+from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView, ICTScanView, MLStatusView, MLPredictionsView, MLBackfillLLMView, ConfluenceScoreView, HMMRegimeView, RotationLogView, FinnhubEconomicCalendarView, FinnhubMarketNewsView, FinnhubCandlesView, FinnhubIndicatorsView, MultiSourceBacktestView, BacktestAllView
 
 router = DefaultRouter()
 router.register(r'trades', TradeViewSet)
@@ -30,4 +30,6 @@ urlpatterns = [
     path('finnhub/news/', FinnhubMarketNewsView.as_view(), name='finnhub-news'),
     path('finnhub/candles/', FinnhubCandlesView.as_view(), name='finnhub-candles'),
     path('finnhub/indicators/', FinnhubIndicatorsView.as_view(), name='finnhub-indicators'),
+    path('backtest/run/', MultiSourceBacktestView.as_view(), name='backtest-run'),
+    path('backtest/all/', BacktestAllView.as_view(), name='backtest-all'),
 ]

@@ -63,9 +63,9 @@ def get_htf_bias(symbol: str, fetch_fn=None) -> HTFBias:
     """
     try:
         if fetch_fn is None:
-            from app.utils.api.data import fetch_data_pos
+            from app.utils.api.data import fetch_data_pos_cached
             from app.utils.constants import MT5Timeframe
-            fetch_fn = fetch_data_pos
+            fetch_fn = fetch_data_pos_cached
             timeframe = MT5Timeframe.H4
         else:
             from app.utils.constants import MT5Timeframe

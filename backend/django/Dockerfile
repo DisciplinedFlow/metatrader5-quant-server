@@ -25,4 +25,4 @@ RUN mkdir -p /app/logs && \
 RUN python manage.py collectstatic --noinput
 
 # Run the Django development server
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120", "app.wsgi:application"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "8", "--worker-class=gthread", "--threads=2", "--max-requests=1000", "--max-requests-jitter=100", "--timeout", "120", "app.wsgi:application"]

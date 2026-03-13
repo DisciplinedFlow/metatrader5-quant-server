@@ -47,7 +47,7 @@ def close_algorithm():
 
         for ticket in closed_tickets:
             position = cached_positions.pop(ticket)
-            sleep(2)  # Optional: delay to ensure the trade is fully processed
+            sleep(0.5)  # Brief delay to ensure the trade is fully processed
 
             try:
                 # Retrieve the closed order and deal details

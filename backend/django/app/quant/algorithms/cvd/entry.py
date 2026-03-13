@@ -320,14 +320,15 @@ def _get_daily_profit_preservation_mult():
 
         from app.nexus.models import Trade
         from django.utils import timezone
+        from django.db.models import Sum
         from datetime import timedelta
 
         cutoff = timezone.now() - timedelta(hours=24)
-        closed_today = Trade.objects.filter(
+        daily_pnl = Trade.objects.filter(
             close_time__isnull=False,
             close_time__gte=cutoff,
-        )
-        daily_pnl = sum(float(t.pnl) for t in closed_today if t.pnl is not None)
+            pnl__isnull=False,
+        ).aggregate(total=Sum('pnl'))['total'] or 0.0
 
         if daily_pnl >= DAILY_PROFIT_PRESERVATION_USD:
             cache.set('daily_profit_preservation_mult', PRESERVATION_SIZE_MULT, timeout=300)
@@ -433,13 +434,11 @@ def _check_symbol_performance(symbol):
         if cache.get(cooldown_key):
             return False, 0.0, f"Symbol filter: {symbol} paused for poor performance"
 
-        trades = Trade.objects.filter(
+        pnls = list(Trade.objects.filter(
             symbol=symbol,
             close_time__isnull=False,
             pnl__isnull=False,
-        ).order_by('-close_time')[:SYMBOL_FILTER_LOOKBACK]
-
-        pnls = [t.pnl for t in trades]
+        ).order_by('-close_time').values_list('pnl', flat=True)[:SYMBOL_FILTER_LOOKBACK])
         if len(pnls) < 5:
             return True, 1.0, "Not enough data for symbol filter"
 
@@ -763,6 +762,14 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
     from app.nexus.models import PairLock
     from django.db import IntegrityError
 
+    # Cache symbol_info_tick results to avoid redundant HTTP calls (~250ms each)
+    _tick_cache = {}
+
+    def _get_cached_tick(symbol):
+        if symbol not in _tick_cache:
+            _tick_cache[symbol] = symbol_info_tick(symbol)
+        return _tick_cache[symbol]
+
     try:
         custom = _load_custom_strategy_for_config(strategy_config)
         if custom is None:
@@ -924,8 +931,28 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     break
 
             if order_type is None:
-                logger.debug(f"CVD ({custom.name}): No signal for {pair} on last {SIGNAL_LOOKBACK} bars.")
-                continue
+                # --- REAL-TIME TICK CVD: Check for sub-bar signals ---
+                try:
+                    from django.core.cache import cache as _cache
+                    import time as _time
+                    rt_signal = _cache.get(f'realtime_cvd:{pair}')
+                    if rt_signal and isinstance(rt_signal, dict):
+                        signal_age = (_time.time() * 1000) - rt_signal.get('timestamp', 0)
+                        if signal_age < 30_000:  # Signal is < 30 seconds old
+                            order_type = rt_signal['direction']
+                            signal_desc = f"RT_{rt_signal['signal']}"
+                            check_idx = len(df) - 2  # Use most recent complete bar for ATR/levels
+                            atr_val = df['_atr'].iloc[check_idx]
+                            logger.info(
+                                f"CVD: REALTIME TICK signal for {pair}: {signal_desc} "
+                                f"(age={signal_age/1000:.1f}s, cvd={rt_signal.get('cvd_value', 'N/A')})"
+                            )
+                except Exception as e:
+                    logger.debug(f"CVD: Realtime CVD check failed for {pair}: {e}")
+
+                if order_type is None:
+                    logger.debug(f"CVD ({custom.name}): No signal for {pair} on last {SIGNAL_LOOKBACK} bars.")
+                    continue
 
             if atr_val is None:
                 logger.info(f"CVD ({custom.name}): Signal found for {pair} but ATR not valid.")
@@ -977,7 +1004,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             ml_score, ml_accept, ml_features = 0.5, True, {}
             try:
                 from app.quant.ml.scorer import score_signal
-                tick_info_for_ml = symbol_info_tick(pair)
+                tick_info_for_ml = _get_cached_tick(pair)
                 ml_score, ml_accept, ml_reason, ml_features = score_signal(
                     pair, order_type, df, atr_val,
                     strategy_config=strategy_config,
@@ -1000,75 +1027,74 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             try:
                 from app.quant.algorithms.confluence_scorer import score_confluence, log_confluence_decision
 
-                # Detect displacement on current data
-                has_displacement = False
-                try:
-                    from app.quant.indicators.displacement import detect_displacement
-                    _norm_df = df.rename(columns={
-                        'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close',
-                    })
-                    disp_result = detect_displacement(_norm_df)
-                    if disp_result is not None and len(disp_result) > 0:
-                        last_disp = disp_result['displacement'].iloc[-1]
-                        has_displacement = (
-                            (last_disp == 1 and order_type == 'BUY') or
-                            (last_disp == -1 and order_type == 'SELL')
-                        )
-                except Exception:
-                    pass
+                # Reuse SMC detection results from ML features (already computed
+                # by score_signal -> extract_features on the same df) to avoid
+                # redundant ~100ms SMC detector calls per symbol.
+                has_displacement = bool(ml_features.get('displacement', 0))
+                has_fvg = bool(ml_features.get('fvg_present', 0))
+                has_ob = bool(ml_features.get('ob_present', 0))
+                has_sweep = bool(ml_features.get('recent_sweep', 0))
 
-                # Detect FVG on current data
-                has_fvg = False
-                try:
-                    from app.quant.indicators.smc_detector import detect_fair_value_gaps
-                    fvg_df = detect_fair_value_gaps(df)
-                    if fvg_df is not None and 'FVG' in fvg_df.columns and len(fvg_df) > 0:
-                        last_fvg = fvg_df['FVG'].iloc[-1]
-                        has_fvg = (
-                            (last_fvg == 1 and order_type == 'BUY') or
-                            (last_fvg == -1 and order_type == 'SELL')
-                        )
-                except Exception:
-                    pass
+                # Fallback: if ML features are empty (scorer failed), compute fresh
+                if not ml_features:
+                    try:
+                        from app.quant.indicators.displacement import detect_displacement
+                        _norm_df = df.rename(columns={
+                            'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close',
+                        })
+                        disp_result = detect_displacement(_norm_df)
+                        if disp_result is not None and len(disp_result) > 0:
+                            last_disp = disp_result['displacement'].iloc[-1]
+                            has_displacement = (
+                                (last_disp == 1 and order_type == 'BUY') or
+                                (last_disp == -1 and order_type == 'SELL')
+                            )
+                    except Exception:
+                        pass
 
-                # Detect order block at entry level (worth 1 confluence point)
-                has_ob = False
-                try:
-                    from app.quant.indicators.smc_detector import detect_order_blocks
-                    ob_df = detect_order_blocks(df)
-                    if ob_df is not None and 'OB' in ob_df.columns:
-                        for lookback_i in range(max(0, len(ob_df) - 5), len(ob_df)):
-                            ob_val = ob_df['OB'].iloc[lookback_i]
-                            if pd.notna(ob_val):
-                                has_ob = (
-                                    (ob_val == 1 and order_type == 'BUY') or
-                                    (ob_val == -1 and order_type == 'SELL')
-                                )
-                                if has_ob:
-                                    break
-                except Exception:
-                    pass
+                    try:
+                        from app.quant.indicators.smc_detector import detect_fair_value_gaps
+                        fvg_df = detect_fair_value_gaps(df)
+                        if fvg_df is not None and 'FVG' in fvg_df.columns and len(fvg_df) > 0:
+                            last_fvg = fvg_df['FVG'].iloc[-1]
+                            has_fvg = (
+                                (last_fvg == 1 and order_type == 'BUY') or
+                                (last_fvg == -1 and order_type == 'SELL')
+                            )
+                    except Exception:
+                        pass
 
-                # Detect liquidity sweep (stop hunt — worth 2 confluence points)
-                has_sweep = False
-                try:
-                    from app.quant.indicators.smc_detector import detect_liquidity_sweeps
-                    sweep_df = detect_liquidity_sweeps(df)
-                    if sweep_df is not None and 'Liquidity' in sweep_df.columns:
-                        # Check last 5 bars for a recent sweep
-                        for lookback_i in range(max(0, len(sweep_df) - 5), len(sweep_df)):
-                            liq_val = sweep_df['Liquidity'].iloc[lookback_i]
-                            if pd.notna(liq_val):
-                                # Sell-side sweep (-1) = bullish (stop hunt below)
-                                # Buy-side sweep (1) = bearish (stop hunt above)
-                                has_sweep = (
-                                    (liq_val == -1 and order_type == 'BUY') or
-                                    (liq_val == 1 and order_type == 'SELL')
-                                )
-                                if has_sweep:
-                                    break
-                except Exception:
-                    pass
+                    try:
+                        from app.quant.indicators.smc_detector import detect_order_blocks
+                        ob_df = detect_order_blocks(df)
+                        if ob_df is not None and 'OB' in ob_df.columns:
+                            for lookback_i in range(max(0, len(ob_df) - 5), len(ob_df)):
+                                ob_val = ob_df['OB'].iloc[lookback_i]
+                                if pd.notna(ob_val):
+                                    has_ob = (
+                                        (ob_val == 1 and order_type == 'BUY') or
+                                        (ob_val == -1 and order_type == 'SELL')
+                                    )
+                                    if has_ob:
+                                        break
+                    except Exception:
+                        pass
+
+                    try:
+                        from app.quant.indicators.smc_detector import detect_liquidity_sweeps
+                        sweep_df = detect_liquidity_sweeps(df)
+                        if sweep_df is not None and 'Liquidity' in sweep_df.columns:
+                            for lookback_i in range(max(0, len(sweep_df) - 5), len(sweep_df)):
+                                liq_val = sweep_df['Liquidity'].iloc[lookback_i]
+                                if pd.notna(liq_val):
+                                    has_sweep = (
+                                        (liq_val == -1 and order_type == 'BUY') or
+                                        (liq_val == 1 and order_type == 'SELL')
+                                    )
+                                    if has_sweep:
+                                        break
+                    except Exception:
+                        pass
 
                 # HTF bias (H4 EMA + swing structure — worth 2 confluence points)
                 htf_bias = None
@@ -1134,7 +1160,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
             try:
                 # Get current tick price
-                tick_info = symbol_info_tick(pair)
+                tick_info = _get_cached_tick(pair)
                 if tick_info is None or tick_info.empty:
                     logger.info(f"CVD: Skipping {pair} — no tick info.")
                     PairLock.objects.filter(symbol=pair).delete()

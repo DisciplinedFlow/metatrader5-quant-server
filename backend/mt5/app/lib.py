@@ -8,13 +8,23 @@ import logging
 logger = logging.getLogger(__name__)
 
 def get_timeframe(timeframe_str: str) -> MT5Timeframe:
+    # Accept both name ("H1") and numeric value ("16385") from Django client
     try:
         return MT5Timeframe[timeframe_str.upper()].value
     except KeyError:
-        valid_timeframes = ', '.join([t.name for t in MT5Timeframe])
-        raise ValueError(
-            f"Invalid timeframe: '{timeframe_str}'. Valid options are: {valid_timeframes}."
-        )
+        pass
+    # Try numeric lookup (Django sends timeframe.value)
+    try:
+        numeric = int(timeframe_str)
+        for tf in MT5Timeframe:
+            if tf.value == numeric:
+                return tf.value
+    except (ValueError, TypeError):
+        pass
+    valid_timeframes = ', '.join([f'{t.name}({t.value})' for t in MT5Timeframe])
+    raise ValueError(
+        f"Invalid timeframe: '{timeframe_str}'. Valid options are: {valid_timeframes}."
+    )
 
 
 def close_position(position, deviation=20, magic=0, comment='', type_filling=mt5.ORDER_FILLING_IOC):

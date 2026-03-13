@@ -114,6 +114,18 @@ def modify_sl_tp(position, sl: float, tp: float = None) -> Dict:
 
         url = f"{BASE_URL}/modify_sl_tp"
         response = get_session().post(url, json=request, timeout=10)
+
+        # Check for market-closed before raising status errors
+        if response.status_code == 400:
+            try:
+                err_data = response.json()
+                err_msg = err_data.get('error', '')
+                if 'market closed' in err_msg.lower() or 'market is closed' in err_msg.lower():
+                    logger.debug(f"Modify SL/TP skipped (market closed): {position.symbol}")
+                    return 'MARKET_CLOSED'
+            except Exception:
+                pass
+
         response.raise_for_status()
 
         response_data = response.json()

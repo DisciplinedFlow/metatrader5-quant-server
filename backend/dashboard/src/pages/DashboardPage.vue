@@ -3,13 +3,11 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePositionsStore } from '@/stores/positions'
 import { usePolling } from '@/composables/usePolling'
-import { useConfluenceScore } from '@/composables/useConfluenceScore'
 import { useHMMRegime } from '@/composables/useHMMRegime'
 import PositionsTable from '@/components/PositionsTable.vue'
 import MarketSessions from '@/components/MarketSessions.vue'
 import SectionNav from '@/components/SectionNav.vue'
 import ICTSetupLog from '@/components/ICTSetupLog.vue'
-import ConfluenceScoreWidget from '@/components/ConfluenceScoreWidget.vue'
 import HMMRegimeWidget from '@/components/HMMRegimeWidget.vue'
 import api from '@/services/api'
 
@@ -145,15 +143,12 @@ function formatNewsTime(unixTimestamp) {
   return d.toLocaleDateString()
 }
 
-// Confluence score & HMM regime composables
-const confluence = useConfluenceScore()
 const hmmRegime = useHMMRegime()
 
 onMounted(fetchTrades)
 usePolling(refresh, 5000)
 usePolling(fetchMarketPulse, 120000)
 usePolling(fetchTrades, 30000)
-usePolling(() => confluence.fetch(), 60000)
 usePolling(() => hmmRegime.fetch(), 30000)
 </script>
 
@@ -161,199 +156,203 @@ usePolling(() => hmmRegime.fetch(), 30000)
   <SectionNav :links="forexLinks" />
   <div class="tp-page dashboard-page">
 
-    <!-- Bot Status + Positions Stats — full-width strip -->
-    <div class="top-row">
-      <div class="tp-card bot-card">
-        <div class="bot-header">
-          <div class="bot-label-row">
-            <div class="bot-icon" :class="botPaused ? 'bot-icon-paused' : 'bot-icon-running'">
-              <span class="material-symbols-outlined">smart_toy</span>
-            </div>
-            <div>
-              <p class="micro-label">Bot Status</p>
-              <div class="bot-status-row">
-                <span class="status-dot" :class="botPaused ? 'dot-paused' : 'dot-running'"></span>
-                <p class="bot-status-text">{{ botPaused ? 'PAUSED' : 'RUNNING' }}</p>
-              </div>
-            </div>
-          </div>
-          <button
-            class="tp-btn tp-btn-outline"
-            :aria-busy="botStatusLoading"
-            @click="toggleBot"
-          >
-            <span class="material-symbols-outlined" style="font-size:16px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
-            {{ botPaused ? 'Resume Bot' : 'Pause Bot' }}
-          </button>
+    <!-- ═══════ COMMAND BAR ═══════ -->
+    <div class="command-bar">
+      <div class="cmd-left">
+        <div class="cmd-bot">
+          <span class="bot-dot" :class="botPaused ? 'dot-paused' : 'dot-live'"></span>
+          <span class="bot-label">{{ botPaused ? 'PAUSED' : 'LIVE' }}</span>
         </div>
+        <button class="cmd-toggle" @click="toggleBot" :aria-busy="botStatusLoading">
+          <span class="material-symbols-outlined">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
+        </button>
       </div>
 
-      <div class="tp-card stats-row-card" v-if="!posError">
-        <div class="mini-stat">
-          <p class="micro-label">Count</p>
-          <p class="mini-stat-value">{{ positionsStore.positions.length }}</p>
+      <div class="cmd-metrics">
+        <div class="cmd-sep"></div>
+        <div class="cmd-metric cmd-metric-hero">
+          <span class="cmd-label">Total P&L</span>
+          <span class="cmd-value" :class="pnlStats.totalPnl >= 0 ? 'val-pos' : 'val-neg'">
+            {{ pnlStats.totalPnl >= 0 ? '+' : '' }}${{ pnlStats.totalPnl.toFixed(2) }}
+          </span>
         </div>
-        <div class="mini-stat">
-          <p class="micro-label">Current Profit</p>
-          <p class="mini-stat-value" :class="positionsStore.totalProfit >= 0 ? 'text-success' : 'text-danger'">
-            ${{ positionsStore.totalProfit.toFixed(2) }}
-          </p>
+        <div class="cmd-sep"></div>
+        <div class="cmd-metric">
+          <span class="cmd-label">Win Rate</span>
+          <span class="cmd-value">{{ pnlStats.winRate.toFixed(0) }}%</span>
         </div>
-        <div class="mini-stat">
-          <p class="micro-label">Total Swap</p>
-          <p class="mini-stat-value">${{ positionsStore.totalSwap.toFixed(2) }}</p>
+        <div class="cmd-sep"></div>
+        <div class="cmd-metric">
+          <span class="cmd-label">W / L</span>
+          <span class="cmd-value">{{ pnlStats.wins }}<span class="cmd-dim"> / </span>{{ pnlStats.losses }}</span>
         </div>
-      </div>
-      <div v-else class="tp-card stats-row-card">
-        <p style="color:var(--tp-text-dim);font-size:0.85rem;padding:1rem;">Failed to load positions</p>
+        <div class="cmd-sep"></div>
+        <div class="cmd-metric">
+          <span class="cmd-label">Open</span>
+          <span class="cmd-value">{{ positionsStore.positions.length }}</span>
+        </div>
+        <div class="cmd-sep"></div>
+        <div class="cmd-metric">
+          <span class="cmd-label">Floating</span>
+          <span class="cmd-value" :class="positionsStore.totalProfit >= 0 ? 'val-pos' : 'val-neg'" v-if="!posError">
+            {{ positionsStore.totalProfit >= 0 ? '+' : '' }}${{ positionsStore.totalProfit.toFixed(2) }}
+          </span>
+          <span v-else class="cmd-value cmd-dim">&mdash;</span>
+        </div>
+        <div class="cmd-sep"></div>
+        <div class="cmd-metric">
+          <span class="cmd-label">Swap</span>
+          <span class="cmd-value" v-if="!posError">${{ positionsStore.totalSwap.toFixed(2) }}</span>
+          <span v-else class="cmd-value cmd-dim">&mdash;</span>
+        </div>
       </div>
     </div>
 
-    <div class="dash-grid">
+    <!-- ═══════ ROW 1: Performance + Active Positions (full width) ═══════ -->
+    <div class="row-perf-pos">
+      <!-- Performance -->
+      <div class="tp-card dash-card perf-card" style="--stagger: 1">
+        <div class="card-accent accent-green"></div>
+        <div class="perf-header">
+          <h3 class="card-title">Performance</h3>
+          <span class="perf-total" :class="pnlStats.totalPnl >= 0 ? 'val-pos' : 'val-neg'">
+            {{ pnlStats.totalPnl >= 0 ? '+' : '' }}${{ pnlStats.totalPnl.toFixed(2) }}
+          </span>
+        </div>
+        <span class="perf-trades">{{ pnlStats.total }} closed trades</span>
 
-      <!-- ===== LEFT COLUMN ===== -->
-      <div class="left-col">
-
-        <!-- Market Sessions -->
-        <div class="tp-card sessions-card">
-          <div class="sessions-header">
-            <h3>
-              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">schedule</span>
-              Market Trading Sessions
-            </h3>
-            <div class="legend">
-              <span class="legend-item"><span class="legend-dot dot-running"></span> Open</span>
-              <span class="legend-item"><span class="legend-dot" style="background:var(--tp-border-light)"></span> Closed</span>
-            </div>
-          </div>
-          <MarketSessions />
+        <div class="equity-chart" v-if="equityCurve.length >= 2">
+          <svg viewBox="0 0 280 80" preserveAspectRatio="none" class="equity-svg">
+            <line x1="4" :y1="zeroLineY" x2="276" :y2="zeroLineY" stroke="var(--tp-border)" stroke-width="0.5" stroke-dasharray="4 2" />
+            <path :d="chartFill" :fill="pnlStats.totalPnl >= 0 ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)'" />
+            <path :d="chartPath" fill="none" :stroke="pnlStats.totalPnl >= 0 ? '#22c55e' : '#ef4444'" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </div>
+        <div v-else class="equity-empty">
+          <span class="material-symbols-outlined" style="font-size:1.25rem;color:var(--tp-text-dim)">show_chart</span>
+          <span>Awaiting trades...</span>
         </div>
 
-        <!-- Active Positions -->
-        <div class="tp-card positions-card">
-          <div class="positions-header">
-            <h3>Active Positions</h3>
-            <button class="view-history-btn" @click="router.push('/forex/history')">View History</button>
+        <div class="trade-bars" v-if="closedTrades.length">
+          <div v-for="(t, i) in closedTrades.slice(-30)" :key="i"
+               class="trade-bar"
+               :class="t.pnl >= 0 ? 'bar-win' : 'bar-loss'"
+               :style="{ height: Math.min(100, Math.max(8, Math.abs(t.pnl) * 3)) + '%' }"
+               :title="`${t.symbol} ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`"
+          ></div>
+        </div>
+
+        <div class="perf-footer">
+          <div class="perf-kpi">
+            <span class="perf-kpi-label">Win Rate</span>
+            <span class="perf-kpi-val">{{ pnlStats.winRate.toFixed(1) }}%</span>
           </div>
-          <div class="positions-body">
-            <template v-if="positionsStore.positions.length > 0">
-              <PositionsTable :positions="positionsStore.positions" />
-            </template>
-            <div v-else class="empty-positions">
-              <div class="empty-icon">
-                <span class="material-symbols-outlined" style="font-size:2rem;color:var(--tp-text-dim)">view_list</span>
-              </div>
-              <p class="empty-title">No open positions</p>
-              <p class="empty-desc">Your active trades will appear here once executed.</p>
-              <button class="tp-btn tp-btn-primary" style="margin-top:0.75rem;" @click="router.push('/forex/order')">
-                <span class="material-symbols-outlined" style="font-size:16px">add_circle</span>
-                Trade Now
-              </button>
-            </div>
+          <div class="perf-kpi">
+            <span class="perf-kpi-label">Best</span>
+            <span class="perf-kpi-val val-pos">+${{ pnlStats.bestTrade.toFixed(2) }}</span>
           </div>
+          <div class="perf-kpi">
+            <span class="perf-kpi-label">Worst</span>
+            <span class="perf-kpi-val val-neg">${{ pnlStats.worstTrade.toFixed(2) }}</span>
+          </div>
+          <button class="perf-hist-btn" @click="router.push('/forex/history')">
+            <span class="material-symbols-outlined">history</span>
+            Full History
+          </button>
         </div>
       </div>
 
-      <!-- ===== RIGHT COLUMN ===== -->
-      <div class="right-col">
-
-        <!-- P&L Performance Card -->
-        <div class="tp-card pnl-card">
-          <div class="pnl-header">
-            <div>
-              <h3 class="pnl-title">Performance</h3>
-              <p class="pnl-subtitle">{{ pnlStats.total }} trades</p>
-            </div>
-            <div class="pnl-total" :class="pnlStats.totalPnl >= 0 ? 'text-success' : 'text-danger'">
-              {{ pnlStats.totalPnl >= 0 ? '+' : '' }}${{ pnlStats.totalPnl.toFixed(2) }}
-            </div>
+      <!-- Active Positions -->
+      <div class="tp-card dash-card positions-card" style="--stagger: 2">
+        <div class="card-accent accent-blue"></div>
+        <div class="pos-header">
+          <h3 class="card-title">Active Positions</h3>
+          <div class="pos-header-right">
+            <span class="pos-count" v-if="positionsStore.positions.length">{{ positionsStore.positions.length }} open</span>
+            <button class="link-btn" @click="router.push('/forex/history')">View History</button>
           </div>
-
-          <!-- Equity Curve -->
-          <div class="equity-chart" v-if="equityCurve.length >= 2">
-            <svg viewBox="0 0 280 80" preserveAspectRatio="none" class="equity-svg">
-              <line x1="4" :y1="zeroLineY" x2="276" :y2="zeroLineY" stroke="var(--tp-border)" stroke-width="0.5" stroke-dasharray="4 2" />
-              <path :d="chartFill" :fill="pnlStats.totalPnl >= 0 ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)'" />
-              <path :d="chartPath" fill="none" :stroke="pnlStats.totalPnl >= 0 ? '#22c55e' : '#ef4444'" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </div>
-          <div v-else class="equity-empty">
-            <span class="material-symbols-outlined" style="font-size:1.5rem;color:var(--tp-text-dim)">show_chart</span>
-            <p>Waiting for closed trades...</p>
-          </div>
-
-          <!-- Trade Bars -->
-          <div class="trade-bars" v-if="closedTrades.length">
-            <div v-for="(t, i) in closedTrades.slice(-20)" :key="i"
-                 class="trade-bar"
-                 :class="t.pnl >= 0 ? 'bar-win' : 'bar-loss'"
-                 :style="{ height: Math.min(100, Math.max(8, Math.abs(t.pnl) * 3)) + '%' }"
-                 :title="`${t.symbol} ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`"
-            ></div>
-          </div>
-
-          <!-- Stats Grid -->
-          <div class="pnl-stats-grid">
-            <div class="pnl-stat">
-              <span class="pnl-stat-label">Win Rate</span>
-              <span class="pnl-stat-value">{{ pnlStats.winRate.toFixed(0) }}%</span>
-            </div>
-            <div class="pnl-stat">
-              <span class="pnl-stat-label">W / L</span>
-              <span class="pnl-stat-value">{{ pnlStats.wins }} / {{ pnlStats.losses }}</span>
-            </div>
-            <div class="pnl-stat">
-              <span class="pnl-stat-label">Best</span>
-              <span class="pnl-stat-value text-success">+${{ pnlStats.bestTrade.toFixed(2) }}</span>
-            </div>
-            <div class="pnl-stat">
-              <span class="pnl-stat-label">Worst</span>
-              <span class="pnl-stat-value text-danger">${{ pnlStats.worstTrade.toFixed(2) }}</span>
-            </div>
-          </div>
-
-          <button class="tp-btn tp-btn-outline pnl-history-btn" @click="router.push('/forex/history')">
-            <span class="material-symbols-outlined" style="font-size:16px">history</span>
-            View Full History
-          </button>
         </div>
+        <div class="pos-body">
+          <template v-if="positionsStore.positions.length > 0">
+            <PositionsTable :positions="positionsStore.positions" />
+          </template>
+          <div v-else-if="posError" class="pos-empty">
+            <span class="material-symbols-outlined" style="font-size:1.5rem;color:var(--tp-text-dim)">cloud_off</span>
+            <p>Failed to load positions</p>
+          </div>
+          <div v-else class="pos-empty">
+            <span class="material-symbols-outlined" style="font-size:1.5rem;color:var(--tp-text-dim)">view_list</span>
+            <p class="pos-empty-title">No open positions</p>
+            <p class="pos-empty-sub">Trades will appear here once executed</p>
+            <button class="tp-btn tp-btn-primary pos-trade-btn" @click="router.push('/forex/order')">
+              <span class="material-symbols-outlined" style="font-size:16px">add_circle</span>
+              Trade Now
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
-        <!-- HMM Regime Display -->
+    <!-- ═══════ ROW 2: HMM Regime + Sessions ═══════ -->
+    <div class="row-dual">
+      <div style="--stagger: 3" class="dash-card hmm-wrapper">
         <HMMRegimeWidget :data="hmmRegime.data.value" :loading="hmmRegime.loading.value" />
+      </div>
 
-        <!-- Confluence Score Distribution -->
-        <ConfluenceScoreWidget :data="confluence.data.value" :loading="confluence.loading.value" />
+      <div class="tp-card dash-card sessions-card" style="--stagger: 4">
+        <div class="card-accent accent-amber"></div>
+        <div class="sessions-head">
+          <h3 class="card-title">
+            <span class="material-symbols-outlined" style="font-size:18px">schedule</span>
+            Sessions
+          </h3>
+        </div>
+        <MarketSessions />
+      </div>
+    </div>
 
-        <!-- ICT 5-Step Scanner -->
-        <div class="tp-card ict-card">
+    <!-- ═══════ ROW 3: ICT Scanner + Market Pulse (aligned bottoms) ═══════ -->
+    <div class="row-bottom">
+      <!-- ICT Scanner — always expanded, stretches to match -->
+      <div class="tp-card dash-card ict-card" style="--stagger: 5">
+        <div class="card-accent accent-teal"></div>
+        <div class="ict-inner">
           <ICTSetupLog />
         </div>
+      </div>
 
-        <!-- Market Pulse / News Card -->
-        <div class="tp-card news-card">
-          <div class="news-header">
-            <h3>Market Pulse</h3>
-            <span class="material-symbols-outlined" style="font-size:20px;color:var(--tp-text-dim)">rss_feed</span>
+      <!-- Market Pulse — 10 items -->
+      <div class="tp-card dash-card news-card" style="--stagger: 6">
+        <div class="card-accent accent-slate"></div>
+        <div class="news-head">
+          <h3 class="card-title">
+            <span class="material-symbols-outlined" style="font-size:18px;color:var(--tp-primary)">rss_feed</span>
+            Market Pulse
+          </h3>
+          <span class="news-count" v-if="marketPulse.news.length || marketPulse.calendar.length">
+            {{ marketPulse.calendar.length + marketPulse.news.length }} items
+          </span>
+        </div>
+        <div class="news-feed">
+          <!-- Calendar events first (high impact) -->
+          <div v-for="event in marketPulse.calendar.slice(0, 4)" :key="'cal-' + event.event"
+               class="news-item" :class="{ 'news-hi': event.impact === 'high' || event.impact === 3 }">
+            <div class="news-left">
+              <span class="news-tag news-tag-cal">{{ event.country || 'ECON' }}</span>
+              <span v-if="event.impact === 'high' || event.impact === 3" class="news-impact">HIGH</span>
+            </div>
+            <span class="news-text">{{ event.event }}</span>
           </div>
-          <div class="news-list">
-            <!-- Economic Calendar Events -->
-            <div v-for="event in marketPulse.calendar.slice(0, 3)" :key="'cal-' + event.event"
-                 class="news-item" :class="{ 'news-item-featured': event.impact === 'high' || event.impact === 3 }">
-              <p class="news-time">{{ event.country || 'ECON' }}</p>
-              <p class="news-text">{{ event.event }}</p>
+          <!-- News articles -->
+          <div v-for="item in marketPulse.news.slice(0, 10)" :key="item.id" class="news-item">
+            <div class="news-left">
+              <span class="news-tag">{{ formatNewsTime(item.datetime) }}</span>
             </div>
-            <!-- News Articles -->
-            <div v-for="item in marketPulse.news.slice(0, 5)" :key="item.id" class="news-item">
-              <p class="news-time">{{ formatNewsTime(item.datetime) }}</p>
-              <p class="news-text">
-                <a :href="item.url" target="_blank" rel="noopener" class="news-link">{{ item.headline }}</a>
-              </p>
-            </div>
-            <!-- Fallback when no data -->
-            <div v-if="!marketPulse.news.length && !marketPulse.calendar.length" class="news-item news-item-featured">
-              <p class="news-time">Live</p>
-              <p class="news-text">Loading market news...</p>
-            </div>
+            <a :href="item.url" target="_blank" rel="noopener" class="news-text news-link">{{ item.headline }}</a>
+          </div>
+          <div v-if="!marketPulse.news.length && !marketPulse.calendar.length" class="news-empty">
+            <span class="material-symbols-outlined" style="font-size:1.25rem;color:var(--tp-text-dim)">rss_feed</span>
+            <span>Loading market news...</span>
           </div>
         </div>
       </div>
@@ -362,400 +361,514 @@ usePolling(() => hmmRegime.fetch(), 30000)
 </template>
 
 <style scoped>
+/* ══════════════════════════════════════════════════
+   FOREX DASHBOARD — Tactical Command Center v2
+   Priority: Valuable data first, full-width usage
+   ══════════════════════════════════════════════════ */
+
+:global(.container:has(.dashboard-page)) {
+  max-width: 1600px !important;
+}
+
 .dashboard-page {
-  padding: 1rem 1.5rem 2rem;
+  max-width: 1600px;
+  padding: 0.75rem 1.25rem 2rem;
 }
 
-/* ===== Grid Layout ===== */
-.dash-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 1.25rem;
+/* ═══ STAGGER REVEAL ═══ */
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
-@media (min-width: 1024px) {
-  .dash-grid {
-    grid-template-columns: 1.65fr 1fr;
-  }
-}
-.left-col, .right-col {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-  min-width: 0; /* prevent grid blowout */
+.dash-card {
+  animation: card-enter 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--stagger, 0) * 0.06s);
 }
 
-/* ===== Top Row: Bot + Stats — full-width strip above grid ===== */
-.top-row {
+/* ═══ CARD ACCENTS ═══ */
+.card-accent {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  border-radius: var(--tp-radius) var(--tp-radius) 0 0;
+  pointer-events: none;
+}
+.accent-green { background: linear-gradient(90deg, #22c55e, transparent 60%); }
+.accent-blue  { background: linear-gradient(90deg, var(--tp-primary), transparent 60%); }
+.accent-amber { background: linear-gradient(90deg, #f59e0b, transparent 60%); }
+.accent-teal  { background: linear-gradient(90deg, #14b8a6, transparent 60%); }
+.accent-slate { background: linear-gradient(90deg, #64748b, transparent 60%); }
+
+.card-title {
+  font-size: 0.88rem;
+  font-weight: 700;
   display: flex;
-  gap: 0;
-  border-radius: var(--tp-radius);
-  overflow: hidden;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.val-pos { color: var(--tp-success) !important; }
+.val-neg { color: var(--tp-danger) !important; }
+
+/* ══════════════════════════════════════════════════
+   COMMAND BAR
+   ══════════════════════════════════════════════════ */
+.command-bar {
+  display: flex;
+  align-items: center;
   background: var(--tp-bg-glass);
   backdrop-filter: var(--tp-glass-blur);
   -webkit-backdrop-filter: var(--tp-glass-blur);
   border: var(--tp-glass-border);
-  box-shadow: var(--tp-glass-shadow);
-  margin-bottom: 1.25rem;
+  border-radius: var(--tp-radius);
+  margin-bottom: 0.875rem;
+  overflow: hidden;
+  position: relative;
+  animation: card-enter 0.3s ease both;
 }
-
-/* Bot Card — left segment */
-.bot-card {
-  padding: 1rem 1.25rem;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  border-right: 1px solid var(--tp-border);
-  /* override tp-card defaults since parent handles glass */
-  background: none;
-  backdrop-filter: none;
-  border-radius: 0;
-  border-top: none;
-  border-bottom: none;
-  border-left: none;
-  box-shadow: none;
-  flex-shrink: 0;
+.command-bar::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--tp-success), var(--tp-primary), transparent);
+  opacity: 0.5;
 }
-.bot-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-.bot-label-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-.bot-icon {
-  width: 2rem; height: 2rem;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.bot-icon .material-symbols-outlined { font-size: 18px; }
-.bot-icon-running {
-  background: rgba(34,197,94,0.12);
-  color: var(--tp-success);
-}
-.bot-icon-paused {
-  background: rgba(245,158,11,0.12);
-  color: var(--tp-warning);
-}
-.micro-label {
-  font-size: 0.6rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 700;
-  color: var(--tp-text-dim);
-  margin: 0;
-}
-.bot-status-row {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin-top: 0.1rem;
-}
-.status-dot {
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.dot-running { background: var(--tp-success); }
-.dot-paused { background: var(--tp-warning); }
-.bot-status-text {
-  font-size: 0.9rem;
-  font-weight: 800;
-  color: var(--tp-text);
-  margin: 0;
-}
-
-/* Stats Row Card — fills remaining space */
-.stats-row-card {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  /* override tp-card defaults */
-  background: none;
-  backdrop-filter: none;
-  border-radius: 0;
-  border: none;
-  box-shadow: none;
-  padding: 0;
-  align-items: stretch;
-}
-.mini-stat {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.2rem;
-  padding: 1rem 1.25rem;
-  border-right: 1px solid var(--tp-border);
-  min-width: 0;
-}
-.mini-stat:last-child {
-  border-right: none;
-}
-.mini-stat-value {
-  font-size: 1.35rem;
-  font-weight: 800;
-  color: var(--tp-text);
-  margin: 0;
-  line-height: 1;
-  font-feature-settings: 'tnum' 1;
-  white-space: nowrap;
-}
-.text-success { color: var(--tp-success) !important; }
-.text-danger { color: var(--tp-danger) !important; }
-
-@media (max-width: 768px) {
-  .top-row {
-    flex-direction: column;
-  }
-  .bot-card {
-    border-right: none;
-    border-bottom: 1px solid var(--tp-border);
-  }
-  .stats-row-card {
-    flex-direction: row;
-  }
-}
-
-/* Sessions Card */
-.sessions-card {
-  padding: 1.25rem;
-}
-.sessions-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1rem;
-}
-.sessions-header h3 {
+.cmd-left {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.95rem;
-  font-weight: 700;
+  padding: 0.65rem 1rem;
+  flex-shrink: 0;
 }
-.legend {
-  display: flex;
-  gap: 1rem;
-  font-size: 0.7rem;
-  color: var(--tp-text-dim);
-}
-.legend-item {
+.cmd-bot {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.4rem;
 }
-.legend-dot {
+.bot-dot {
   width: 8px; height: 8px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
-
-/* Positions Card */
-.positions-card {
-  overflow: hidden;
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.45); }
+  50%      { box-shadow: 0 0 0 5px rgba(34,197,94,0); }
 }
-.positions-header {
+.dot-live   { background: var(--tp-success); animation: pulse-glow 2s ease infinite; }
+.dot-paused { background: var(--tp-warning); }
+.bot-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--tp-text);
+}
+.cmd-toggle {
+  background: var(--tp-bg-surface);
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-radius-sm);
+  color: var(--tp-text);
+  cursor: pointer;
+  padding: 0.2rem 0.35rem;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 1.25rem;
-  border-bottom: 1px solid var(--tp-border);
-}
-.positions-header h3 {
-  font-size: 0.95rem;
-  font-weight: 700;
-}
-.view-history-btn {
-  background: none;
-  border: none;
-  color: var(--tp-primary);
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
+  transition: all 0.15s;
   font-family: var(--tp-font);
 }
-.view-history-btn:hover { text-decoration: underline; }
-.positions-body {
-  padding: 0;
+.cmd-toggle:hover { border-color: var(--tp-primary); color: var(--tp-primary); }
+.cmd-toggle .material-symbols-outlined { font-size: 16px; }
+.cmd-metrics {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
 }
-.empty-positions {
+.cmd-metric {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 3rem 2rem;
-  text-align: center;
+  padding: 0.45rem 0.7rem;
+  flex: 1;
+  min-width: 0;
 }
-.empty-icon {
-  width: 4rem; height: 4rem;
-  border-radius: 50%;
-  background: var(--tp-bg-surface);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 1rem;
+.cmd-metric-hero .cmd-value { font-size: 1.1rem; }
+.cmd-label {
+  font-size: 0.52rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tp-text-dim);
+  white-space: nowrap;
+  margin-bottom: 0.1rem;
 }
-.empty-title {
-  font-weight: 600;
-  font-size: 0.95rem;
-  color: var(--tp-text) !important;
-  margin-bottom: 0.25rem;
+.cmd-value {
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: var(--tp-text);
+  font-family: var(--tp-font-mono, 'JetBrains Mono', monospace);
+  font-feature-settings: 'tnum' 1;
+  white-space: nowrap;
+  line-height: 1;
 }
-.empty-desc {
-  font-size: 0.85rem;
-  color: var(--tp-text-dim) !important;
+.cmd-dim { color: var(--tp-text-dim); }
+.cmd-sep {
+  width: 1px; height: 1.5rem;
+  background: var(--tp-border);
+  flex-shrink: 0;
 }
 
-/* ===== Right Column: P&L Card ===== */
-.pnl-card {
-  padding: 1.25rem;
+/* ══════════════════════════════════════════════════
+   ROW 1: PERFORMANCE + POSITIONS (most valuable)
+   ══════════════════════════════════════════════════ */
+.row-perf-pos {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.875rem;
+  margin-bottom: 0.875rem;
 }
-.pnl-header {
+@media (min-width: 1024px) {
+  .row-perf-pos {
+    grid-template-columns: 1fr 1.5fr;
+  }
+}
+
+/* ═══ Performance ═══ */
+.perf-card {
+  position: relative;
+  overflow: hidden;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+}
+.perf-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 1rem;
+  align-items: center;
+  margin-bottom: 0.15rem;
 }
-.pnl-title {
-  font-size: 0.95rem;
-  font-weight: 700;
-  margin: 0;
-}
-.pnl-subtitle {
-  font-size: 0.7rem;
-  color: var(--tp-text-dim);
-  margin: 0.15rem 0 0;
-}
-.pnl-total {
-  font-size: 1.5rem;
+.perf-total {
+  font-size: 1.4rem;
   font-weight: 800;
-  font-family: 'Inter', monospace;
+  font-family: var(--tp-font-mono, monospace);
+  line-height: 1;
 }
-
-/* Equity Curve */
+.perf-trades {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--tp-text-dim);
+  font-family: var(--tp-font-mono, monospace);
+  margin-bottom: 0.65rem;
+}
 .equity-chart {
   width: 100%;
-  height: 5rem;
-  margin-bottom: 0.75rem;
+  height: 6rem;
+  margin-bottom: 0.5rem;
   background: var(--tp-bg-surface);
   border-radius: var(--tp-radius-sm);
   overflow: hidden;
 }
-.equity-svg {
-  width: 100%;
-  height: 100%;
-}
+.equity-svg { width: 100%; height: 100%; }
 .equity-empty {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.35rem;
-  padding: 1.5rem;
+  justify-content: center;
+  gap: 0.4rem;
+  height: 6rem;
+  background: var(--tp-bg-surface);
+  border-radius: var(--tp-radius-sm);
+  margin-bottom: 0.5rem;
   color: var(--tp-text-dim);
-  font-size: 0.8rem;
-  text-align: center;
+  font-size: 0.78rem;
 }
-
-/* Trade Bars (mini bar chart of last 20 trades) */
 .trade-bars {
   display: flex;
   align-items: flex-end;
-  gap: 2px;
-  height: 2.5rem;
-  margin-bottom: 0.75rem;
-  padding: 0 2px;
+  gap: 1.5px;
+  height: 2rem;
+  margin-bottom: 0.6rem;
 }
 .trade-bar {
   flex: 1;
-  border-radius: 2px 2px 0 0;
-  min-height: 3px;
+  border-radius: 1.5px 1.5px 0 0;
+  min-height: 2px;
   transition: opacity 0.15s;
   cursor: default;
 }
-.trade-bar:hover { opacity: 0.7; }
-.bar-win { background: #22c55e; }
+.trade-bar:hover { opacity: 0.6; }
+.bar-win  { background: #22c55e; }
 .bar-loss { background: #ef4444; }
 
-/* Stats Grid */
-.pnl-stats-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-}
-.pnl-stat {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.4rem 0;
-  border-bottom: 1px solid var(--tp-border);
-  font-size: 0.78rem;
-}
-.pnl-stat-label { color: var(--tp-text-dim); }
-.pnl-stat-value { font-weight: 700; font-family: 'Inter', monospace; }
-
-.pnl-history-btn {
-  width: 100%;
-  justify-content: center;
-  font-size: 0.8rem;
-}
-
-/* ===== ICT Card ===== */
-.ict-card {
-  padding: 0;
-  overflow: hidden;
-}
-
-/* ===== News Card ===== */
-.news-card {
-  padding: 1.25rem;
-}
-.news-header {
+.perf-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1rem;
+  gap: 1.25rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--tp-border);
+  margin-top: auto;
 }
-.news-header h3 {
-  font-size: 0.95rem;
-  font-weight: 700;
-}
-.news-list {
+.perf-kpi {
   display: flex;
   flex-direction: column;
+  gap: 0.05rem;
+}
+.perf-kpi-label {
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: var(--tp-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.perf-kpi-val {
+  font-size: 0.85rem;
+  font-weight: 800;
+  font-family: var(--tp-font-mono, monospace);
+  color: var(--tp-text);
+}
+.perf-hist-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-radius-sm);
+  color: var(--tp-text-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-family: var(--tp-font);
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.perf-hist-btn:hover { border-color: var(--tp-primary); color: var(--tp-primary); }
+.perf-hist-btn .material-symbols-outlined { font-size: 14px; }
+
+/* ═══ Positions ═══ */
+.positions-card {
+  position: relative;
+  overflow: hidden;
+}
+.pos-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--tp-border);
+}
+.pos-header-right {
+  display: flex;
+  align-items: center;
   gap: 0.75rem;
 }
-.news-item {
-  border-left: 2px solid var(--tp-border);
-  padding-left: 0.75rem;
-  padding: 0.35rem 0 0.35rem 0.75rem;
+.pos-count {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--tp-success);
+  background: rgba(34,197,94,0.1);
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
 }
-.news-item-featured {
-  border-left-color: var(--tp-primary);
-}
-.news-time {
-  font-size: 0.7rem;
-  color: var(--tp-text-dim) !important;
-  margin-bottom: 0.2rem;
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--tp-primary);
+  font-size: 0.72rem;
   font-weight: 600;
+  cursor: pointer;
+  font-family: var(--tp-font);
+  transition: opacity 0.15s;
+}
+.link-btn:hover { opacity: 0.7; text-decoration: underline; }
+.pos-body { padding: 0; }
+.pos-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  gap: 0.25rem;
+}
+.pos-empty-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--tp-text) !important;
+}
+.pos-empty-sub {
+  font-size: 0.78rem;
+  color: var(--tp-text-dim) !important;
+}
+.pos-trade-btn { margin-top: 0.75rem; font-size: 0.8rem; }
+
+/* ══════════════════════════════════════════════════
+   ROW 2: HMM + Sessions (align top)
+   ══════════════════════════════════════════════════ */
+.row-dual {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.875rem;
+  margin-bottom: 0.875rem;
+}
+@media (min-width: 1024px) {
+  .row-dual {
+    grid-template-columns: 1fr 1fr;
+    align-items: stretch;
+  }
+}
+
+/* ══════════════════════════════════════════════════
+   ROW 3: ICT + News (stretch to align bottoms)
+   ══════════════════════════════════════════════════ */
+.row-bottom {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.875rem;
+  margin-bottom: 0.875rem;
+}
+@media (min-width: 1024px) {
+  .row-bottom {
+    grid-template-columns: 1fr 1fr;
+    align-items: stretch;
+  }
+}
+
+/* ═══ HMM wrapper — fill row height ═══ */
+.hmm-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+.hmm-wrapper :deep(.hmm-widget) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ═══ Sessions ═══ */
+.sessions-card {
+  position: relative;
+  overflow: hidden;
+  padding: 1rem;
+}
+.sessions-head { margin-bottom: 0.35rem; }
+
+/* ═══ ICT Scanner ═══ */
+.ict-card {
+  position: relative;
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ict-inner {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--tp-border) transparent;
+}
+
+/* ═══ Market Pulse ═══ */
+.news-card {
+  position: relative;
+  overflow: hidden;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+}
+.news-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+.news-count {
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--tp-text-dim);
+  background: var(--tp-bg-surface);
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+}
+.news-feed {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.news-item {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.4rem 0 0.4rem 0.65rem;
+  border-left: 2px solid var(--tp-border);
+  border-bottom: 1px solid rgba(128,128,128,0.06);
+}
+.news-item:last-child { border-bottom: none; }
+.news-hi { border-left-color: var(--tp-warning); }
+.news-left {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+.news-tag {
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: var(--tp-text-dim);
+  text-transform: uppercase;
+  white-space: nowrap;
+  min-width: 3rem;
+  letter-spacing: 0.02em;
+}
+.news-tag-cal {
+  color: var(--tp-warning);
+}
+.news-impact {
+  font-size: 0.5rem;
+  font-weight: 800;
+  color: var(--tp-danger);
+  background: rgba(239,68,68,0.1);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
 }
 .news-text {
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--tp-text) !important;
-  line-height: 1.4;
+  font-size: 0.78rem;
+  color: var(--tp-text);
+  line-height: 1.35;
 }
 .news-link {
   color: var(--tp-text);
   text-decoration: none;
+  transition: color 0.15s;
 }
-.news-link:hover {
-  color: var(--tp-primary);
-  text-decoration: underline;
+.news-link:hover { color: var(--tp-primary); }
+.news-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem 1rem;
+  color: var(--tp-text-dim);
+  font-size: 0.8rem;
+}
+
+/* ══════════════════════════════════════════════════
+   RESPONSIVE
+   ══════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  .command-bar { flex-direction: column; }
+  .cmd-left {
+    width: 100%;
+    justify-content: center;
+    border-bottom: 1px solid var(--tp-border);
+  }
+  .cmd-metrics { flex-wrap: wrap; padding: 0.25rem; justify-content: center; }
+  .cmd-sep { display: none; }
+  .cmd-metric { min-width: 30%; padding: 0.35rem 0.5rem; }
+  .dashboard-page { padding: 0.5rem 0.75rem 2rem; }
+}
+
+@media (min-width: 769px) and (max-width: 1023px) {
+  .row-perf-pos { grid-template-columns: 1fr 1fr; }
 }
 </style>

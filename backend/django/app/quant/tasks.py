@@ -47,11 +47,13 @@ def _check_global_daily_halt():
     try:
         from datetime import timedelta
         from django.utils import timezone
+        from django.db.models import Sum
         from app.nexus.models import Trade
 
         # --- Cumulative drawdown check: reduce size at -$10k total ---
-        all_closed = Trade.objects.filter(pnl__isnull=False)
-        total_cumulative = sum(t.pnl for t in all_closed)
+        total_cumulative = Trade.objects.filter(
+            pnl__isnull=False,
+        ).aggregate(total=Sum('pnl'))['total'] or 0.0
         if total_cumulative < -DRAWDOWN_REDUCTION_THRESHOLD:
             from app.quant.algorithms.cvd import config as cvd_config
             if cvd_config.CAPITAL_PER_TRADE != DRAWDOWN_REDUCED_CAPITAL:
@@ -71,11 +73,10 @@ def _check_global_daily_halt():
             cutoff = max(reset_ts, timezone.now() - timedelta(hours=24))
         else:
             cutoff = timezone.now() - timedelta(hours=24)
-        closed_trades = Trade.objects.filter(
+        total_pnl = Trade.objects.filter(
             close_time__gte=cutoff,
             pnl__isnull=False,
-        )
-        total_pnl = sum(t.pnl for t in closed_trades)
+        ).aggregate(total=Sum('pnl'))['total'] or 0.0
 
         if total_pnl < -DAILY_MAX_LOSS_USD:
             cache.set('global_daily_halt', round(total_pnl, 2), timeout=86400)
@@ -221,7 +222,7 @@ def _count_open_positions():
             return 0
 
 
-@shared_task(name='quant.tasks.run_quant_entry_algorithm', max_retries=3, soft_time_limit=60)
+@shared_task(name='quant.tasks.run_quant_entry_algorithm', max_retries=3, soft_time_limit=60, time_limit=90)
 def run_quant_entry_algorithm():
     """Multi-strategy entry dispatcher. Runs all active strategies in priority order."""
     if is_bot_paused():
@@ -287,7 +288,7 @@ def run_quant_entry_algorithm():
         logger.error(f"Error in quant entry algorithm: {e}")
 
 
-@shared_task(name='quant.tasks.run_quant_trailing_stop_algorithm', max_retries=3, soft_time_limit=30)
+@shared_task(name='quant.tasks.run_quant_trailing_stop_algorithm', max_retries=3, soft_time_limit=15, time_limit=25)
 def run_quant_trailing_stop_algorithm():
     """Adaptive position management — replaces static trailing stop."""
     if is_bot_paused():
@@ -326,7 +327,7 @@ def _run_legacy_trailing_stop():
         logger.error(f"Error in legacy trailing stop algorithm: {e}")
 
 
-@shared_task(name='quant.tasks.run_quant_close_algorithm', max_retries=3, soft_time_limit=30)
+@shared_task(name='quant.tasks.run_quant_close_algorithm', max_retries=3, soft_time_limit=15, time_limit=25)
 def run_quant_close_algorithm():
     try:
         logger.info("Starting quant close algorithm...")
@@ -337,7 +338,7 @@ def run_quant_close_algorithm():
         logger.error(f"Error in quant close algorithm: {e}")
 
 
-@shared_task(name='quant.tasks.run_regime_scan', soft_time_limit=60)
+@shared_task(name='quant.tasks.run_regime_scan', soft_time_limit=60, time_limit=90)
 def run_regime_scan():
     """Classify market regime for all pairs. Runs every 5 minutes."""
     try:
@@ -349,7 +350,7 @@ def run_regime_scan():
         logger.error(f"Regime scan error: {e}")
 
 
-@shared_task(name='quant.tasks.run_backtest', max_retries=1, soft_time_limit=120)
+@shared_task(name='quant.tasks.run_backtest', max_retries=1, soft_time_limit=120, time_limit=180)
 def run_backtest(strategy_name='SCALPING'):
     if is_bot_paused():
         logger.info("Bot is paused, skipping backtest.")
@@ -368,7 +369,7 @@ def run_backtest(strategy_name='SCALPING'):
         logger.error(f"Error in backtest task: {e}")
 
 
-@shared_task(name='quant.tasks.run_custom_backtest', max_retries=1, soft_time_limit=120)
+@shared_task(name='quant.tasks.run_custom_backtest', max_retries=1, soft_time_limit=120, time_limit=180)
 def run_custom_backtest(custom_strategy_id):
     try:
         from app.nexus.models import CustomStrategy, StrategyConfig, BacktestResult
@@ -422,7 +423,7 @@ def run_custom_backtest(custom_strategy_id):
         logger.error(f"Error in custom backtest task: {e}")
 
 
-@shared_task(name='quant.tasks.run_strategy_evolution', max_retries=0, soft_time_limit=300)
+@shared_task(name='quant.tasks.run_strategy_evolution', max_retries=0, soft_time_limit=300, time_limit=450)
 def run_strategy_evolution():
     """Strategy Evolution Engine — research, generate, backtest, promote/retire strategies."""
     if is_bot_paused():
@@ -442,7 +443,7 @@ def run_strategy_evolution():
         logger.error(f"Strategy evolution error: {e}")
 
 
-@shared_task(name='quant.tasks.run_macro_analysis', max_retries=1, soft_time_limit=60)
+@shared_task(name='quant.tasks.run_macro_analysis', max_retries=1, soft_time_limit=60, time_limit=90)
 def run_macro_analysis():
     """Periodic macro analysis — Claude analyzes news/geopolitics for trading intelligence."""
     try:
@@ -460,7 +461,7 @@ def run_macro_analysis():
         logger.error(f"Macro analysis error: {e}")
 
 
-@shared_task(name='quant.tasks.run_ai_brain', max_retries=1, soft_time_limit=120)
+@shared_task(name='quant.tasks.run_ai_brain', max_retries=1, soft_time_limit=120, time_limit=180)
 def run_ai_brain():
     """Periodic AI Brain analysis — gathers data from all domains and sends to Claude."""
     from app.quant.ai_bot_control import is_ai_brain_paused
@@ -480,36 +481,122 @@ def run_ai_brain():
         logger.error(f"AI Brain error: {e}")
 
 
-@shared_task(name='quant.tasks.fetch_market_pulse', max_retries=1, soft_time_limit=30)
+@shared_task(name='quant.tasks.fetch_market_pulse', max_retries=1, soft_time_limit=30, time_limit=45)
 def fetch_market_pulse():
-    """Fetch forex news and economic calendar from Finnhub, cache in Redis."""
+    """Fetch forex news from Finnhub + RSS feeds, economic calendar from Finnhub."""
     import requests
+    import time
+    from xml.etree import ElementTree as ET
+    from email.utils import parsedate_to_datetime
     from django.conf import settings
     from django.core.cache import cache
 
-    api_key = getattr(settings, 'FINNHUB_API_KEY', os.environ.get('FINNHUB_API_KEY', ''))
-    if not api_key:
-        logger.warning('FINNHUB_API_KEY not configured, skipping market pulse fetch')
-        return
+    FOREX_KEYWORDS = {'forex', 'currency', 'dollar', 'eur', 'gbp', 'jpy', 'aud', 'nzd',
+                      'cad', 'chf', 'gold', 'xau', 'oil', 'fed', 'ecb', 'boj', 'rba',
+                      'fomc', 'nfp', 'cpi', 'gdp', 'inflation', 'rate', 'yield', 'bond',
+                      'treasury', 'dxy', 'fx', 'central bank', 'tariff', 'trade war'}
 
-    # Fetch forex news
+    all_news = []
+
+    # --- Source 1: Finnhub (forex + general filtered) ---
+    api_key = getattr(settings, 'FINNHUB_API_KEY', os.environ.get('FINNHUB_API_KEY', ''))
+    if api_key:
+        for category in ('forex', 'general'):
+            try:
+                resp = requests.get(
+                    'https://finnhub.io/api/v1/news',
+                    params={'category': category, 'token': api_key},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                articles = resp.json()
+                if category == 'general':
+                    # Filter general news for forex/macro relevance
+                    articles = [a for a in articles if any(
+                        kw in (a.get('headline', '') + ' ' + a.get('summary', '')).lower()
+                        for kw in FOREX_KEYWORDS
+                    )][:10]
+                for a in articles:
+                    all_news.append({
+                        'id': a.get('id', 0),
+                        'headline': a.get('headline', ''),
+                        'url': a.get('url', ''),
+                        'source': a.get('source', 'Finnhub'),
+                        'datetime': a.get('datetime', 0),
+                        'category': a.get('category', category),
+                    })
+            except Exception as e:
+                logger.error(f'Market pulse Finnhub {category} fetch failed: {e}')
+
+    # --- Source 2: ForexLive RSS (free, no key) ---
     try:
-        resp = requests.get(
-            'https://finnhub.io/api/v1/news',
-            params={'category': 'forex', 'token': api_key},
-            timeout=10,
-        )
+        resp = requests.get('https://www.forexlive.com/feed', timeout=8,
+                            headers={'User-Agent': 'Mozilla/5.0'})
         resp.raise_for_status()
-        news = resp.json()[:15]  # Latest 15 articles
-        cache.set('market_pulse:news', news, timeout=300)
-        logger.info(f'Market pulse: fetched {len(news)} forex news articles')
+        root = ET.fromstring(resp.content)
+        for item in root.findall('.//item')[:12]:
+            title = item.find('title')
+            link = item.find('link')
+            pub_date = item.find('pubDate')
+            ts = 0
+            if pub_date is not None and pub_date.text:
+                try:
+                    ts = int(parsedate_to_datetime(pub_date.text).timestamp())
+                except Exception:
+                    ts = int(time.time())
+            all_news.append({
+                'id': hash(title.text if title is not None else '') & 0x7FFFFFFF,
+                'headline': title.text if title is not None else '',
+                'url': link.text if link is not None else '',
+                'source': 'ForexLive',
+                'datetime': ts,
+                'category': 'forex',
+            })
     except Exception as e:
-        logger.error(f'Market pulse news fetch failed: {e}')
+        logger.error(f'Market pulse ForexLive RSS failed: {e}')
+
+    # --- Source 3: Investing.com forex RSS (free, no key) ---
+    try:
+        resp = requests.get('https://www.investing.com/rss/news_14.rss', timeout=8,
+                            headers={'User-Agent': 'Mozilla/5.0'})
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        for item in root.findall('.//item')[:8]:
+            title = item.find('title')
+            link = item.find('link')
+            pub_date = item.find('pubDate')
+            ts = 0
+            if pub_date is not None and pub_date.text:
+                try:
+                    ts = int(parsedate_to_datetime(pub_date.text).timestamp())
+                except Exception:
+                    ts = int(time.time())
+            all_news.append({
+                'id': hash(title.text if title is not None else '') & 0x7FFFFFFF,
+                'headline': title.text if title is not None else '',
+                'url': link.text if link is not None else '',
+                'source': 'Investing.com',
+                'datetime': ts,
+                'category': 'forex',
+            })
+    except Exception as e:
+        logger.error(f'Market pulse Investing.com RSS failed: {e}')
+
+    # Deduplicate by headline similarity and sort by recency
+    seen = set()
+    unique_news = []
+    for article in all_news:
+        key = article['headline'].lower().strip()[:60]
+        if key and key not in seen:
+            seen.add(key)
+            unique_news.append(article)
+    unique_news.sort(key=lambda a: a.get('datetime', 0), reverse=True)
+
+    cache.set('market_pulse:news', unique_news[:20], timeout=300)
+    logger.info(f'Market pulse: {len(unique_news)} unique articles from {len(all_news)} total')
 
     # Fetch economic calendar (skip if previously got 403 — requires paid Finnhub plan)
-    if cache.get('market_pulse:calendar_disabled'):
-        pass
-    else:
+    if not cache.get('market_pulse:calendar_disabled') and api_key:
         try:
             today = date.today().isoformat()
             resp = requests.get(
@@ -538,7 +625,7 @@ def fetch_market_pulse():
         logger.error(f'Event guard update failed: {e}')
 
 
-@shared_task(name='quant.tasks.run_ai_brain_executor', max_retries=1, soft_time_limit=60)
+@shared_task(name='quant.tasks.run_ai_brain_executor', max_retries=1, soft_time_limit=60, time_limit=90)
 def run_ai_brain_executor():
     """Execute AI Brain recommendations — the critical feedback loop.
 
@@ -561,7 +648,7 @@ def run_ai_brain_executor():
         logger.error(f"AI Brain Executor error: {e}")
 
 
-@shared_task(name='quant.tasks.run_strategy_orchestrator', max_retries=1, soft_time_limit=60)
+@shared_task(name='quant.tasks.run_strategy_orchestrator', max_retries=1, soft_time_limit=60, time_limit=90)
 def run_strategy_orchestrator():
     """Strategy Orchestrator — dynamically enable/disable strategies based on regime + performance."""
     try:
@@ -571,7 +658,7 @@ def run_strategy_orchestrator():
         logger.error(f"Strategy orchestrator error: {e}")
 
 
-@shared_task(name='quant.tasks.run_ict_scanner', max_retries=1, soft_time_limit=60)
+@shared_task(name='quant.tasks.run_ict_scanner', max_retries=1, soft_time_limit=60, time_limit=90)
 def run_ict_scanner():
     """ICT 5-step institutional entry scanner.
 
@@ -623,6 +710,43 @@ def run_ict_scanner():
         logger.error("ICT scanner task timed out.")
     except Exception as e:
         logger.error(f"ICT scanner error: {e}")
+
+
+@shared_task(name='quant.tasks.handle_realtime_cvd_signal', max_retries=1, soft_time_limit=30, time_limit=45)
+def handle_realtime_cvd_signal(symbol, signal_type, direction):
+    """Fast-path entry triggered by real-time tick-based CVD signal.
+
+    Called by the tick consumer when a new CVD divergence is detected.
+    Runs the entry algorithm immediately instead of waiting for the 60s cycle.
+    """
+    if is_bot_paused():
+        return
+    try:
+        logger.info(f"REALTIME CVD TRIGGER: {symbol} {signal_type} {direction}")
+        # Trigger full entry algorithm — it will pick up the cached signal
+        run_quant_entry_algorithm()
+    except Exception as e:
+        logger.error(f"Realtime CVD signal handler error: {e}")
+
+
+@shared_task(name='quant.tasks.check_tick_consumer_health', max_retries=0, soft_time_limit=10, time_limit=15)
+def check_tick_consumer_health():
+    """Periodic health check for the tick consumer process."""
+    from django.core.cache import cache
+
+    # Check if tick consumer is alive by looking for recent tick data
+    alive = False
+    for symbol in ['EURUSD', 'XAUUSD']:
+        data = cache.get(f'realtime_cvd:{symbol}')
+        if data:
+            alive = True
+            break
+
+    status = cache.get('tick_consumer:status', {})
+    cache.set('tick_consumer:alive', alive, timeout=120)
+
+    if not alive:
+        logger.warning("TICK CONSUMER: No recent real-time CVD data detected. Consumer may be down.")
 
 
 def _cache_ict_scan_results(symbols, setups):
@@ -761,7 +885,7 @@ def _execute_ict_setup(setup):
         logger.warning(f"ICT: order failed for {setup.symbol}: {result}")
 
 
-@shared_task(name='quant.tasks.run_ml_retrain', max_retries=1, soft_time_limit=120)
+@shared_task(name='quant.tasks.run_ml_retrain', max_retries=1, soft_time_limit=120, time_limit=180)
 def run_ml_retrain():
     """Periodic ML model retraining check.
 
@@ -785,7 +909,95 @@ def run_ml_retrain():
         logger.error(f"ML retrain error: {e}")
 
 
-@shared_task(name='quant.tasks.run_strategy_rotation', max_retries=1, soft_time_limit=300)
+@shared_task(name='quant.tasks.run_multi_source_backtest', soft_time_limit=300, time_limit=360)
+def run_multi_source_backtest(strategy_config_id, period_days=90, data_source='auto', walk_forward=True):
+    """Run comprehensive backtest using multi-source data.
+
+    Supports data_source: 'auto' (try Yahoo then MT5 then Finnhub),
+    'mt5', 'yahoo', 'finnhub'. Walk-forward splits data 70/30 for
+    in-sample/out-of-sample validation when enabled.
+    """
+    try:
+        from app.nexus.models import StrategyConfig, CustomStrategy, BacktestResult
+        from app.quant.backtester_generic import GenericBacktester
+
+        strategy_config = StrategyConfig.objects.get(id=strategy_config_id)
+        logger.info(
+            f"Multi-source backtest starting: strategy='{strategy_config.name}', "
+            f"period={period_days}d, source={data_source}, walk_forward={walk_forward}"
+        )
+
+        # Resolve the definition — either from a linked CustomStrategy or a minimal default
+        custom = CustomStrategy.objects.filter(strategy_config=strategy_config).first()
+        if custom:
+            definition = dict(custom.definition)
+        else:
+            # Built-in strategy: build a minimal definition from StrategyConfig
+            definition = {
+                'pairs': ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'XAUUSD'],
+                'timeframe': 'M15',
+                'indicators': [
+                    {'type': 'EMA_CROSSOVER', 'params': {'fast': 9, 'slow': 21}},
+                    {'type': 'RSI', 'params': {'period': 14}},
+                    {'type': 'ATR', 'params': {'period': 14}},
+                ],
+                'entry_rules': {
+                    'long': [{'indicator': 'EMA_CROSSOVER', 'condition': 'eq', 'value': 1}],
+                    'short': [{'indicator': 'EMA_CROSSOVER', 'condition': 'eq', 'value': -1}],
+                },
+                'exit_rules': {'type': 'ATR_BASED', 'params': {'atr_period': 14, 'sl_multiplier': 1.5, 'tp_multiplier': 2.0}},
+            }
+
+        backtester = GenericBacktester(definition, data_source=data_source)
+
+        result = backtester.run(
+            data_source=data_source,
+            period_days=period_days,
+            walk_forward=walk_forward,
+        )
+        result['walk_forward'] = walk_forward
+
+        # Save to BacktestResult
+        BacktestResult.objects.create(
+            strategy=strategy_config,
+            total_trades=result['total_trades'],
+            winning_trades=result['winning_trades'],
+            losing_trades=result['losing_trades'],
+            win_rate=result['win_rate'],
+            total_pnl=result['total_pnl'],
+            profit_factor=result.get('profit_factor'),
+            avg_win=result.get('avg_win'),
+            avg_loss=result.get('avg_loss'),
+            passed=result['passed'],
+            data_source=result.get('data_source', 'AUTO'),
+            period_days=result.get('period_days', period_days),
+            trades=result.get('trades', []),
+            equity_curve=result.get('equity_curve', []),
+            symbol_breakdown=result.get('symbol_breakdown', {}),
+        )
+
+        logger.info(
+            f"Multi-source backtest completed for '{strategy_config.name}': "
+            f"passed={result['passed']}, trades={result['total_trades']}, "
+            f"WR={result['win_rate']:.1%}, sharpe={result.get('sharpe_ratio')}, "
+            f"max_dd={result.get('max_drawdown_pct')}%, source={result.get('data_source')}"
+        )
+
+        return result
+
+    except SoftTimeLimitExceeded:
+        logger.error("Multi-source backtest task timed out.")
+        return {'error': 'Task timed out'}
+    except Exception as e:
+        from app.nexus.models import StrategyConfig as SC
+        if isinstance(e, SC.DoesNotExist):
+            logger.error(f"Multi-source backtest: StrategyConfig id={strategy_config_id} not found")
+            return {'error': f'StrategyConfig {strategy_config_id} not found'}
+        logger.error(f"Multi-source backtest error: {e}")
+        return {'error': str(e)}
+
+
+@shared_task(name='quant.tasks.run_strategy_rotation', max_retries=1, soft_time_limit=300, time_limit=450)
 def run_strategy_rotation(session_name=None):
     """Strategy Auto-Rotator — backtest all strategies and activate top performers.
 

@@ -119,7 +119,7 @@ def _gather_strategies():
         from app.nexus.models import CustomStrategy, BacktestResult
 
         strategies = []
-        for cs in CustomStrategy.objects.all()[:30]:
+        for cs in CustomStrategy.objects.select_related('strategy_config').all()[:30]:
             bt = None
             if cs.strategy_config:
                 bt = BacktestResult.objects.filter(
@@ -172,7 +172,7 @@ def _gather_strategy_performance():
         from app.nexus.models import Trade, CustomStrategy
 
         performance = {}
-        for cs in CustomStrategy.objects.filter(strategy_config__isnull=False)[:20]:
+        for cs in CustomStrategy.objects.select_related('strategy_config').filter(strategy_config__isnull=False)[:20]:
             config = cs.strategy_config
             if not config:
                 continue

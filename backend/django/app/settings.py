@@ -187,6 +187,7 @@ DATABASES = {
         'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'postgres'),
         'HOST': os.getenv('POSTGRES_HOST', 'postgres'),
         'PORT': os.getenv('POSTGRES_PORT', '5432'),
+        'CONN_MAX_AGE': 600,
     }
 }
 
@@ -243,6 +244,10 @@ CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
         'LOCATION': os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0').replace('/0', '/1'),
+        'OPTIONS': {
+            'socket_connect_timeout': 5,
+            'socket_timeout': 5,
+        },
     }
 }
 
@@ -250,6 +255,18 @@ CELERY_BROKER_CONNECTION_RETRY = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True  # To retain existing behavior
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+CELERY_TASK_DEFAULT_QUEUE = 'default'
+CELERY_TASK_ROUTES = {
+    'quant.tasks.run_quant_trailing_stop_algorithm': {'queue': 'critical'},
+    'quant.tasks.run_quant_close_algorithm': {'queue': 'critical'},
+    'quant.tasks.run_quant_entry_algorithm': {'queue': 'critical'},
+    'quant.tasks.run_ict_scanner': {'queue': 'analysis'},
+    'quant.tasks.run_regime_scan': {'queue': 'analysis'},
+    'quant.tasks.run_ai_brain': {'queue': 'analysis'},
+    'quant.tasks.run_strategy_orchestrator': {'queue': 'analysis'},
+    'quant.tasks.run_strategy_rotation': {'queue': 'analysis'},
+    'quant.tasks.run_ml_retrain': {'queue': 'analysis'},
+}
 CELERY_BEAT_SCHEDULE = {
     'run-quant-entry-algorithm': {
         'task': 'quant.tasks.run_quant_entry_algorithm',  # This should match the @shared_task name
@@ -324,6 +341,10 @@ CELERY_BEAT_SCHEDULE = {
     'run-ict-scanner': {
         'task': 'quant.tasks.run_ict_scanner',
         'schedule': 60.0,  # every 1 minute — same as CVD entry
+    },
+    'check-tick-consumer-health': {
+        'task': 'quant.tasks.check_tick_consumer_health',
+        'schedule': 60.0,  # every 1 minute
     },
     'run-strategy-orchestrator': {
         'task': 'quant.tasks.run_strategy_orchestrator',

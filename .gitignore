@@ -98,3 +98,15 @@ config/.wine/
 
 # MCP config (contains API keys)
 .mcp.json
+
+# Claude Code workspace
+.claude/
+.agents/
+CLAUDE.md
+**/CLAUDE.md
+
+# ML model binaries
+ml_models/
+
+# D-Bus session files
+config/.dbus/

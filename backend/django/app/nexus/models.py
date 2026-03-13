@@ -70,6 +70,19 @@ class Trade(models.Model):
     entry_timeframe = models.CharField(max_length=10, blank=True, default='M15')
     entry_atr = models.FloatField(null=True, blank=True)  # ATR at time of entry, for breakeven/trail calculations
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['symbol'], name='idx_trade_symbol'),
+            models.Index(fields=['entry_time'], name='idx_trade_entry_time'),
+            models.Index(fields=['close_time'], name='idx_trade_close_time'),
+            models.Index(fields=['strategy'], name='idx_trade_strategy'),
+            models.Index(fields=['strategy_config'], name='idx_trade_strategy_cfg'),
+            models.Index(fields=['transaction_broker_id'], name='idx_trade_broker_id'),
+            models.Index(fields=['symbol', 'close_time'], name='idx_trade_symbol_close'),
+            models.Index(fields=['strategy_config', 'close_time'], name='idx_trade_stratcfg_close'),
+            models.Index(fields=['close_time', 'pnl'], name='idx_trade_close_pnl'),
+        ]
+
     def __str__(self):
         return f"{self.type} {self.symbol} at {self.entry_price}"
 
