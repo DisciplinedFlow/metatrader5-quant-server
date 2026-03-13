@@ -1526,8 +1526,8 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 )
 
                 if order is not None:
-                    # Update PairLock with actual ticket
-                    order_ticket = order.get('order', 0)
+                    # Update PairLock with deal ticket (matches MT5 position.ticket)
+                    order_ticket = order.get('deal') or order.get('order', 0)
                     PairLock.objects.filter(symbol=pair).update(ticket=order_ticket)
                     positions_opened += 1
 
@@ -1622,6 +1622,17 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
                     except Exception as e:
                         logger.error(f"CVD: Error creating trade record: {e}\n{traceback.format_exc()}")
+                        # Close the MT5 position immediately — without a Trade record
+                        # it becomes an untracked orphan with no risk controls.
+                        try:
+                            from app.utils.api.order import close_full
+                            close_full(order_ticket, pair, 0 if order_type == 'BUY' else 1, order_volume_lots)
+                            logger.warning(
+                                f"CVD: SAFETY CLOSE {pair} ticket={order_ticket} — "
+                                f"Trade record creation failed, closing to prevent orphan"
+                            )
+                        except Exception as close_err:
+                            logger.error(f"CVD: CRITICAL — could not close orphan {pair}: {close_err}")
                 else:
                     # Order failed — release PairLock
                     PairLock.objects.filter(symbol=pair).delete()
