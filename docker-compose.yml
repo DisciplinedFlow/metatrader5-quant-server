@@ -187,7 +187,7 @@ services:
       traefik.http.routers.django-static.middlewares: static-stripprefix@docker
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/')"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -266,7 +266,7 @@ services:
       <<: *default-labels
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/celerybeat.pid"]
+      test: ["CMD", "python", "-c", "import subprocess, sys; result = subprocess.run(['pgrep', '-f', 'celery.*beat'], capture_output=True); sys.exit(0 if result.returncode == 0 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
