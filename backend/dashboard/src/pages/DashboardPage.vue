@@ -21,6 +21,7 @@ const forexLinks = [
   { to: '/forex/chart', label: 'Chart' },
   { to: '/forex/logs', label: 'Logs' },
   { to: '/forex/strategy', label: 'Strategies' },
+  { to: '/forex/performance', label: 'Performance' },
 ]
 
 const positionsStore = usePositionsStore()
@@ -369,6 +370,9 @@ usePolling(() => hmmRegime.fetch(), 30000)
 :global(.container:has(.dashboard-page)) {
   max-width: 1600px !important;
 }
+:global(.container:has(.dashboard-page) .tp-tabs) {
+  max-width: 1600px;
+}
 
 .dashboard-page {
   max-width: 1600px;
@@ -562,7 +566,8 @@ usePolling(() => hmmRegime.fetch(), 30000)
 }
 .equity-chart {
   width: 100%;
-  height: 6rem;
+  flex: 1;
+  min-height: 6rem;
   margin-bottom: 0.5rem;
   background: var(--tp-bg-surface);
   border-radius: var(--tp-radius-sm);
@@ -585,7 +590,7 @@ usePolling(() => hmmRegime.fetch(), 30000)
   display: flex;
   align-items: flex-end;
   gap: 1.5px;
-  height: 2rem;
+  height: 3.5rem;
   margin-bottom: 0.6rem;
 }
 .trade-bar {

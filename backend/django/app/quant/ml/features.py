@@ -79,6 +79,18 @@ FEATURE_NAMES = [
     'hmm_regime_confidence', # HMM posterior probability (0-1)
     'router_size_mult',     # Strategy router sizing multiplier
     'router_min_confluence', # Router's minimum confluence for this regime
+
+    # Performance analytics features (Phase 7 — self-learning edge)
+    'direction_wr_10',       # Win rate for this direction (BUY/SELL), last 10 same-direction trades
+    'duration_ratio',        # avg loser hold time / avg winner hold time — >1 = holding losers too long
+    'mfe_capture_pct',       # avg(PnL / max_profit) for recent winners — exit efficiency (0-1)
+    'edge_ratio',            # avg(max_profit) / avg(|max_drawdown|) — MFE/MAE quality
+    'tp_exit_rate',          # fraction of recent trades closed at TP
+    'sl_exit_rate',          # fraction of recent trades closed at SL
+    'be_move_rate',          # fraction of recent trades where breakeven was moved
+    'partial_close_rate',    # fraction of recent trades with partial closes
+    'p_win_after_win',       # P(win | previous trade was win) — momentum autocorrelation
+    'p_win_after_loss',      # P(win | previous trade was loss) — mean-reversion autocorrelation
 ]
 
 # Selected features for ML model — expands as data grows.
@@ -100,6 +112,15 @@ SELECTED_FEATURES = [
     'htf_bias_aligned',  # ICT: never trade against HTF structure
     'kill_zone_weight',  # Session quality — NY open 2x, Asian 0.3x
     'recent_sweep',      # Liquidity sweep = institutional activity
+    # Phase 7 — Self-learning performance features
+    'dow_sin',               # Day-of-week cyclical (already extracted, now selected)
+    'dow_cos',               # Day-of-week cyclical pair
+    'direction_wr_10',       # Direction-specific edge detection
+    'duration_ratio',        # Holding losers too long signal
+    'mfe_capture_pct',       # Exit timing quality
+    'edge_ratio',            # MFE/MAE — fundamental edge measure
+    'p_win_after_win',       # Serial correlation in outcomes
+    'p_win_after_loss',      # Mean-reversion in outcomes
 ]
 
 SYMBOL_ENCODING = {
@@ -322,6 +343,10 @@ def extract_features(
 
         # --- SMC features (Phase 6) ---
         features.update(_extract_smc_features(symbol, order_type, df))
+
+        # --- Performance analytics features (Phase 7) ---
+        adv_perf = _get_advanced_performance_context(symbol, order_type)
+        features.update(adv_perf)
 
         return features
 
@@ -618,5 +643,101 @@ def _get_performance_context(symbol, strategy_config):
 
     except Exception as e:
         logger.debug(f"Performance context error: {e}")
+
+    return result
+
+
+def _get_advanced_performance_context(symbol, order_type):
+    """Get advanced performance analytics features for ML model.
+
+    These features capture meta-learning signals: how well the bot is performing
+    across different dimensions (direction, duration, exit quality, management).
+    The ML model can learn patterns like 'when losers are held 2x longer than
+    winners AND capture efficiency is low, reduce position size.'
+    """
+    result = {
+        'direction_wr_10': 0.5,
+        'duration_ratio': 1.0,
+        'mfe_capture_pct': 0.0,
+        'edge_ratio': 1.0,
+        'tp_exit_rate': 0.0,
+        'sl_exit_rate': 0.0,
+        'be_move_rate': 0.0,
+        'partial_close_rate': 0.0,
+        'p_win_after_win': 0.5,
+        'p_win_after_loss': 0.5,
+    }
+    try:
+        from app.nexus.models import Trade
+
+        # Single query: last 50 closed trades with all needed fields
+        recent = list(Trade.objects.filter(
+            close_time__isnull=False, pnl__isnull=False,
+        ).order_by('-close_time').values(
+            'pnl', 'type', 'entry_time', 'close_time',
+            'max_profit', 'max_drawdown', 'closing_reason',
+            'breakeven_moved', 'partial_closed',
+        )[:50])
+
+        if not recent:
+            return result
+
+        n = len(recent)
+
+        # --- Direction-specific win rate ---
+        dir_str = 'BUY' if order_type == 'BUY' else 'SELL'
+        dir_trades = [t for t in recent if t['type'] == dir_str][:10]
+        if dir_trades:
+            result['direction_wr_10'] = sum(1 for t in dir_trades if t['pnl'] > 0) / len(dir_trades)
+
+        # --- Duration ratio (losers vs winners hold time) ---
+        with_times = [t for t in recent if t['entry_time'] and t['close_time']][:20]
+        if with_times:
+            def avg_dur(trades):
+                if not trades:
+                    return 0
+                durs = [(t['close_time'] - t['entry_time']).total_seconds() / 60 for t in trades]
+                return sum(durs) / len(durs)
+            win_dur = avg_dur([t for t in with_times if t['pnl'] > 0])
+            loss_dur = avg_dur([t for t in with_times if t['pnl'] <= 0])
+            result['duration_ratio'] = (loss_dur / win_dur) if win_dur > 0 else 1.0
+
+        # --- MFE/MAE metrics ---
+        with_mfe = [t for t in recent if t['max_profit'] is not None and t['max_drawdown'] is not None]
+        if with_mfe:
+            # Capture efficiency: PnL / MFE for winners (how much of the move we keep)
+            mfe_wins = [t for t in with_mfe if t['pnl'] > 0 and t['max_profit'] > 0]
+            if mfe_wins:
+                result['mfe_capture_pct'] = sum(t['pnl'] / t['max_profit'] for t in mfe_wins) / len(mfe_wins)
+            # Edge ratio: avg MFE / avg MAE
+            avg_mfe = sum(t['max_profit'] or 0 for t in with_mfe) / len(with_mfe)
+            avg_mae = sum(abs(t['max_drawdown'] or 0) for t in with_mfe) / len(with_mfe)
+            result['edge_ratio'] = (avg_mfe / avg_mae) if avg_mae > 0 else 1.0
+
+        # --- Exit reason rates ---
+        result['tp_exit_rate'] = sum(1 for t in recent if t.get('closing_reason') == 'TP') / n
+        result['sl_exit_rate'] = sum(1 for t in recent if t.get('closing_reason') == 'SL') / n
+
+        # --- Position management rates ---
+        result['be_move_rate'] = sum(1 for t in recent if t.get('breakeven_moved')) / n
+        result['partial_close_rate'] = sum(1 for t in recent if t.get('partial_closed')) / n
+
+        # --- Conditional probabilities (Markov chain signal) ---
+        pnls = [t['pnl'] for t in reversed(recent)]  # chronological order
+        w_after_w = t_after_w = w_after_l = t_after_l = 0
+        for i in range(1, len(pnls)):
+            if pnls[i - 1] > 0:
+                t_after_w += 1
+                if pnls[i] > 0:
+                    w_after_w += 1
+            else:
+                t_after_l += 1
+                if pnls[i] > 0:
+                    w_after_l += 1
+        result['p_win_after_win'] = (w_after_w / t_after_w) if t_after_w > 0 else 0.5
+        result['p_win_after_loss'] = (w_after_l / t_after_l) if t_after_l > 0 else 0.5
+
+    except Exception as e:
+        logger.debug(f"Advanced performance context error: {e}")
 
     return result

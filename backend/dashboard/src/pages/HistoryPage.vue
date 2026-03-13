@@ -11,6 +11,7 @@ const forexLinks = [
   { to: '/forex/chart', label: 'Chart' },
   { to: '/forex/logs', label: 'Logs' },
   { to: '/forex/strategy', label: 'Strategies' },
+  { to: '/forex/performance', label: 'Performance' },
 ]
 
 const trades = ref([])

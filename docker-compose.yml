@@ -187,7 +187,7 @@ services:
       traefik.http.routers.django-static.middlewares: static-stripprefix@docker
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/bot/status/')"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -228,6 +228,7 @@ services:
       - static_volume:/app/staticfiles
       - quant-logs:/app/logs
       - ./ml_models:/app/ml_models
+      - ~/.ssh:/root/.ssh:ro
     env_file:
       - .env
     depends_on:
@@ -266,7 +267,7 @@ services:
       <<: *default-labels
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "python", "-c", "import subprocess, sys; result = subprocess.run(['pgrep', '-f', 'celery.*beat'], capture_output=True); sys.exit(0 if result.returncode == 0 else 1)"]
+      test: ["CMD", "python", "-c", "import os, sys; sys.exit(0 if any('celery' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore') and 'beat' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore') for p in os.listdir('/proc') if p.isdigit()) else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3

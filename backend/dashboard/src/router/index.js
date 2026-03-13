@@ -84,6 +84,19 @@ const routes = [
     component: () => import('@/pages/MLBrainPage.vue'),
   },
 
+  // --- Performance Analytics ---
+  {
+    path: '/forex/performance',
+    component: () => import('@/pages/PerformancePage.vue'),
+  },
+  { path: '/performance', redirect: '/forex/performance' },
+
+  // --- Settings ---
+  {
+    path: '/settings',
+    component: () => import('@/pages/SettingsPage.vue'),
+  },
+
   // Catch-all
   {
     path: '/:pathMatch(.*)*',

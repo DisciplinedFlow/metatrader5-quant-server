@@ -908,3 +908,134 @@ class BacktestAllView(views.APIView):
             },
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+# ── Training Infrastructure ──────────────────────────────────────────
+
+class TrainingConfigView(views.APIView):
+    """GET/POST training configuration (SSH host, mode, options)."""
+
+    def get(self, request):
+        from .models import TrainingConfig
+        config = TrainingConfig.load()
+        return Response({
+            'mode': config.mode,
+            'ssh_host': config.ssh_host,
+            'ssh_user': config.ssh_user,
+            'ssh_key_path': config.ssh_key_path,
+            'ssh_port': config.ssh_port,
+            'remote_training_dir': config.remote_training_dir,
+            'train_xgboost': config.train_xgboost,
+            'train_llm': config.train_llm,
+            'updated_at': config.updated_at.isoformat() if config.updated_at else None,
+        })
+
+    def post(self, request):
+        from .models import TrainingConfig
+        config = TrainingConfig.load()
+        fields = ['mode', 'ssh_host', 'ssh_user', 'ssh_key_path', 'ssh_port',
+                   'remote_training_dir', 'train_xgboost', 'train_llm']
+        for field in fields:
+            if field in request.data:
+                setattr(config, field, request.data[field])
+        config.save()
+        return Response({'status': 'ok'})
+
+
+class TrainingStartView(views.APIView):
+    """POST to trigger a new training run."""
+
+    def post(self, request):
+        from .models import TrainingConfig, TrainingRun
+
+        # Check if a run is already in progress
+        active = TrainingRun.objects.filter(status__in=['pending', 'running']).first()
+        if active:
+            return Response(
+                {'error': f'Training already in progress (#{active.pk})', 'run_id': active.pk},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        config = TrainingConfig.load()
+        if config.mode == 'remote' and not config.ssh_host:
+            return Response(
+                {'error': 'SSH host not configured. Go to Settings to configure remote training.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Allow overriding what to train
+        train_xgboost = request.data.get('train_xgboost', config.train_xgboost)
+        train_llm = request.data.get('train_llm', config.train_llm)
+
+        run = TrainingRun.objects.create(
+            train_xgboost=train_xgboost,
+            train_llm=train_llm,
+            mode=config.mode,
+        )
+
+        # Dispatch to Celery
+        from app.quant.tasks import run_remote_training
+        run_remote_training.delay(run.pk)
+
+        return Response({'run_id': run.pk, 'status': 'pending'}, status=status.HTTP_202_ACCEPTED)
+
+
+class TrainingStatusView(views.APIView):
+    """GET current/latest training run status with logs."""
+
+    def get(self, request):
+        from .models import TrainingRun
+
+        run_id = request.query_params.get('run_id')
+        if run_id:
+            try:
+                run = TrainingRun.objects.get(pk=run_id)
+            except TrainingRun.DoesNotExist:
+                return Response({'error': 'Run not found'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            run = TrainingRun.objects.first()
+            if not run:
+                return Response({'run': None})
+
+        return Response({
+            'run': {
+                'id': run.pk,
+                'status': run.status,
+                'step': run.step,
+                'mode': run.mode,
+                'train_xgboost': run.train_xgboost,
+                'train_llm': run.train_llm,
+                'started_at': run.started_at.isoformat(),
+                'completed_at': run.completed_at.isoformat() if run.completed_at else None,
+                'error': run.error,
+                'log': run.log,
+                'xgboost_result': run.xgboost_result,
+                'llm_result': run.llm_result,
+            },
+        })
+
+
+class TrainingHistoryView(views.APIView):
+    """GET past training runs."""
+
+    def get(self, request):
+        from .models import TrainingRun
+
+        limit = int(request.query_params.get('limit', 20))
+        runs = TrainingRun.objects.all()[:limit]
+
+        return Response({
+            'runs': [{
+                'id': r.pk,
+                'status': r.status,
+                'step': r.step,
+                'mode': r.mode,
+                'train_xgboost': r.train_xgboost,
+                'train_llm': r.train_llm,
+                'started_at': r.started_at.isoformat(),
+                'completed_at': r.completed_at.isoformat() if r.completed_at else None,
+                'error': r.error,
+                'xgboost_result': r.xgboost_result,
+                'llm_result': r.llm_result,
+            } for r in runs],
+        })

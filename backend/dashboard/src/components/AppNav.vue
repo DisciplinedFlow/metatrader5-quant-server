@@ -11,6 +11,7 @@ const sections = [
   { path: '/crypto', label: 'Crypto' },
   { path: '/ai-brain', label: 'AI Brain' },
   { path: '/ml', label: 'ML' },
+  { path: '/settings', label: 'Settings' },
 ]
 
 const activeSection = computed(() => {
@@ -18,6 +19,7 @@ const activeSection = computed(() => {
   if (p.startsWith('/crypto')) return '/crypto'
   if (p.startsWith('/ai-brain')) return '/ai-brain'
   if (p.startsWith('/ml')) return '/ml'
+  if (p.startsWith('/settings')) return '/settings'
   return '/forex'
 })
 </script>

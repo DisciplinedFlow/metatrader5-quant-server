@@ -58,8 +58,8 @@ CIRCUIT_BREAKER_SYMBOL_LOSSES = 3    # Consecutive losses on same symbol → pau
 CIRCUIT_BREAKER_GLOBAL_LOSSES = 5    # Consecutive losses across all symbols → pause
 CIRCUIT_BREAKER_COOLDOWN_HOURS = 1   # How long to pause after circuit breaker trips
 SYMBOL_FILTER_LOOKBACK = 10          # Trades to check for symbol performance
-SYMBOL_FILTER_MIN_WR = 0.25          # Minimum win rate to continue trading a symbol
-SYMBOL_FILTER_COOLDOWN_HOURS = 2     # How long to skip a poorly-performing symbol
+SYMBOL_FILTER_MIN_WR = 0.35          # Minimum win rate to continue trading a symbol
+SYMBOL_FILTER_COOLDOWN_HOURS = 8     # How long to skip a poorly-performing symbol
 
 # --- TRAINING MODE: full throttle, all filters bypassed ---
 # Bypasses: trading session, high-impact events, circuit breakers,
@@ -67,7 +67,7 @@ SYMBOL_FILTER_COOLDOWN_HOURS = 2     # How long to skip a poorly-performing symb
 # market context gate, ML meta-filter, confluence gates.
 # Only hard guards remain: market closed, no tick data, insufficient bars.
 # Set to False to re-enable all protection gates for live trading.
-TRAINING_MODE = True
+TRAINING_MODE = False
 REGIME_MISMATCH_SIZE_PENALTY = 0.50  # Halve position when regime doesn't match strategy
 GROUP_TENDENCY_SIZE_PENALTY = 0.50   # Halve position when peer pairs disagree with direction
 GROUP_TENDENCY_CACHE_TTL = 300       # Cache correlation check for 5 minutes
@@ -1153,6 +1153,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
             # --- ML Signal Scorer ---
             ml_score, ml_accept, ml_features = 0.5, True, {}
+            llm_result = None  # LLM scorer result (populated after XGBoost gate)
             try:
                 from app.quant.ml.scorer import score_signal
                 tick_info_for_ml = _get_cached_tick(pair)
@@ -1172,6 +1173,45 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     logger.info(f"CVD: ML score={ml_score:.2f} — {ml_reason}")
             except Exception as e:
                 logger.debug(f"ML scoring unavailable: {e}")
+
+            # --- LLM Scorer Gate (second filter after XGBoost) ---
+            # Only runs when XGBoost accepted. LLM can REJECT but never override
+            # a reject to accept. Non-blocking: if Ollama is down, trade proceeds.
+            if ml_accept:
+                try:
+                    from app.quant.ml.llm_scorer import score_with_llm
+                    llm_result = score_with_llm(ml_features, pair, order_type)
+                    if llm_result is not None:
+                        llm_rejected = (
+                            llm_result.decision == 'REJECT'
+                            and llm_result.confidence > 70
+                        )
+                        if llm_rejected and not TRAINING_MODE:
+                            logger.info(
+                                f"CVD: LLM REJECT {pair} {order_type} "
+                                f"confidence={llm_result.confidence}% "
+                                f"model={llm_result.model_used} "
+                                f"latency={llm_result.latency_ms:.0f}ms — "
+                                f"{llm_result.reasoning}"
+                            )
+                            _store_rejected_features(pair, ml_score, ml_features)
+                            continue
+                        elif llm_rejected:
+                            logger.info(
+                                f"CVD: TRAINING MODE — LLM would reject {pair} {order_type} "
+                                f"confidence={llm_result.confidence}%, taking anyway"
+                            )
+                        else:
+                            logger.info(
+                                f"CVD: LLM {llm_result.decision} {pair} {order_type} "
+                                f"confidence={llm_result.confidence}% "
+                                f"model={llm_result.model_used} "
+                                f"latency={llm_result.latency_ms:.0f}ms"
+                            )
+                    else:
+                        logger.debug(f"CVD: LLM scorer returned None for {pair}, proceeding with XGBoost-only")
+                except Exception as e:
+                    logger.debug(f"LLM scoring unavailable: {e}")
 
             # --- Confluence Scorer (quantifies setup quality 0-11) ---
             confluence_score = None
@@ -1582,12 +1622,21 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                             # Store ML features linked to this trade
                             try:
                                 from app.nexus.models import TradeFeature
-                                TradeFeature.objects.create(
+                                tf_kwargs = dict(
                                     trade=trade_obj,
                                     features_json=ml_features,
                                     ml_score=ml_score,
                                     ml_accepted=ml_accept,
                                 )
+                                if llm_result is not None:
+                                    tf_kwargs.update(
+                                        llm_decision=llm_result.decision,
+                                        llm_confidence=llm_result.confidence,
+                                        llm_reasoning=llm_result.reasoning[:500],
+                                        llm_model=llm_result.model_used,
+                                        llm_latency_ms=llm_result.latency_ms,
+                                    )
+                                TradeFeature.objects.create(**tf_kwargs)
                                 logger.info(f"CVD: ML features stored for trade #{trade_obj.id}")
                             except Exception as e:
                                 logger.warning(f"CVD: Could not save ML features: {e}")

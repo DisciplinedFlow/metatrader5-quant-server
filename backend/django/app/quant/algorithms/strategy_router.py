@@ -113,6 +113,30 @@ STRATEGY_POOL = {
         'type': 'breakout',
         'min_confluence': 5,
     },
+    'CVD Extremes Scanner': {
+        'preferred_regimes': ['VOLATILE'],
+        'acceptable_regimes': ['TRENDING', 'RANGING'],
+        'type': 'extremes',
+        'min_confluence': 4,
+    },
+    'ICT BOS Continuation + FVG': {
+        'preferred_regimes': ['TRENDING'],
+        'acceptable_regimes': ['RANGING'],
+        'type': 'structure',
+        'min_confluence': 6,
+    },
+    'ICT Market Structure + FVG': {
+        'preferred_regimes': ['TRENDING'],
+        'acceptable_regimes': ['VOLATILE'],
+        'type': 'structure',
+        'min_confluence': 6,
+    },
+    'SMC Confluence Liquidity Sweep H4 Majors': {
+        'preferred_regimes': ['TRENDING'],
+        'acceptable_regimes': ['RANGING'],
+        'type': 'structure',
+        'min_confluence': 7,
+    },
 }
 
 

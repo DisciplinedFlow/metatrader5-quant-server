@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView, ICTScanView, MLStatusView, MLPredictionsView, MLBackfillLLMView, ConfluenceScoreView, HMMRegimeView, RotationLogView, FinnhubEconomicCalendarView, FinnhubMarketNewsView, FinnhubCandlesView, FinnhubIndicatorsView, MultiSourceBacktestView, BacktestAllView
+from .views import TradeViewSet, SendMarketOrderView, ModifySLTPView, LogsView, StrategyViewSet, CustomStrategyViewSet, BotControlView, YahooDataView, AIBrainControlView, AIBrainLogsView, MarketPulseView, MarketRegimeView, PairLocksView, ICTScanView, MLStatusView, MLPredictionsView, MLBackfillLLMView, ConfluenceScoreView, HMMRegimeView, RotationLogView, FinnhubEconomicCalendarView, FinnhubMarketNewsView, FinnhubCandlesView, FinnhubIndicatorsView, MultiSourceBacktestView, BacktestAllView, TrainingConfigView, TrainingStartView, TrainingStatusView, TrainingHistoryView
 
 router = DefaultRouter()
 router.register(r'trades', TradeViewSet)
@@ -32,4 +32,8 @@ urlpatterns = [
     path('finnhub/indicators/', FinnhubIndicatorsView.as_view(), name='finnhub-indicators'),
     path('backtest/run/', MultiSourceBacktestView.as_view(), name='backtest-run'),
     path('backtest/all/', BacktestAllView.as_view(), name='backtest-all'),
+    path('training/config/', TrainingConfigView.as_view(), name='training-config'),
+    path('training/start/', TrainingStartView.as_view(), name='training-start'),
+    path('training/status/', TrainingStatusView.as_view(), name='training-status'),
+    path('training/history/', TrainingHistoryView.as_view(), name='training-history'),
 ]

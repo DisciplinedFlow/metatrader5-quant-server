@@ -271,6 +271,7 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.run_strategy_orchestrator': {'queue': 'analysis'},
     'quant.tasks.run_strategy_rotation': {'queue': 'analysis'},
     'quant.tasks.run_ml_retrain': {'queue': 'analysis'},
+    'quant.tasks.run_llm_retrain': {'queue': 'analysis'},
 }
 CELERY_BEAT_SCHEDULE = {
     'run-quant-entry-algorithm': {
@@ -343,6 +344,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.run_ml_retrain',
         'schedule': 60.0 * 30,  # every 30 minutes
     },
+    # 'run-llm-retrain': {
+    #     'task': 'quant.tasks.run_llm_retrain',
+    #     'schedule': crontab(hour=3, minute=0),  # daily at 03:00 UTC (off-market hours)
+    # },
     'run-ict-scanner': {
         'task': 'quant.tasks.run_ict_scanner',
         'schedule': 60.0,  # every 1 minute — same as CVD entry

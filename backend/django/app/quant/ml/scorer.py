@@ -53,15 +53,35 @@ def score_signal(symbol, order_type, df, atr_val,
         # Handle NaN
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Handle feature count mismatch (model trained with fewer features)
-        model_n_features = getattr(model, 'n_features_in_', None) or getattr(model, 'n_features_', None)
+        # Handle feature count mismatch (old model vs new feature set)
+        # sklearn-compatible attrs first, then XGBoost native API
+        model_n_features = (
+            getattr(model, 'n_features_in_', None)
+            or getattr(model, 'n_features_', None)
+        )
+        if model_n_features is None:
+            # XGBoost native: .num_features() returns the training feature count
+            try:
+                model_n_features = model.get_booster().num_features()
+            except (AttributeError, TypeError):
+                pass
+
         if model_n_features and X.shape[1] != model_n_features:
-            # Truncate to what the model expects (new features at end)
-            X = X[:, :model_n_features]
-            logger.debug(
-                f"ML: Truncated features from {len(SELECTED_FEATURES)} to {model_n_features} "
-                f"for backward compat (retrain will use full set)"
-            )
+            if X.shape[1] > model_n_features:
+                # Old model, new features: truncate (new features appended at end)
+                X = X[:, :model_n_features]
+                logger.warning(
+                    f"ML: Truncated feature vector from {len(SELECTED_FEATURES)} to "
+                    f"{model_n_features} for backward compat (retrain will use full set)"
+                )
+            else:
+                # Model expects more features than provided (shouldn't happen, safety net)
+                pad_width = model_n_features - X.shape[1]
+                X = np.hstack([X, np.zeros((X.shape[0], pad_width))])
+                logger.warning(
+                    f"ML: Padded feature vector from {X.shape[1] - pad_width} to "
+                    f"{model_n_features} with zeros (model expects more features than available)"
+                )
 
         # Get probability of winning
         probabilities = model.predict_proba(X)[0]
@@ -100,11 +120,11 @@ def _get_threshold(trade_count):
     if trade_count < 50:
         return 0.0   # No filtering
     elif trade_count < 200:
-        return 0.40   # Permissive
+        return 0.35   # Permissive
     elif trade_count < 500:
-        return 0.50   # Balanced
+        return 0.40   # Balanced — data shows 0.40 is optimal cutoff
     else:
-        return 0.55   # Confident
+        return 0.45   # Confident
 
 
 def _explain_score(features, ml_meta, score, threshold):

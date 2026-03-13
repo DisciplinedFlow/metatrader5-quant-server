@@ -2,6 +2,7 @@ const api = {
   async _fetch(url, options = {}) {
     const defaults = {
       headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
     }
     const merged = { ...defaults, ...options }
     merged.headers = { ...defaults.headers, ...options.headers }
@@ -358,6 +359,34 @@ const api = {
 
   getFinnhubIndicators(symbol, resolution = '60') {
     return this.django(`v1/finnhub/indicators/?symbol=${encodeURIComponent(symbol)}&resolution=${resolution}`)
+  },
+  // --- Training Infrastructure API ---
+
+  getTrainingConfig() {
+    return this.django('v1/training/config/')
+  },
+
+  updateTrainingConfig(data) {
+    return this.django('v1/training/config/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  startTraining(options = {}) {
+    return this.django('v1/training/start/', {
+      method: 'POST',
+      body: JSON.stringify(options),
+    })
+  },
+
+  getTrainingStatus(runId) {
+    const qs = runId ? `?run_id=${runId}` : ''
+    return this.django(`v1/training/status/${qs}`)
+  },
+
+  getTrainingHistory(limit = 20) {
+    return this.django(`v1/training/history/?limit=${limit}`)
   },
 }
 

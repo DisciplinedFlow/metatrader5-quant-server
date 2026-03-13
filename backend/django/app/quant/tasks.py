@@ -885,6 +885,130 @@ def _execute_ict_setup(setup):
         logger.warning(f"ICT: order failed for {setup.symbol}: {result}")
 
 
+@shared_task(name='quant.tasks.run_llm_retrain', max_retries=1, soft_time_limit=120, time_limit=180)
+def run_llm_retrain():
+    """Daily LLM retraining monitor — checks data growth and triggers host-side fine-tuning.
+
+    The actual fine-tuning (MLX LoRA) CANNOT run inside Docker (no Metal GPU access).
+    This task's responsibilities:
+    1. Check if Ollama is reachable on the host
+    2. Count new training examples since last retrain
+    3. If enough new examples (50+), export JSONL to host-accessible path
+    4. Create a trigger file that a host-side cron/launchd can pick up
+    5. Report status to Redis for dashboard visibility
+    """
+    from django.core.cache import cache
+    import requests
+
+    OLLAMA_HOST = 'http://host.docker.internal:11434'
+    TRIGGER_DIR = '/app/ml_models/llm_training_data'
+    TRIGGER_FILE = os.path.join(TRIGGER_DIR, 'retrain_trigger.json')
+    JSONL_PATH = os.path.join(TRIGGER_DIR, 'trade_analyses.jsonl')
+
+    status = {
+        'ollama_reachable': False,
+        'total_examples': 0,
+        'new_since_last': 0,
+        'retrain_needed': False,
+        'trigger_created': False,
+        'error': None,
+    }
+
+    try:
+        # --- Step 1: Check if Ollama is reachable ---
+        try:
+            resp = requests.get(f'{OLLAMA_HOST}/api/tags', timeout=5)
+            status['ollama_reachable'] = resp.status_code == 200
+            if status['ollama_reachable']:
+                models = [m.get('name', '') for m in resp.json().get('models', [])]
+                status['ollama_models'] = models
+                logger.info(f"LLM retrain: Ollama reachable, models: {models}")
+            else:
+                logger.warning(f"LLM retrain: Ollama returned status {resp.status_code}")
+        except requests.exceptions.ConnectionError:
+            logger.info("LLM retrain: Ollama not reachable at host.docker.internal:11434")
+        except Exception as e:
+            logger.warning(f"LLM retrain: Ollama check failed: {e}")
+
+        # --- Step 2: Count training examples ---
+        from app.quant.ml.data_collector import get_training_data_stats
+        stats = get_training_data_stats()
+        status['total_examples'] = stats['total_examples']
+        status['wins'] = stats.get('wins', 0)
+        status['losses'] = stats.get('losses', 0)
+        status['file_size_kb'] = stats.get('file_size_kb', 0)
+
+        # Compare against last retrain count
+        from app.quant.ml.llm_config import RETRAIN_MIN_NEW_TRADES
+        last_retrain_count = cache.get('llm_retrain:last_count', 0)
+        status['new_since_last'] = stats['total_examples'] - last_retrain_count
+
+        logger.info(
+            f"LLM retrain: {stats['total_examples']} total examples "
+            f"({status['new_since_last']} new since last retrain), "
+            f"wins={stats.get('wins', 0)}, losses={stats.get('losses', 0)}"
+        )
+
+        # --- Step 3: Check if retrain threshold met ---
+        if status['new_since_last'] < RETRAIN_MIN_NEW_TRADES:
+            logger.info(
+                f"LLM retrain: only {status['new_since_last']} new examples, "
+                f"need {RETRAIN_MIN_NEW_TRADES}. Skipping."
+            )
+            cache.set('llm_retrain:status', status, timeout=86400)
+            return status
+
+        status['retrain_needed'] = True
+        logger.info(
+            f"LLM retrain: {status['new_since_last']} new examples >= "
+            f"{RETRAIN_MIN_NEW_TRADES} threshold. Preparing retrain trigger."
+        )
+
+        # --- Step 4: Export JSONL and create trigger file ---
+        # The JSONL is already written incrementally by data_collector.py to TRIGGER_DIR.
+        # Verify it exists and is non-empty.
+        if not os.path.exists(JSONL_PATH):
+            status['error'] = 'JSONL file not found at expected path'
+            logger.error(f"LLM retrain: {status['error']}: {JSONL_PATH}")
+            cache.set('llm_retrain:status', status, timeout=86400)
+            return status
+
+        # Create trigger file for host-side cron/launchd to pick up
+        import json
+        from datetime import datetime as dt
+        trigger_data = {
+            'trigger_time': dt.now().isoformat(),
+            'total_examples': stats['total_examples'],
+            'new_examples': status['new_since_last'],
+            'wins': stats.get('wins', 0),
+            'losses': stats.get('losses', 0),
+            'file_size_kb': stats.get('file_size_kb', 0),
+            'jsonl_path': JSONL_PATH,
+            'status': 'PENDING',
+        }
+
+        os.makedirs(TRIGGER_DIR, exist_ok=True)
+        with open(TRIGGER_FILE, 'w') as f:
+            json.dump(trigger_data, f, indent=2)
+
+        status['trigger_created'] = True
+        logger.info(
+            f"LLM retrain: trigger file created at {TRIGGER_FILE}. "
+            f"Host-side script should pick this up and run MLX LoRA fine-tuning."
+        )
+
+        # Update the last retrain count so we don't re-trigger next cycle
+        cache.set('llm_retrain:last_count', stats['total_examples'], timeout=None)
+
+    except Exception as e:
+        status['error'] = str(e)
+        logger.error(f"LLM retrain error: {e}")
+
+    # Cache status for dashboard visibility
+    cache.set('llm_retrain:status', status, timeout=86400)
+    return status
+
+
 @shared_task(name='quant.tasks.run_ml_retrain', max_retries=1, soft_time_limit=120, time_limit=180)
 def run_ml_retrain():
     """Periodic ML model retraining check.
@@ -907,6 +1031,27 @@ def run_ml_retrain():
             logger.debug("ML retrain: not enough new trades since last training")
     except Exception as e:
         logger.error(f"ML retrain error: {e}")
+
+
+@shared_task(name='quant.tasks.run_remote_training', soft_time_limit=7200, time_limit=7500)
+def run_remote_training(run_id):
+    """Execute remote ML training pipeline (SSH+rsync to training machine)."""
+    try:
+        from app.quant.ml.remote_trainer import execute_training
+        execute_training(run_id)
+    except Exception as e:
+        logger.error(f"Remote training error: {e}")
+        from app.nexus.models import TrainingRun
+        from django.utils import timezone
+        try:
+            run = TrainingRun.objects.get(pk=run_id)
+            run.status = 'failed'
+            run.error = str(e)
+            run.completed_at = timezone.now()
+            run.save(update_fields=['status', 'error', 'completed_at'])
+            run.append_log(f"FATAL: {e}")
+        except TrainingRun.DoesNotExist:
+            pass
 
 
 @shared_task(name='quant.tasks.run_multi_source_backtest', soft_time_limit=300, time_limit=360)

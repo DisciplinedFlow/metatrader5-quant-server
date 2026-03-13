@@ -227,6 +227,11 @@ class TradeFeature(models.Model):
     features_json = models.JSONField(default=dict)
     ml_score = models.FloatField(null=True, blank=True)  # Score at entry (0-1)
     ml_accepted = models.BooleanField(null=True, blank=True)  # Whether ML accepted the trade
+    llm_decision = models.CharField(max_length=10, null=True, blank=True)  # 'ACCEPT' or 'REJECT'
+    llm_confidence = models.IntegerField(null=True, blank=True)  # 0-100
+    llm_reasoning = models.TextField(null=True, blank=True)
+    llm_model = models.CharField(max_length=100, null=True, blank=True)
+    llm_latency_ms = models.FloatField(null=True, blank=True)
     actual_win = models.BooleanField(null=True, blank=True)  # Set after trade closes
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -293,3 +298,77 @@ class RotationLog(models.Model):
 
     def __str__(self):
         return f"Rotation {self.session_name} @ {self.timestamp}"
+
+
+class TrainingConfig(models.Model):
+    """Singleton config for remote ML training infrastructure."""
+    MODE_CHOICES = [
+        ('remote', 'Remote (SSH)'),
+        ('local', 'Local'),
+    ]
+
+    mode = models.CharField(max_length=20, default='remote', choices=MODE_CHOICES)
+    ssh_host = models.CharField(max_length=255, blank=True, help_text='IP or hostname of training machine')
+    ssh_user = models.CharField(max_length=100, blank=True)
+    ssh_key_path = models.CharField(max_length=500, blank=True, default='~/.ssh/id_ed25519')
+    ssh_port = models.IntegerField(default=22)
+    remote_training_dir = models.CharField(max_length=500, default='~/quant-training')
+    train_xgboost = models.BooleanField(default=True)
+    train_llm = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Training Configuration'
+
+    def __str__(self):
+        return f"Training Config ({self.mode}): {self.ssh_user}@{self.ssh_host}"
+
+    @classmethod
+    def load(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+
+class TrainingRun(models.Model):
+    """Tracks each training execution with full logs."""
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('running', 'Running'),
+        ('success', 'Success'),
+        ('failed', 'Failed'),
+    ]
+
+    STEP_CHOICES = [
+        ('queued', 'Queued'),
+        ('exporting', 'Exporting data'),
+        ('syncing_data', 'Syncing data to remote'),
+        ('training_xgboost', 'Training XGBoost'),
+        ('training_llm', 'Training LLM'),
+        ('syncing_models', 'Syncing models back'),
+        ('loading_models', 'Loading models'),
+        ('done', 'Done'),
+    ]
+
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    step = models.CharField(max_length=30, choices=STEP_CHOICES, default='queued')
+    mode = models.CharField(max_length=20, default='remote')
+    train_xgboost = models.BooleanField(default=True)
+    train_llm = models.BooleanField(default=True)
+    xgboost_result = models.JSONField(null=True, blank=True)
+    llm_result = models.JSONField(null=True, blank=True)
+    error = models.TextField(blank=True, default='')
+    log = models.TextField(blank=True, default='')
+
+    class Meta:
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f"Training #{self.pk} ({self.status}) — {self.started_at:%Y-%m-%d %H:%M}"
+
+    def append_log(self, message):
+        from django.utils import timezone
+        ts = timezone.now().strftime('%H:%M:%S')
+        self.log += f"[{ts}] {message}\n"
+        self.save(update_fields=['log'])
