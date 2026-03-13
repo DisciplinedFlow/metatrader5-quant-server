@@ -39,13 +39,60 @@ MODEL_DIR = '/app/ml_models'
 MIN_TRADES_TO_TRAIN = 30
 RETRAIN_AFTER_N_NEW = 10
 
+# --- Quality gates for training data ---
+# Market Wizards (Kovner): "The best trades have multiple reasons"
+# Only train on trades that passed minimum confluence and came from viable strategies.
+MIN_CONFLUENCE_FOR_TRAINING = 3
+
+# Strategies excluded from training — historically destructive or deactivated.
+# These contaminate the model with patterns from setups we'd never take again.
+EXCLUDED_STRATEGIES = {
+    'CVD_Bollinger Squeeze Breakout M15',
+    'CVD_RSI Mean Reversion M15',
+    'CVD_EMA Cross + RSI Scalper',
+    'CVD_GBPUSD Asian Sweep Fade',
+    'CVD_CVD Multi-Timeframe Analysis',
+    'CVD_CVD Pattern Training',
+    'CVD_Orphan_Recovered',
+    'CVD_SMC Full Confluence',
+}
+
+
+def _passes_quality_gate(tf):
+    """Check if a TradeFeature record meets quality standards for training.
+
+    Filters out:
+    - Trades with low/zero confluence (noise, no setup alignment)
+    - Trades from excluded strategies (historically destructive)
+    - Trades during circuit breaker cooldown (revenge trading patterns)
+
+    Market Wizards principle: only learn from setups you'd actually take.
+    Livermore: "There is nothing like losing all you have to teach you what not to do."
+    """
+    feat_dict = tf.features_json if isinstance(tf.features_json, dict) else json.loads(tf.features_json)
+
+    # Gate 1: Minimum confluence — Kovner's "multiple reasons" principle
+    confluence = feat_dict.get('confluence_score', 0)
+    if confluence < MIN_CONFLUENCE_FOR_TRAINING:
+        return False, feat_dict
+
+    # Gate 2: Exclude poisonous strategies
+    strategy = tf.trade.strategy if tf.trade else ''
+    if strategy in EXCLUDED_STRATEGIES:
+        return False, feat_dict
+
+    return True, feat_dict
+
 
 def train_model():
-    """Train or retrain the ML model on all available trade data.
+    """Train or retrain the ML model on quality-filtered trade data.
 
     Tries XGBoost first (best for small financial datasets), falls back
     to LightGBM, then sklearn. Uses walk-forward validation for financial
     data (older data trains, recent data validates — no future leakage).
+
+    Quality gates filter out low-confluence and bad-strategy trades so the
+    model only learns from setups we'd actually take going forward.
     """
     from app.nexus.models import TradeFeature, MLModel
 
@@ -53,22 +100,28 @@ def train_model():
     features_qs = TradeFeature.objects.filter(
         actual_win__isnull=False,
         features_json__isnull=False,
-    ).exclude(features_json={}).order_by('created_at')
+    ).exclude(features_json={}).select_related('trade').order_by('created_at')
 
-    count = features_qs.count()
-    if count < MIN_TRADES_TO_TRAIN:
-        logger.info(f"ML Trainer: Only {count} trades, need {MIN_TRADES_TO_TRAIN}. Skipping.")
+    raw_count = features_qs.count()
+    if raw_count < MIN_TRADES_TO_TRAIN:
+        logger.info(f"ML Trainer: Only {raw_count} trades, need {MIN_TRADES_TO_TRAIN}. Skipping.")
         return None
 
     X_list = []
     y_list = []
+    skipped = 0
     for tf in features_qs:
         try:
-            feat_dict = tf.features_json if isinstance(tf.features_json, dict) else json.loads(tf.features_json)
+            passes, feat_dict = _passes_quality_gate(tf)
+            if not passes:
+                skipped += 1
+                continue
             X_list.append(features_to_array(feat_dict))
             y_list.append(1 if tf.actual_win else 0)
         except Exception as e:
             logger.debug(f"Skipping trade feature {tf.id}: {e}")
+
+    logger.info(f"ML Trainer: {len(X_list)} quality trades from {raw_count} total ({skipped} filtered out)")
 
     if len(X_list) < MIN_TRADES_TO_TRAIN:
         return None
@@ -197,29 +250,42 @@ def _build_model(X, y):
     """Build the best available model. XGBoost > LightGBM > sklearn.
 
     Returns (model, model_type, params_dict).
+
+    Hyperparams tuned for financial data with low signal-to-noise:
+    - Shallow trees (max_depth 3) to force generalization over memorization
+    - Heavy regularization (alpha, lambda) to penalize complexity
+    - Low subsample/colsample to decorrelate trees (bagging effect)
+    - Fewer estimators with early-stopping mindset
+
+    Kovner: "Undertrade, undertrade, undertrade" — same for model complexity.
+    Lopez de Prado (AFML): financial datasets need extreme regularization.
     """
     n = len(X)
     win_rate = sum(y) / len(y) if len(y) > 0 else 0.5
     scale_pos = (1 - win_rate) / win_rate if win_rate > 0 else 1.0
 
-    # Adaptive hyperparams based on dataset size
+    # Aggressive regularization — force the model to find simple patterns only.
+    # Shallow depth + high lambda = model can only learn strong, generalizable signals.
     if n < 100:
         base_params = {
-            'n_estimators': 100, 'max_depth': 4, 'learning_rate': 0.05,
-            'subsample': 0.8, 'colsample_bytree': 0.8,
-            'reg_alpha': 0.1, 'reg_lambda': 1.0,
+            'n_estimators': 50, 'max_depth': 2, 'learning_rate': 0.05,
+            'subsample': 0.6, 'colsample_bytree': 0.6,
+            'reg_alpha': 1.0, 'reg_lambda': 5.0,
+            'min_child_samples': 10,
         }
     elif n < 500:
         base_params = {
-            'n_estimators': 200, 'max_depth': 5, 'learning_rate': 0.05,
-            'subsample': 0.8, 'colsample_bytree': 0.8,
-            'reg_alpha': 0.1, 'reg_lambda': 1.0,
+            'n_estimators': 80, 'max_depth': 3, 'learning_rate': 0.03,
+            'subsample': 0.6, 'colsample_bytree': 0.6,
+            'reg_alpha': 1.0, 'reg_lambda': 5.0,
+            'min_child_samples': 15,
         }
     else:
         base_params = {
-            'n_estimators': 300, 'max_depth': 6, 'learning_rate': 0.03,
-            'subsample': 0.7, 'colsample_bytree': 0.7,
-            'reg_alpha': 0.3, 'reg_lambda': 2.0,
+            'n_estimators': 120, 'max_depth': 3, 'learning_rate': 0.02,
+            'subsample': 0.5, 'colsample_bytree': 0.5,
+            'reg_alpha': 2.0, 'reg_lambda': 8.0,
+            'min_child_samples': 20,
         }
 
     # Try XGBoost first
@@ -242,15 +308,8 @@ def _build_model(X, y):
     # Fall back to LightGBM
     try:
         import lightgbm as lgb
-        lgb_extra = {'num_leaves': min(31, 2 ** base_params['max_depth'] - 1)}
-        if n < 100:
-            lgb_extra['min_child_samples'] = 5
-            lgb_extra['num_leaves'] = 15
-        elif n < 500:
-            lgb_extra['min_child_samples'] = 10
-        else:
-            lgb_extra['min_child_samples'] = 20
-            lgb_extra['num_leaves'] = 63
+        # num_leaves = 2^max_depth - 1, capped low to prevent memorization
+        lgb_extra = {'num_leaves': min(7, 2 ** base_params['max_depth'] - 1)}
 
         params = {**base_params, **lgb_extra, 'is_unbalanced': True, 'random_state': 42, 'verbose': -1}
         model = lgb.LGBMClassifier(**params)
