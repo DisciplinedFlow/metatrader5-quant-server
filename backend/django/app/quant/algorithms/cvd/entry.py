@@ -62,7 +62,7 @@ SYMBOL_FILTER_MIN_WR = 0.35          # Minimum win rate to continue trading a sy
 SYMBOL_FILTER_COOLDOWN_HOURS = 8     # How long to skip a poorly-performing symbol
 
 # --- Anti-Churn (prevent re-entering same dying signal, allow fresh setups) ---
-SYMBOL_COOLDOWN_MINUTES = 15         # Min wait after closing a trade on same symbol
+SYMBOL_COOLDOWN_SECONDS = 30          # Min wait after closing a trade on same symbol
 SIGNAL_LOOKBACK = 3                  # Check last N completed bars (balance freshness vs coverage)
 
 # --- TRAINING MODE: full throttle, all filters bypassed ---
@@ -625,7 +625,7 @@ def _check_symbol_cooldown(symbol):
         from django.core.cache import cache
         cooldown_key = f'trade_cooldown:{symbol}'
         if cache.get(cooldown_key):
-            return False, f"Symbol {symbol} in cooldown ({SYMBOL_COOLDOWN_MINUTES}min post-trade)"
+            return False, f"Symbol {symbol} in cooldown ({SYMBOL_COOLDOWN_SECONDS}s post-trade)"
     except Exception as e:
         logger.debug(f"Cooldown check failed for {symbol}: {e}")
     return True, ""
@@ -638,7 +638,7 @@ def _set_symbol_cooldown(symbol):
         cache.set(
             f'trade_cooldown:{symbol}',
             True,
-            timeout=SYMBOL_COOLDOWN_MINUTES * 60,
+            timeout=SYMBOL_COOLDOWN_SECONDS,
         )
     except Exception as e:
         logger.debug(f"Failed to set cooldown for {symbol}: {e}")
