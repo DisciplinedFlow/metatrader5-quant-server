@@ -127,10 +127,16 @@ def manage_positions():
 
 def _manage_single_position(position):
     """Apply all management phases to a single position."""
-    # 1. Look up the Trade record in Django
+    # 0. Orphan protection — close positions with no Trade record if losing
     trade_data = get_trade_with_mutations(position.ticket)
     if trade_data is None:
-        logger.debug(f"Position manager: No trade record for ticket {position.ticket}, skipping")
+        if position.profit < -MAX_LOSS_PER_TRADE_USD:
+            result = close_full(position.ticket, position.symbol, position.type, position.volume)
+            if result is not None:
+                logger.warning(
+                    f"ORPHAN CLOSED: {position.symbol} ticket={position.ticket} "
+                    f"no trade record, loss=${position.profit:.2f} exceeded ${MAX_LOSS_PER_TRADE_USD} ceiling"
+                )
         return
 
     trade = trade_data.get("trade")
