@@ -103,6 +103,11 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
+        'position_manager': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
     },
 }
 

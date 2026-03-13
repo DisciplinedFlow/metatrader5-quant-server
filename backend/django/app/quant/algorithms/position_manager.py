@@ -59,7 +59,13 @@ ATR_PERIOD = 14
 
 # -- Profit protection thresholds --
 PROFIT_PROTECT_MIN_USD = 4.0    # Activate earlier — protect any meaningful gain
-PROFIT_PROTECT_GIVEBACK = 0.40  # Tighter: close if giving back 40%+ from peak (was 50%)
+PROFIT_PROTECT_GIVEBACK = 0.25  # Tight: close if giving back 25%+ from peak (was 40%)
+
+# -- ATR Floor Trail (always-on, aggressive) --
+# Guarantees SL trails behind best price even when no S/R or swing levels exist.
+# At 2s tick interval, this creates a ratcheting floor that locks profits.
+ATR_FLOOR_TRAIL_MULT = 1.0     # Trail 1.0x current ATR behind best price (tightened from 1.5)
+ATR_FLOOR_MIN_PROFIT_R = 1.0   # Only activate after 1R profit (breakeven first)
 
 # -- Hard dollar loss ceiling (O'Neil: "Cut all losses at 7-8%") --
 MAX_LOSS_PER_TRADE_USD = 50.0  # Absolute ceiling — close immediately if unrealized loss hits this
@@ -208,6 +214,7 @@ def _manage_single_position(position):
             )
 
     _check_swing_trail(position, trade, df, trail_atr)
+    _check_atr_floor_trail(position, trade, profit_distance, current_atr)
     _check_time_exit(position, trade, current_pnl, minutes_in_trade)
 
 
@@ -547,6 +554,13 @@ def _check_breakeven(position, trade, profit_distance, current_atr):
 
     # Only move SL if it improves the position
     if not _is_better_sl(position_type, new_sl, current_sl):
+        # SL is already better than entry — mark breakeven as achieved
+        trade.breakeven_moved = True
+        trade.save(update_fields=['breakeven_moved'])
+        logger.info(
+            f"BREAKEVEN: {position.symbol} ticket={position.ticket} "
+            f"SL={current_sl:.5f} already past entry={entry_price:.5f} — marking achieved"
+        )
         return
 
     result = modify_sl_tp(position, new_sl, current_tp if current_tp and current_tp != 0 else None)
@@ -831,6 +845,75 @@ def _get_sr_trail_level(symbol, position_type, entry_price, current_price,
         logger.debug(f"S/R trail lookup failed for {symbol}: {e}")
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b: ATR Floor Trail (always-on ratchet)
+# ---------------------------------------------------------------------------
+
+def _check_atr_floor_trail(position, trade, profit_distance, current_atr):
+    """Always-on trailing stop that ratchets 1.5x ATR behind the best price.
+
+    Unlike swing/S/R trailing which depends on finding structural levels,
+    this trail ALWAYS tightens as the trade moves in profit. It acts as a
+    floor — the swing trail can set a tighter SL, but this ensures SL
+    never lags more than 1.5x ATR behind the peak favorable price.
+
+    With 2-second tick interval, this creates aggressive profit locking
+    on fast-moving instruments like XAGUSD and XAUUSD.
+    """
+    if trade.entry_atr is None or trade.entry_atr <= 0:
+        return
+
+    # Only activate after minimum profit threshold (1R)
+    if profit_distance < trade.entry_atr * ATR_FLOOR_MIN_PROFIT_R:
+        return
+
+    position_type = position.type
+    entry_price = position.price_open
+    current_price = position.price_current
+    current_sl = position.sl
+    current_tp = position.tp
+
+    # Calculate the floor SL: best price - 1.5x ATR
+    trail_distance = current_atr * ATR_FLOOR_TRAIL_MULT
+
+    if position_type == BUY:
+        # Best price for BUY is the highest price reached
+        # We approximate from current price (max_profit tracks $, not price)
+        floor_sl = current_price - trail_distance
+    else:
+        # Best price for SELL is the lowest price reached
+        floor_sl = current_price + trail_distance
+
+    # Only move SL if it improves (tightens) the position
+    if not _is_better_sl(position_type, floor_sl, current_sl):
+        return
+
+    # Ensure floor SL is past breakeven (don't go backwards)
+    if position_type == BUY and floor_sl <= entry_price:
+        return
+    if position_type == SELL and floor_sl >= entry_price:
+        return
+
+    result = modify_sl_tp(
+        position, floor_sl,
+        current_tp if current_tp and current_tp != 0 else None
+    )
+    if result == 'MARKET_CLOSED':
+        return
+    if result is not None:
+        profit_r = profit_distance / trade.entry_atr if trade.entry_atr else 0
+        logger.info(
+            f"ATR FLOOR TRAIL: {position.symbol} ticket={position.ticket} "
+            f"SL -> {floor_sl:.5f} ({ATR_FLOOR_TRAIL_MULT}x ATR behind price) "
+            f"profit={profit_r:.1f}R, locking ${position.profit:.2f}"
+        )
+    else:
+        logger.warning(
+            f"ATR FLOOR TRAIL: {position.symbol} ticket={position.ticket} "
+            f"modify FAILED — wanted SL={floor_sl:.5f} (current={current_sl:.5f})"
+        )
 
 
 # ---------------------------------------------------------------------------
