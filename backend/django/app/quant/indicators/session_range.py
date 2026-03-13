@@ -18,6 +18,44 @@ import numpy as np
 import pandas as pd
 
 
+def _extract_hour(df):
+    """Extract the hour of the last bar, handling both DatetimeIndex and RangeIndex.
+
+    MT5 API returns DataFrames with RangeIndex + 'time' column (epoch seconds).
+    Returns the hour (int) or None if no timestamp source found.
+    """
+    if isinstance(df.index, pd.DatetimeIndex):
+        last_ts = df.index[-1]
+        if last_ts.tzinfo is not None:
+            last_ts = last_ts.tz_convert('UTC')
+        return last_ts.hour
+
+    if 'time' in df.columns:
+        try:
+            return pd.Timestamp(df['time'].iloc[-1]).hour
+        except Exception:
+            pass
+
+    return None
+
+
+def _extract_hours_series(index, df=None):
+    """Extract hour series from index, falling back to 'time' column.
+
+    Returns a numpy array of hours, or None if no timestamp source found.
+    """
+    if isinstance(index, pd.DatetimeIndex):
+        return index.hour
+
+    if df is not None and 'time' in df.columns:
+        try:
+            return pd.to_datetime(df['time']).dt.hour
+        except Exception:
+            pass
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Indicator 1: Asian Range
 # ---------------------------------------------------------------------------
@@ -44,7 +82,7 @@ def asian_range(df, params):
     if df.empty or len(df) < 2:
         return 'neutral'
 
-    asian_mask = _asian_session_mask(df.index, asian_start, asian_end)
+    asian_mask = _asian_session_mask(df.index, asian_start, asian_end, df=df)
     asian_bars = df.loc[asian_mask]
 
     if asian_bars.empty:
@@ -161,7 +199,9 @@ def session_filter(df, params):
     if df.empty:
         return 'off_hours'
 
-    hour = df.index[-1].hour
+    hour = _extract_hour(df)
+    if hour is None:
+        return 'off_hours'
 
     if hour >= 22 or hour < 6:
         return 'asian'
@@ -192,7 +232,9 @@ def london_killzone_active(df, params):
     if df.empty:
         return 'inactive'
 
-    hour = df.index[-1].hour
+    hour = _extract_hour(df)
+    if hour is None:
+        return 'inactive'
     if 7 <= hour < 10:
         return 'active'
     return 'inactive'
@@ -202,12 +244,15 @@ def london_killzone_active(df, params):
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _asian_session_mask(index, start_hour, end_hour):
+def _asian_session_mask(index, start_hour, end_hour, df=None):
     """Return a boolean mask for bars that fall within the Asian session.
 
     Handles the overnight wrap (start_hour > end_hour, e.g. 22 > 6).
+    Supports both DatetimeIndex and RangeIndex (with 'time' column fallback).
     """
-    hours = index.hour
+    hours = _extract_hours_series(index, df=df)
+    if hours is None:
+        return np.zeros(len(index), dtype=bool)
     if start_hour > end_hour:
         # Overnight wrap — e.g. 22:00 to 06:00
         return (hours >= start_hour) | (hours < end_hour)
@@ -225,7 +270,7 @@ def _last_completed_asian_range(df, start_hour, end_hour):
         (range_high, range_low) or (None, None) if no completed session
         exists in the data.
     """
-    mask = np.asarray(_asian_session_mask(df.index, start_hour, end_hour))
+    mask = np.asarray(_asian_session_mask(df.index, start_hour, end_hour, df=df))
 
     if not mask.any():
         return None, None

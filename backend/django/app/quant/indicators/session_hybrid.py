@@ -43,22 +43,32 @@ CLOSE_END = time(22, 0)     # 22:00 UTC
 # ---------------------------------------------------------------------------
 
 def _get_utc_time(df):
-    """Extract the UTC time from the last candle's index.
+    """Extract the UTC time from the last candle's index or 'time' column.
 
-    Handles both timezone-aware and naive DatetimeIndex (naive assumed UTC).
+    Handles DatetimeIndex (tz-aware or naive), RangeIndex with 'time' column
+    (typical MT5 API response), and epoch timestamps.
 
     Returns:
-        datetime.time in UTC, or None if the index is not a DatetimeIndex.
+        datetime.time in UTC, or None if no timestamp source found.
     """
-    if not isinstance(df.index, pd.DatetimeIndex):
-        logger.warning("DataFrame index is not DatetimeIndex — cannot detect session")
-        return None
+    if isinstance(df.index, pd.DatetimeIndex):
+        last_ts = df.index[-1]
+        if last_ts.tzinfo is not None:
+            last_ts = last_ts.tz_convert('UTC')
+        return last_ts.time()
 
-    last_ts = df.index[-1]
-    if last_ts.tzinfo is not None:
-        last_ts = last_ts.tz_convert('UTC')
+    # Fallback: 'time' column (MT5 API returns RangeIndex + 'time' col)
+    if 'time' in df.columns:
+        try:
+            last_ts = pd.Timestamp(df['time'].iloc[-1])
+            if last_ts.tzinfo is not None:
+                last_ts = last_ts.tz_convert('UTC')
+            return last_ts.time()
+        except Exception:
+            pass
 
-    return last_ts.time()
+    logger.debug("No timestamp source found in DataFrame — cannot detect session")
+    return None
 
 
 def _time_in_range(t, start, end):

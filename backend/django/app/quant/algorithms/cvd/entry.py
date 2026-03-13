@@ -404,13 +404,15 @@ def _compute_sl_tp(symbol, entry_price, order_type, atr_val, sl_mult, tp_mult):
     except Exception as e:
         logger.debug(f"S/R computation failed for {symbol}: {e}")
 
-    # Fallback to ATR-based SL/TP
+    # Fallback to ATR-based SL/TP (ensure min 3:1 R:R for tick-slippage headroom)
+    sl_distance = atr_val * sl_mult
+    tp_distance = max(atr_val * tp_mult, sl_distance * 3.0)
     if order_type == 'BUY':
-        sl_price = entry_price - (atr_val * sl_mult)
-        tp_price = entry_price + (atr_val * tp_mult)
+        sl_price = entry_price - sl_distance
+        tp_price = entry_price + tp_distance
     else:
-        sl_price = entry_price + (atr_val * sl_mult)
-        tp_price = entry_price - (atr_val * tp_mult)
+        sl_price = entry_price + sl_distance
+        tp_price = entry_price - tp_distance
 
     logger.info(f"CVD ATR fallback: {symbol} {order_type} SL={sl_price:.5f} TP={tp_price:.5f}")
     return sl_price, tp_price, 'ATR'
@@ -1470,14 +1472,18 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     sl_invalid = True
 
                 if sl_invalid:
-                    # Force ATR-based SL with minimum distance = 2x spread
+                    # Force ATR-based SL with minimum distance = 3x spread
                     min_distance = max(atr_val * pair_sl_mult * router_sl_adj, spread * 3)
+                    # Target 3:1 R:R to survive tick slippage (send_market_order
+                    # refetches price; XAGUSD can move $0.30+ in 500ms which
+                    # degrades R:R from computation point to execution point)
+                    fallback_rr = max(pair_tp_mult / pair_sl_mult, 3.0)
                     if order_type == 'BUY':
                         sl_price = last_tick_price - min_distance
-                        tp_price = last_tick_price + (min_distance * pair_tp_mult / pair_sl_mult)
+                        tp_price = last_tick_price + (min_distance * fallback_rr)
                     else:
                         sl_price = last_tick_price + min_distance
-                        tp_price = last_tick_price - (min_distance * pair_tp_mult / pair_sl_mult)
+                        tp_price = last_tick_price - (min_distance * fallback_rr)
                     logger.warning(
                         f"CVD: SL was invalid for {order_type} on {pair} "
                         f"(spread={spread:.5f}), forced ATR fallback: "
@@ -1625,6 +1631,10 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         'type': order_type,
                         'strategy': custom.name,
                         'volume': order_volume_lots,
+                        'sl': round(sl_price, price_decimals),
+                        'tp': round(tp_price, price_decimals),
+                        'last_tick': round(last_tick_price, price_decimals),
+                        'hint': 'check R:R or MT5 rejection in order.py logs',
                     })
 
             except Exception as e:
