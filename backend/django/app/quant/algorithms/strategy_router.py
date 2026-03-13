@@ -105,7 +105,7 @@ STRATEGY_POOL = {
         'preferred_regimes': ['TRENDING'],
         'acceptable_regimes': ['RANGING'],
         'type': 'structure',
-        'min_confluence': 5,
+        'min_confluence': 4,
     },
     'Bollinger Squeeze Breakout M15': {
         'preferred_regimes': ['RANGING'],
@@ -123,19 +123,19 @@ STRATEGY_POOL = {
         'preferred_regimes': ['TRENDING'],
         'acceptable_regimes': ['RANGING'],
         'type': 'structure',
-        'min_confluence': 5,
+        'min_confluence': 4,
     },
     'ICT Market Structure + FVG': {
         'preferred_regimes': ['TRENDING'],
         'acceptable_regimes': ['VOLATILE'],
         'type': 'structure',
-        'min_confluence': 5,
+        'min_confluence': 4,
     },
     'SMC Confluence Liquidity Sweep H4 Majors': {
         'preferred_regimes': ['TRENDING'],
         'acceptable_regimes': ['RANGING'],
         'type': 'structure',
-        'min_confluence': 5,
+        'min_confluence': 4,
     },
 }
 
@@ -156,13 +156,13 @@ REGIME_PARAMS = {
     },
     'RANGING': {
         'size_multiplier': 0.8,
-        'min_confluence': 5,
+        'min_confluence': 4,
         'sl_multiplier_adj': 1.0,
         'tp_approach': 'fixed_target',
     },
     'VOLATILE': {
         'size_multiplier': 0.5,
-        'min_confluence': 5,
+        'min_confluence': 4,
         'sl_multiplier_adj': 1.5,
         'tp_approach': 'trailing',
     },

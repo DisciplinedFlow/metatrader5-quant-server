@@ -63,8 +63,6 @@ SYMBOL_FILTER_COOLDOWN_HOURS = 8     # How long to skip a poorly-performing symb
 
 # --- Anti-Churn (prevent re-entering same dying signal, allow fresh setups) ---
 SYMBOL_COOLDOWN_MINUTES = 15         # Min wait after closing a trade on same symbol
-SYMBOL_DAILY_TRADE_CAP = 8           # Max trades per symbol per day
-GLOBAL_DAILY_TRADE_CAP = 40          # Max total trades per day across all symbols
 SIGNAL_LOOKBACK = 3                  # Check last N completed bars (balance freshness vs coverage)
 
 # --- TRAINING MODE: full throttle, all filters bypassed ---
@@ -1048,13 +1046,6 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 logger.warning(f"CVD: {cb_reason}")
                 return
 
-        # --- Global daily trade cap (Kovner: "undertrade, undertrade") ---
-        if not TRAINING_MODE:
-            cap_ok, cap_reason = _check_daily_trade_cap()
-            if not cap_ok:
-                logger.warning(f"CVD: {cap_reason}")
-                return
-
         # --- Streak multiplier (computed once per cycle, vol-targeting is per-pair) ---
         streak_multiplier = _get_dynamic_size_multiplier(strategy_config)
         if streak_multiplier < 1.0:
@@ -1151,13 +1142,6 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 cd_ok, cd_reason = _check_symbol_cooldown(pair)
                 if not cd_ok:
                     logger.info(f"CVD: {cd_reason}")
-                    continue
-
-            # --- Anti-churn: per-symbol daily trade cap ---
-            if not TRAINING_MODE:
-                cap_ok, cap_reason = _check_daily_trade_cap(symbol=pair)
-                if not cap_ok:
-                    logger.info(f"CVD: {cap_reason}")
                     continue
 
             # --- Symbol performance filter ---

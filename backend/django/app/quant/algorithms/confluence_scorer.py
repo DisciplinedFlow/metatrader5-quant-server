@@ -22,10 +22,10 @@ Displacement detected       1     Research: 3+ strong candles = institutional mo
 Maximum:                   11
 
 Scoring bands:
-  0-3: NO TRADE -- CVD signal alone isn't enough
-  4-5: REDUCED SIZE (50%) -- volume + 1 confirmation
-  6-8: FULL SIZE (100%) -- volume + trend + price action (the core edge)
-  9-11: ENHANCED SIZE (150%) -- everything aligned (rare, go big)
+  0-2: NO TRADE -- need at least volume + one confirmation
+  3:   REDUCED SIZE (50%) -- edge present but thin
+  4-7: FULL SIZE (100%) -- CVD + trend = the core edge, trade it
+  8-11: ENHANCED SIZE (150%) -- everything aligned, size up
 
 Paul Tudor Jones: "Risk/reward: don't take a trade unless potential reward
 is at least 3x the risk." High confluence = higher expected R:R.
@@ -99,10 +99,10 @@ class ConfluenceScore:
 # ---------------------------------------------------------------------------
 
 SCORE_BANDS = {
-    'skip':     {'min': 0, 'max': 3, 'size_mult': 0.0},
-    'reduced':  {'min': 4, 'max': 5, 'size_mult': 0.5},
-    'full':     {'min': 6, 'max': 8, 'size_mult': 1.0},
-    'enhanced': {'min': 9, 'max': 11, 'size_mult': 1.5},
+    'skip':     {'min': 0, 'max': 2, 'size_mult': 0.0},
+    'reduced':  {'min': 3, 'max': 3, 'size_mult': 0.5},
+    'full':     {'min': 4, 'max': 7, 'size_mult': 1.0},
+    'enhanced': {'min': 8, 'max': 11, 'size_mult': 1.5},
 }
 
 MAX_POSSIBLE_SCORE = 11
