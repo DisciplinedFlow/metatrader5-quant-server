@@ -146,6 +146,20 @@ class CryptoDashboardView(views.APIView):
         })
 
 
+class CryptoFundingArbView(views.APIView):
+    """Return latest funding rate arbitrage scan results from Redis."""
+
+    def get(self, request):
+        from app.quant.algorithms.crypto.funding_arb import get_latest_arb_data
+        data = get_latest_arb_data()
+        if data is None:
+            return Response(
+                {'error': 'No funding arb data available. Scan may not have run yet.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(data)
+
+
 class CryptoWalletView(views.APIView):
     """Live wallet data from Hyperliquid: prices, account state, on-chain positions."""
 

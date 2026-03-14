@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePolling } from '@/composables/usePolling'
 import api from '@/services/api'
@@ -36,6 +36,22 @@ const openPositionsCount = ref(0)
 const totalPnl = ref(0)
 const closedPositions = ref([])
 
+// Venue health
+const venueHealth = reactive({
+  lighter: { status: 'unknown', latency: null, lastCheck: null },
+  hyperliquid: { status: 'unknown', latency: null, lastCheck: null },
+})
+
+// Active venue tab for positions
+const activeVenueTab = ref('all')
+
+// Funding rates (mock structure — will populate from API when available)
+const fundingRates = ref([
+  { symbol: 'BTC', lighter: null, hyperliquid: null },
+  { symbol: 'ETH', lighter: null, hyperliquid: null },
+  { symbol: 'SOL', lighter: null, hyperliquid: null },
+])
+
 // Computed values
 const totalPositionValue = computed(() =>
   livePositions.value.reduce((sum, p) => sum + Math.abs(p.size * p.mark_price), 0)
@@ -65,6 +81,11 @@ const shortAddress = computed(() => {
   return walletAddress.value.slice(0, 6) + '...' + walletAddress.value.slice(-4)
 })
 
+const marginLevel = computed(() => {
+  if (!totalMarginUsed.value) return Infinity
+  return (accountValue.value / totalMarginUsed.value) * 100
+})
+
 // P&L performance data from closed positions
 const sortedClosed = computed(() =>
   closedPositions.value
@@ -88,7 +109,10 @@ const pnlStats = computed(() => {
   const winRate = ct.length ? (wins.length / ct.length * 100) : 0
   const bestTrade = ct.length ? Math.max(...ct.map(p => Number(p.pnl_usd))) : 0
   const worstTrade = ct.length ? Math.min(...ct.map(p => Number(p.pnl_usd))) : 0
-  return { total: ct.length, wins: wins.length, losses: losses.length, totalPnl: total, winRate, bestTrade, worstTrade }
+  const avgWin = wins.length ? wins.reduce((s, p) => s + Number(p.pnl_usd), 0) / wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((s, p) => s + Number(p.pnl_usd), 0) / losses.length : 0
+  const profitFactor = avgLoss !== 0 ? Math.abs(avgWin * wins.length / (avgLoss * losses.length)) : 0
+  return { total: ct.length, wins: wins.length, losses: losses.length, totalPnl: total, winRate, bestTrade, worstTrade, avgWin, avgLoss, profitFactor }
 })
 
 // SVG equity curve
@@ -129,6 +153,18 @@ const zeroLineY = computed(() => {
   return 4 + (1 - (0 - minV) / range) * 72
 })
 
+// Filtered positions by venue tab
+const filteredPositions = computed(() => {
+  if (activeVenueTab.value === 'all') return livePositions.value
+  return livePositions.value.filter(p => (p.venue || 'hyperliquid') === activeVenueTab.value)
+})
+
+const positionsByVenue = computed(() => {
+  const hl = livePositions.value.filter(p => (p.venue || 'hyperliquid') === 'hyperliquid')
+  const lt = livePositions.value.filter(p => (p.venue || '') === 'lighter')
+  return { hyperliquid: hl, lighter: lt }
+})
+
 // Coin colors
 const COIN_COLORS = {
   BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', AVAX: '#e84142',
@@ -138,6 +174,43 @@ const COIN_COLORS = {
 
 function getCoinColor(coin) {
   return COIN_COLORS[coin] || 'var(--tp-primary)'
+}
+
+async function checkVenueHealth() {
+  // Check Lighter proxy (port 5555)
+  try {
+    const start = Date.now()
+    const resp = await fetch('/api/django/v1/crypto/lighter/health/', { signal: AbortSignal.timeout(5000) })
+    const latency = Date.now() - start
+    if (resp.ok) {
+      venueHealth.lighter = { status: 'connected', latency, lastCheck: new Date() }
+    } else {
+      venueHealth.lighter = { status: 'error', latency: null, lastCheck: new Date() }
+    }
+  } catch {
+    venueHealth.lighter = { status: 'offline', latency: null, lastCheck: new Date() }
+  }
+
+  // Hyperliquid health is inferred from wallet call success
+  if (walletLoaded.value && !walletError.value) {
+    venueHealth.hyperliquid = { status: 'connected', latency: null, lastCheck: new Date() }
+  } else if (walletError.value) {
+    venueHealth.hyperliquid = { status: 'error', latency: null, lastCheck: new Date() }
+  }
+}
+
+async function fetchFundingRates() {
+  try {
+    const resp = await fetch('/api/django/v1/crypto/funding-rates/', { signal: AbortSignal.timeout(5000) })
+    if (resp.ok) {
+      const data = await resp.json()
+      if (Array.isArray(data)) {
+        fundingRates.value = data
+      }
+    }
+  } catch {
+    // Funding rates are optional — fail silently
+  }
 }
 
 async function refresh() {
@@ -173,6 +246,10 @@ async function refresh() {
   if (closedResult.status === 'fulfilled') {
     closedPositions.value = closedResult.value.results ?? closedResult.value ?? []
   }
+
+  // Non-blocking secondary fetches
+  checkVenueHealth()
+  fetchFundingRates()
 }
 
 async function toggleBot() {
@@ -206,6 +283,29 @@ function fmtPct(val) {
   return (val * 100).toFixed(1) + '%'
 }
 
+function fmtFunding(val) {
+  if (val == null) return '--'
+  return (val * 100).toFixed(4) + '%'
+}
+
+function venueStatusIcon(status) {
+  switch (status) {
+    case 'connected': return 'check_circle'
+    case 'error': return 'error'
+    case 'offline': return 'cancel'
+    default: return 'help'
+  }
+}
+
+function venueStatusClass(status) {
+  switch (status) {
+    case 'connected': return 'venue-ok'
+    case 'error': return 'venue-warn'
+    case 'offline': return 'venue-down'
+    default: return 'venue-unknown'
+  }
+}
+
 onMounted(refresh)
 usePolling(refresh, 10000)
 </script>
@@ -214,100 +314,173 @@ usePolling(refresh, 10000)
   <SectionNav :links="cryptoLinks" />
   <div class="tp-page dashboard-page">
 
-    <!-- Bot Status + Account Stats — full-width glass strip -->
-    <div class="top-row">
-      <div class="tp-card bot-card">
-        <div class="bot-header">
-          <div class="bot-label-row">
-            <div class="bot-icon" :class="botPaused ? 'bot-icon-paused' : 'bot-icon-running'">
-              <span class="material-symbols-outlined">currency_bitcoin</span>
-            </div>
-            <div>
-              <p class="micro-label">Crypto Bot</p>
-              <div class="bot-status-row">
-                <span class="status-dot" :class="botPaused ? 'dot-paused' : 'dot-running'"></span>
-                <p class="bot-status-text">{{ botPaused ? 'PAUSED' : 'RUNNING' }}</p>
-              </div>
-            </div>
+    <!-- ======= SYSTEM STATUS BAR ======= -->
+    <div class="system-bar">
+      <div class="system-bar-left">
+        <div class="bot-indicator" :class="botPaused ? 'bot-paused' : 'bot-live'">
+          <span class="material-symbols-outlined bot-pulse-icon">currency_bitcoin</span>
+          <div class="bot-indicator-text">
+            <span class="bot-indicator-label">CRYPTO ENGINE</span>
+            <span class="bot-indicator-status">{{ botPaused ? 'PAUSED' : 'LIVE' }}</span>
           </div>
           <button
-            class="tp-btn tp-btn-outline"
+            class="bot-toggle-btn"
+            :class="botPaused ? 'btn-resume' : 'btn-pause'"
             :aria-busy="botStatusLoading"
             @click="toggleBot"
           >
-            <span class="material-symbols-outlined" style="font-size:16px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
+            <span class="material-symbols-outlined" style="font-size:14px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
             {{ botPaused ? 'Resume' : 'Pause' }}
           </button>
         </div>
+
+        <div class="system-bar-divider"></div>
+
+        <!-- Venue Health Indicators -->
+        <div class="venue-health-group">
+          <div class="venue-chip" :class="venueStatusClass(venueHealth.hyperliquid.status)">
+            <span class="material-symbols-outlined venue-chip-icon">{{ venueStatusIcon(venueHealth.hyperliquid.status) }}</span>
+            <span class="venue-chip-name">Hyperliquid</span>
+          </div>
+          <div class="venue-chip" :class="venueStatusClass(venueHealth.lighter.status)">
+            <span class="material-symbols-outlined venue-chip-icon">{{ venueStatusIcon(venueHealth.lighter.status) }}</span>
+            <span class="venue-chip-name">Lighter</span>
+            <span v-if="venueHealth.lighter.latency" class="venue-chip-latency">{{ venueHealth.lighter.latency }}ms</span>
+          </div>
+        </div>
       </div>
 
-      <div class="tp-card stats-row-card">
-        <div class="mini-stat">
-          <p class="micro-label">Account Value</p>
-          <p class="mini-stat-value">${{ fmt(accountValue) }}</p>
+      <div class="system-bar-right">
+        <div class="sys-stat">
+          <span class="sys-stat-label">ACCOUNT</span>
+          <span class="sys-stat-value">${{ fmt(accountValue) }}</span>
         </div>
-        <div class="mini-stat">
-          <p class="micro-label">Unrealized P&L</p>
-          <p class="mini-stat-value" :class="totalUnrealizedPnl >= 0 ? 'text-success' : 'text-danger'">
+        <div class="sys-stat">
+          <span class="sys-stat-label">UNREAL. P&L</span>
+          <span class="sys-stat-value" :class="totalUnrealizedPnl >= 0 ? 'text-success' : 'text-danger'">
             {{ totalUnrealizedPnl >= 0 ? '+' : '' }}${{ fmt(totalUnrealizedPnl) }}
-          </p>
+          </span>
         </div>
-        <div class="mini-stat">
-          <p class="micro-label">Margin Level</p>
-          <p class="mini-stat-value">{{ marginUsedPct.toFixed(1) }}%</p>
+        <div class="sys-stat">
+          <span class="sys-stat-label">MARGIN</span>
+          <span class="sys-stat-value">{{ marginUsedPct.toFixed(1) }}%</span>
         </div>
-        <div class="mini-stat">
-          <p class="micro-label">Withdrawable</p>
-          <p class="mini-stat-value">${{ fmt(withdrawable) }}</p>
+        <div class="sys-stat">
+          <span class="sys-stat-label">WITHDRAW</span>
+          <span class="sys-stat-value">${{ fmt(withdrawable) }}</span>
         </div>
       </div>
     </div>
 
+    <!-- ======= MAIN GRID ======= -->
     <div class="dash-grid">
 
       <!-- ===== LEFT COLUMN ===== -->
       <div class="left-col">
 
         <!-- Live Prices -->
-        <div class="tp-card prices-card">
-          <div class="prices-header">
-            <h3>
-              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">show_chart</span>
-              Live Prices
-            </h3>
+        <div class="tp-card card-terminal prices-card">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="material-symbols-outlined card-icon">show_chart</span>
+              <h3>Live Prices</h3>
+            </div>
             <span class="tp-badge tp-badge-success" style="font-size: 0.6rem;">
-              <span class="pulse-dot"></span> Real-time
+              <span class="pulse-dot"></span> FEED
             </span>
           </div>
           <div class="prices-grid">
-            <div v-for="p in prices" :key="p.coin" class="price-item">
-              <div class="price-coin-row">
-                <div class="coin-icon" :style="{ background: getCoinColor(p.coin) + '22', color: getCoinColor(p.coin) }">
+            <div v-for="p in prices" :key="p.coin" class="price-tile">
+              <div class="price-tile-head">
+                <div class="coin-badge" :style="{ background: getCoinColor(p.coin) + '18', color: getCoinColor(p.coin), borderColor: getCoinColor(p.coin) + '30' }">
                   {{ p.coin.slice(0, 2) }}
                 </div>
-                <span class="price-coin-name">{{ p.coin }}</span>
+                <span class="price-ticker">{{ p.coin }}</span>
               </div>
-              <div class="price-value">${{ fmtPrice(p.price) }}</div>
+              <div class="price-amount">${{ fmtPrice(p.price) }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Funding Rate Comparison -->
+        <div class="tp-card card-terminal funding-card">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="material-symbols-outlined card-icon">compare_arrows</span>
+              <h3>Funding Rates</h3>
+            </div>
+            <span class="funding-legend">
+              <span class="funding-legend-dot" style="background: #3b82f6;"></span> Hyperliquid
+              <span class="funding-legend-dot" style="background: #a855f7; margin-left: 0.5rem;"></span> Lighter
+            </span>
+          </div>
+          <div class="funding-grid">
+            <div v-for="fr in fundingRates" :key="fr.symbol" class="funding-row">
+              <span class="funding-symbol">{{ fr.symbol }}</span>
+              <div class="funding-bars">
+                <div class="funding-bar-pair">
+                  <div class="funding-bar-track">
+                    <div
+                      class="funding-bar-fill funding-bar-hl"
+                      :style="{ width: fr.hyperliquid != null ? Math.min(Math.abs(fr.hyperliquid) * 10000, 100) + '%' : '0%' }"
+                      :class="{ 'funding-negative': fr.hyperliquid < 0 }"
+                    ></div>
+                  </div>
+                  <span class="funding-rate-val" :class="{ 'text-danger': fr.hyperliquid < 0, 'text-success': fr.hyperliquid > 0 }">{{ fmtFunding(fr.hyperliquid) }}</span>
+                </div>
+                <div class="funding-bar-pair">
+                  <div class="funding-bar-track">
+                    <div
+                      class="funding-bar-fill funding-bar-lt"
+                      :style="{ width: fr.lighter != null ? Math.min(Math.abs(fr.lighter) * 10000, 100) + '%' : '0%' }"
+                      :class="{ 'funding-negative': fr.lighter < 0 }"
+                    ></div>
+                  </div>
+                  <span class="funding-rate-val" :class="{ 'text-danger': fr.lighter < 0, 'text-success': fr.lighter > 0 }">{{ fmtFunding(fr.lighter) }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
         <!-- On-Chain Positions -->
-        <div class="tp-card positions-card">
-          <div class="positions-header">
-            <h3>On-Chain Positions</h3>
+        <div class="tp-card card-terminal positions-card">
+          <div class="card-header-row positions-header">
+            <div class="card-title-group">
+              <h3>Positions</h3>
+            </div>
             <div class="positions-header-right">
-              <span class="tp-badge tp-badge-primary">{{ livePositions.length }} active</span>
-              <button class="view-history-btn" @click="router.push('/crypto/history')">View History</button>
+              <div class="venue-tab-group">
+                <button
+                  class="venue-tab"
+                  :class="{ active: activeVenueTab === 'all' }"
+                  @click="activeVenueTab = 'all'"
+                >All ({{ livePositions.length }})</button>
+                <button
+                  class="venue-tab"
+                  :class="{ active: activeVenueTab === 'hyperliquid' }"
+                  @click="activeVenueTab = 'hyperliquid'"
+                >HL ({{ positionsByVenue.hyperliquid.length }})</button>
+                <button
+                  class="venue-tab"
+                  :class="{ active: activeVenueTab === 'lighter' }"
+                  @click="activeVenueTab = 'lighter'"
+                >LT ({{ positionsByVenue.lighter.length }})</button>
+              </div>
+              <button class="view-history-btn" @click="router.push('/crypto/history')">
+                <span class="material-symbols-outlined" style="font-size:14px">history</span>
+                History
+              </button>
             </div>
           </div>
           <div class="positions-body">
-            <template v-if="livePositions.length > 0">
+            <template v-if="filteredPositions.length > 0">
               <div style="overflow-x: auto;">
-                <table class="tp-table">
+                <table class="tp-table terminal-table">
                   <thead>
                     <tr>
                       <th>Asset</th>
+                      <th>Venue</th>
                       <th>Side</th>
                       <th>Size</th>
                       <th>Entry</th>
@@ -318,27 +491,32 @@ usePolling(refresh, 10000)
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="p in livePositions" :key="p.coin">
+                    <tr v-for="p in filteredPositions" :key="p.coin + (p.venue || '')">
                       <td>
-                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <div class="cell-asset">
                           <div class="coin-icon-sm" :style="{ background: getCoinColor(p.coin) + '22', color: getCoinColor(p.coin) }">
                             {{ p.coin.slice(0, 2) }}
                           </div>
-                          <span style="font-weight: 700;">{{ p.coin }}</span>
+                          <span class="asset-name">{{ p.coin }}</span>
                         </div>
+                      </td>
+                      <td>
+                        <span class="venue-label" :class="(p.venue || 'hyperliquid') === 'lighter' ? 'venue-lighter' : 'venue-hl'">
+                          {{ (p.venue || 'hyperliquid') === 'lighter' ? 'LT' : 'HL' }}
+                        </span>
                       </td>
                       <td>
                         <span class="tp-badge" :class="p.side === 'LONG' ? 'tp-badge-success' : 'tp-badge-danger'">
                           {{ p.side }}
                         </span>
                       </td>
-                      <td style="font-weight: 600;">{{ fmt(Math.abs(p.size), 4) }}</td>
-                      <td style="font-weight: 500;">${{ fmtPrice(p.entry_price) }}</td>
-                      <td style="font-weight: 500;">${{ fmtPrice(p.mark_price) }}</td>
-                      <td>{{ p.leverage }}x</td>
-                      <td>${{ fmt(p.margin_used) }}</td>
+                      <td class="mono-cell">{{ fmt(Math.abs(p.size), 4) }}</td>
+                      <td class="mono-cell">${{ fmtPrice(p.entry_price) }}</td>
+                      <td class="mono-cell">${{ fmtPrice(p.mark_price) }}</td>
+                      <td class="mono-cell">{{ p.leverage }}x</td>
+                      <td class="mono-cell">${{ fmt(p.margin_used) }}</td>
                       <td>
-                        <span style="font-weight: 700;" :style="{ color: p.unrealized_pnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
+                        <span class="pnl-cell" :class="p.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'">
                           {{ p.unrealized_pnl >= 0 ? '+' : '' }}${{ fmt(p.unrealized_pnl) }}
                         </span>
                       </td>
@@ -352,7 +530,7 @@ usePolling(refresh, 10000)
                 <span class="material-symbols-outlined" style="font-size:2rem;color:var(--tp-text-dim)">account_balance_wallet</span>
               </div>
               <p class="empty-title">No open positions</p>
-              <p class="empty-desc">Live positions from Hyperliquid will appear here.</p>
+              <p class="empty-desc">Positions from Hyperliquid and Lighter will appear here.</p>
             </div>
           </div>
         </div>
@@ -362,10 +540,13 @@ usePolling(refresh, 10000)
       <div class="right-col">
 
         <!-- P&L Performance Card -->
-        <div class="tp-card pnl-card">
+        <div class="tp-card card-terminal pnl-card">
           <div class="pnl-header">
             <div>
-              <h3 class="pnl-title">Performance</h3>
+              <div class="card-title-group">
+                <span class="material-symbols-outlined card-icon">analytics</span>
+                <h3 class="pnl-title">Performance</h3>
+              </div>
               <p class="pnl-subtitle">{{ pnlStats.total }} closed trades</p>
             </div>
             <div class="pnl-total" :class="pnlStats.totalPnl >= 0 ? 'text-success' : 'text-danger'">
@@ -377,7 +558,7 @@ usePolling(refresh, 10000)
           <div class="equity-chart" v-if="equityCurve.length >= 2">
             <svg viewBox="0 0 280 80" preserveAspectRatio="none" class="equity-svg">
               <line x1="4" :y1="zeroLineY" x2="276" :y2="zeroLineY" stroke="var(--tp-border)" stroke-width="0.5" stroke-dasharray="4 2" />
-              <path :d="chartFill" :fill="pnlStats.totalPnl >= 0 ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)'" />
+              <path :d="chartFill" :fill="pnlStats.totalPnl >= 0 ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)'" />
               <path :d="chartPath" fill="none" :stroke="pnlStats.totalPnl >= 0 ? '#22c55e' : '#ef4444'" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </div>
@@ -388,7 +569,7 @@ usePolling(refresh, 10000)
 
           <!-- Trade Bars -->
           <div class="trade-bars" v-if="sortedClosed.length">
-            <div v-for="(t, i) in sortedClosed.slice(-20)" :key="i"
+            <div v-for="(t, i) in sortedClosed.slice(-30)" :key="i"
                  class="trade-bar"
                  :class="Number(t.pnl_usd) >= 0 ? 'bar-win' : 'bar-loss'"
                  :style="{ height: Math.min(100, Math.max(8, Math.abs(Number(t.pnl_usd)) * 3)) + '%' }"
@@ -414,6 +595,14 @@ usePolling(refresh, 10000)
               <span class="pnl-stat-label">Worst</span>
               <span class="pnl-stat-value text-danger">${{ pnlStats.worstTrade.toFixed(2) }}</span>
             </div>
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">Avg Win</span>
+              <span class="pnl-stat-value text-success">+${{ pnlStats.avgWin.toFixed(2) }}</span>
+            </div>
+            <div class="pnl-stat">
+              <span class="pnl-stat-label">Profit Factor</span>
+              <span class="pnl-stat-value">{{ pnlStats.profitFactor.toFixed(2) }}</span>
+            </div>
           </div>
 
           <button class="tp-btn tp-btn-outline pnl-history-btn" @click="router.push('/crypto/history')">
@@ -423,12 +612,19 @@ usePolling(refresh, 10000)
         </div>
 
         <!-- Margin & Risk Card -->
-        <div class="tp-card margin-card">
-          <div class="margin-header">
-            <h3>
-              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">shield</span>
-              Margin & Risk
-            </h3>
+        <div class="tp-card card-terminal margin-card">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="material-symbols-outlined card-icon">shield</span>
+              <h3>Margin & Risk</h3>
+            </div>
+            <span class="margin-level-badge" :class="{
+              'badge-safe': marginUsedPct < 50,
+              'badge-warning': marginUsedPct >= 50 && marginUsedPct < 80,
+              'badge-danger': marginUsedPct >= 80,
+            }">
+              {{ marginUsedPct < 50 ? 'LOW RISK' : marginUsedPct < 80 ? 'MODERATE' : 'HIGH RISK' }}
+            </span>
           </div>
           <div class="margin-body">
             <div class="margin-bar-wrap">
@@ -457,16 +653,20 @@ usePolling(refresh, 10000)
               <span class="meta-label">Position Value</span>
               <span class="meta-value">${{ fmt(totalPositionValue) }}</span>
             </div>
+            <div class="margin-detail-row">
+              <span class="meta-label">Margin Level</span>
+              <span class="meta-value">{{ marginLevel === Infinity ? '--' : marginLevel.toFixed(0) + '%' }}</span>
+            </div>
           </div>
         </div>
 
         <!-- Portfolio Allocation -->
-        <div v-if="allocation.length" class="tp-card alloc-card">
-          <div class="alloc-header">
-            <h3>
-              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">pie_chart</span>
-              Portfolio Allocation
-            </h3>
+        <div v-if="allocation.length" class="tp-card card-terminal alloc-card">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="material-symbols-outlined card-icon">pie_chart</span>
+              <h3>Allocation</h3>
+            </div>
           </div>
           <div class="alloc-body">
             <div class="alloc-bar">
@@ -475,13 +675,14 @@ usePolling(refresh, 10000)
                 :key="a.coin"
                 class="alloc-segment"
                 :style="{ width: fmtPct(a.pct), background: getCoinColor(a.coin) }"
-                :title="a.coin + ' – ' + fmtPct(a.pct)"
+                :title="a.coin + ' - ' + fmtPct(a.pct)"
               ></div>
             </div>
             <div class="alloc-legend">
               <div v-for="a in allocation" :key="a.coin" class="alloc-legend-item">
                 <span class="alloc-dot" :style="{ background: getCoinColor(a.coin) }"></span>
                 <span class="alloc-coin">{{ a.coin }}</span>
+                <span class="alloc-side" :class="a.side === 'LONG' ? 'text-success' : 'text-danger'">{{ a.side }}</span>
                 <span class="alloc-pct">{{ fmtPct(a.pct) }}</span>
                 <span class="alloc-val">${{ fmt(a.value) }}</span>
               </div>
@@ -489,27 +690,54 @@ usePolling(refresh, 10000)
           </div>
         </div>
 
-        <!-- Wallet Info -->
-        <div class="tp-card wallet-card" v-if="walletAddress">
-          <div class="wallet-header">
-            <h3>
-              <span class="material-symbols-outlined" style="color:var(--tp-primary);font-size:20px">wallet</span>
-              Wallet
-            </h3>
+        <!-- Wallet & Venues -->
+        <div class="tp-card card-terminal wallet-card">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="material-symbols-outlined card-icon">wallet</span>
+              <h3>Wallet & Venues</h3>
+            </div>
           </div>
           <div class="wallet-body">
-            <div class="wallet-address-row">
-              <span class="wallet-dot"></span>
-              <span class="wallet-addr">{{ shortAddress }}</span>
-              <span class="wallet-chain">Arbitrum</span>
+            <!-- Hyperliquid Venue -->
+            <div class="venue-block">
+              <div class="venue-block-header">
+                <span class="venue-block-dot" :class="venueStatusClass(venueHealth.hyperliquid.status)"></span>
+                <span class="venue-block-name">Hyperliquid L1</span>
+                <span class="venue-block-chain">Arbitrum</span>
+              </div>
+              <div v-if="walletAddress" class="wallet-address-row">
+                <span class="wallet-addr">{{ shortAddress }}</span>
+              </div>
+              <div class="venue-block-stats">
+                <div class="venue-mini-stat">
+                  <span class="meta-label">Positions</span>
+                  <span class="meta-value">{{ positionsByVenue.hyperliquid.length }}</span>
+                </div>
+                <div class="venue-mini-stat">
+                  <span class="meta-label">Network</span>
+                  <span class="meta-value">Hyperliquid L1</span>
+                </div>
+              </div>
             </div>
-            <div class="wallet-detail-row">
-              <span class="meta-label">Network</span>
-              <span class="meta-value">Hyperliquid L1</span>
-            </div>
-            <div class="wallet-detail-row">
-              <span class="meta-label">Open Positions</span>
-              <span class="meta-value" style="font-weight: 700;">{{ livePositions.length || openPositionsCount }}</span>
+
+            <!-- Lighter Venue -->
+            <div class="venue-block">
+              <div class="venue-block-header">
+                <span class="venue-block-dot" :class="venueStatusClass(venueHealth.lighter.status)"></span>
+                <span class="venue-block-name">Lighter.xyz</span>
+                <span class="venue-block-chain">Zero-Fee</span>
+              </div>
+              <div class="venue-block-stats">
+                <div class="venue-mini-stat">
+                  <span class="meta-label">Positions</span>
+                  <span class="meta-value">{{ positionsByVenue.lighter.length }}</span>
+                </div>
+                <div class="venue-mini-stat">
+                  <span class="meta-label">Proxy</span>
+                  <span class="meta-value">:5555</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -533,7 +761,7 @@ usePolling(refresh, 10000)
 .dash-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 1.25rem;
+  gap: 1rem;
 }
 @media (min-width: 1024px) {
   .dash-grid {
@@ -543,221 +771,386 @@ usePolling(refresh, 10000)
 .left-col, .right-col {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 1rem;
   min-width: 0;
 }
 
-/* ===== Top Row: Bot + Stats — full-width strip above grid ===== */
-.top-row {
+/* ===== Card Terminal Style ===== */
+.card-terminal {
+  position: relative;
+}
+.card-terminal::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--tp-primary), transparent);
+  opacity: 0.3;
+}
+
+.card-header-row {
   display: flex;
-  gap: 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--tp-border);
+}
+.card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.card-title-group h3 {
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.card-icon {
+  font-size: 18px;
+  color: var(--tp-primary);
+  opacity: 0.8;
+}
+
+/* ===== System Status Bar ===== */
+.system-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 1rem;
+  margin-bottom: 1rem;
   border-radius: var(--tp-radius);
-  overflow: hidden;
   background: var(--tp-bg-glass);
   backdrop-filter: var(--tp-glass-blur);
   -webkit-backdrop-filter: var(--tp-glass-blur);
   border: var(--tp-glass-border);
   box-shadow: var(--tp-glass-shadow);
-  margin-bottom: 1.25rem;
+  position: relative;
+  overflow: hidden;
 }
-
-.bot-card {
-  padding: 1rem 1.25rem;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  border-right: 1px solid var(--tp-border);
-  background: none;
-  backdrop-filter: none;
-  border-radius: 0;
-  border-top: none;
-  border-bottom: none;
-  border-left: none;
-  box-shadow: none;
-  flex-shrink: 0;
+.system-bar::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--tp-primary), transparent);
+  opacity: 0.2;
 }
-.bot-header {
+.system-bar-left {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-}
-.bot-label-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-.bot-icon {
-  width: 2rem; height: 2rem;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   flex-shrink: 0;
 }
-.bot-icon .material-symbols-outlined { font-size: 18px; }
-.bot-icon-running {
-  background: rgba(34,197,94,0.12);
-  color: var(--tp-success);
+.system-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1;
+  justify-content: flex-end;
+  min-width: 0;
 }
-.bot-icon-paused {
-  background: rgba(245,158,11,0.12);
+.system-bar-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--tp-border);
+  flex-shrink: 0;
+}
+
+/* Bot Indicator */
+.bot-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.35rem;
+  border-radius: var(--tp-radius-sm);
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+.bot-live {
+  border-color: rgba(34, 197, 94, 0.2);
+  background: rgba(34, 197, 94, 0.04);
+}
+.bot-paused {
+  border-color: rgba(245, 158, 11, 0.2);
+  background: rgba(245, 158, 11, 0.04);
+}
+.bot-pulse-icon {
+  font-size: 20px;
+}
+.bot-live .bot-pulse-icon {
+  color: var(--tp-success);
+  animation: icon-pulse 2s ease-in-out infinite;
+}
+.bot-paused .bot-pulse-icon {
   color: var(--tp-warning);
 }
-.micro-label {
-  font-size: 0.6rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 700;
-  color: var(--tp-text-dim);
-  margin: 0;
+@keyframes icon-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
-.bot-status-row {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin-top: 0.1rem;
-}
-.status-dot {
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.dot-running { background: var(--tp-success); }
-.dot-paused { background: var(--tp-warning); }
-.bot-status-text {
-  font-size: 0.9rem;
-  font-weight: 800;
-  color: var(--tp-text);
-  margin: 0;
-}
-
-.stats-row-card {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  background: none;
-  backdrop-filter: none;
-  border-radius: 0;
-  border: none;
-  box-shadow: none;
-  padding: 0;
-  align-items: stretch;
-}
-.mini-stat {
-  flex: 1;
+.bot-indicator-text {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 0.2rem;
-  padding: 1rem 1.25rem;
-  border-right: 1px solid var(--tp-border);
-  min-width: 0;
+  gap: 0;
+  line-height: 1;
 }
-.mini-stat:last-child {
-  border-right: none;
+.bot-indicator-label {
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--tp-text-dim);
+  text-transform: uppercase;
 }
-.mini-stat-value {
-  font-size: 1.35rem;
+.bot-indicator-status {
+  font-size: 0.8rem;
   font-weight: 800;
   color: var(--tp-text);
-  margin: 0;
-  line-height: 1;
-  font-feature-settings: 'tnum' 1;
+  margin-top: 1px;
+}
+.bot-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: var(--tp-font);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--tp-border);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: transparent;
+  color: var(--tp-text-muted);
+}
+.btn-resume:hover {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: var(--tp-success);
+  color: var(--tp-success);
+}
+.btn-pause:hover {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: var(--tp-warning);
+  color: var(--tp-warning);
+}
+
+/* Venue Health Chips */
+.venue-health-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.venue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+.venue-chip-icon {
+  font-size: 13px;
+}
+.venue-chip-name {
+  letter-spacing: 0.02em;
+}
+.venue-chip-latency {
+  font-size: 0.55rem;
+  opacity: 0.7;
+  font-family: var(--tp-font-mono);
+}
+.venue-ok {
+  color: var(--tp-success);
+  background: rgba(34, 197, 94, 0.06);
+  border-color: rgba(34, 197, 94, 0.15);
+}
+.venue-warn {
+  color: var(--tp-warning);
+  background: rgba(245, 158, 11, 0.06);
+  border-color: rgba(245, 158, 11, 0.15);
+}
+.venue-down {
+  color: var(--tp-danger);
+  background: rgba(239, 68, 68, 0.06);
+  border-color: rgba(239, 68, 68, 0.15);
+}
+.venue-unknown {
+  color: var(--tp-text-dim);
+  background: rgba(100, 116, 139, 0.06);
+  border-color: rgba(100, 116, 139, 0.15);
+}
+
+/* System Stats */
+.sys-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0.35rem 1rem;
+  border-left: 1px solid var(--tp-border);
+  min-width: 0;
+}
+.sys-stat:first-child {
+  border-left: none;
+}
+.sys-stat-label {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--tp-text-dim);
+  text-transform: uppercase;
   white-space: nowrap;
 }
-.text-success { color: var(--tp-success) !important; }
-.text-danger { color: var(--tp-danger) !important; }
-
-@media (max-width: 768px) {
-  .top-row {
-    flex-direction: column;
-  }
-  .bot-card {
-    border-right: none;
-    border-bottom: 1px solid var(--tp-border);
-  }
-  .stats-row-card {
-    flex-wrap: wrap;
-  }
-  .mini-stat {
-    min-width: 45%;
-  }
+.sys-stat-value {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--tp-text);
+  font-feature-settings: 'tnum' 1;
+  white-space: nowrap;
+  line-height: 1.1;
 }
 
 /* ===== Prices Card ===== */
 .prices-card {
-  padding: 1.25rem;
-}
-.prices-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1rem;
-}
-.prices-header h3 {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.95rem;
-  font-weight: 700;
+  overflow: hidden;
 }
 .prices-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 0.5rem;
+  gap: 1px;
+  background: var(--tp-border);
 }
-.price-item {
+.price-tile {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.65rem 0.7rem;
-  background: var(--tp-bg-surface);
-  border-radius: var(--tp-radius-sm);
-  transition: transform var(--tp-transition);
+  gap: 0.35rem;
+  padding: 0.65rem 0.6rem;
+  background: var(--tp-bg-glass);
+  transition: background 0.15s ease;
 }
-.price-item:hover {
-  transform: translateY(-1px);
+.price-tile:hover {
+  background: var(--tp-bg-hover);
 }
-.price-coin-row {
+.price-tile-head {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
 }
-.coin-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
+.coin-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.55rem;
+  font-size: 0.5rem;
   font-weight: 800;
   letter-spacing: 0.03em;
   flex-shrink: 0;
+  border: 1px solid transparent;
 }
-.coin-icon-sm {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.55rem;
-  font-weight: 800;
-  flex-shrink: 0;
-}
-.price-coin-name {
+.price-ticker {
   font-weight: 700;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
+  color: var(--tp-text-muted);
   line-height: 1;
 }
-.price-value {
-  font-size: 0.82rem;
+.price-amount {
+  font-size: 0.8rem;
   font-weight: 800;
   font-feature-settings: 'tnum' 1;
+  font-family: var(--tp-font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--tp-text);
+}
+
+/* ===== Funding Card ===== */
+.funding-card {
+  overflow: hidden;
+}
+.funding-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6rem;
+  color: var(--tp-text-dim);
+  font-weight: 600;
+}
+.funding-legend-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.funding-grid {
+  padding: 0.75rem 1.25rem 1rem;
+}
+.funding-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0;
+}
+.funding-row + .funding-row {
+  border-top: 1px solid var(--tp-border);
+}
+.funding-symbol {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--tp-text);
+  width: 2.5rem;
+  flex-shrink: 0;
+}
+.funding-bars {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.funding-bar-pair {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.funding-bar-track {
+  flex: 1;
+  height: 4px;
+  background: var(--tp-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.funding-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+.funding-bar-hl {
+  background: #3b82f6;
+}
+.funding-bar-lt {
+  background: #a855f7;
+}
+.funding-bar-fill.funding-negative {
+  opacity: 0.6;
+}
+.funding-rate-val {
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-family: var(--tp-font-mono);
+  width: 4rem;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 /* ===== Positions Card ===== */
@@ -765,34 +1158,151 @@ usePolling(refresh, 10000)
   overflow: hidden;
 }
 .positions-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1.25rem;
-  border-bottom: 1px solid var(--tp-border);
+  padding: 0.75rem 1.25rem;
 }
 .positions-header h3 {
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .positions-header-right {
   display: flex;
   align-items: center;
   gap: 0.75rem;
 }
-.view-history-btn {
-  background: none;
+
+/* Venue Tabs */
+.venue-tab-group {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--tp-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.venue-tab {
+  font-family: var(--tp-font);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.25rem 0.5rem;
   border: none;
-  color: var(--tp-primary);
-  font-size: 0.8rem;
-  font-weight: 600;
+  background: transparent;
+  color: var(--tp-text-dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-right: 1px solid var(--tp-border);
+}
+.venue-tab:last-child {
+  border-right: none;
+}
+.venue-tab:hover {
+  background: var(--tp-bg-hover);
+  color: var(--tp-text);
+}
+.venue-tab.active {
+  background: var(--tp-primary);
+  color: white;
+}
+
+.view-history-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: 1px solid var(--tp-border);
+  border-radius: 4px;
+  color: var(--tp-text-dim);
+  font-size: 0.65rem;
+  font-weight: 700;
   cursor: pointer;
   font-family: var(--tp-font);
+  padding: 0.25rem 0.5rem;
+  transition: all 0.15s ease;
 }
-.view-history-btn:hover { text-decoration: underline; }
+.view-history-btn:hover {
+  color: var(--tp-primary);
+  border-color: var(--tp-primary);
+}
+
 .positions-body {
   padding: 0;
 }
+
+/* Terminal Table Overrides */
+.terminal-table {
+  font-size: 0.78rem;
+}
+.terminal-table thead tr {
+  background: var(--tp-bg-surface);
+}
+.terminal-table th {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tp-text-dim);
+  font-weight: 700;
+  padding: 0.5rem 0.6rem;
+  white-space: nowrap;
+}
+.terminal-table td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--tp-border);
+}
+.terminal-table tbody tr:hover {
+  background: var(--tp-bg-hover);
+}
+
+.cell-asset {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.asset-name {
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+.mono-cell {
+  font-family: var(--tp-font-mono);
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+.pnl-cell {
+  font-weight: 700;
+  font-family: var(--tp-font-mono);
+  font-size: 0.78rem;
+}
+
+.coin-icon-sm {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.5rem;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+/* Venue label in positions table */
+.venue-label {
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+.venue-hl {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+.venue-lighter {
+  background: rgba(168, 85, 247, 0.1);
+  color: #a855f7;
+}
+
 .empty-positions {
   display: flex;
   flex-direction: column;
@@ -802,26 +1312,27 @@ usePolling(refresh, 10000)
   text-align: center;
 }
 .empty-icon {
-  width: 4rem; height: 4rem;
+  width: 3.5rem;
+  height: 3.5rem;
   border-radius: 50%;
   background: var(--tp-bg-surface);
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
 }
 .empty-title {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   color: var(--tp-text) !important;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.2rem;
 }
 .empty-desc {
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   color: var(--tp-text-dim) !important;
 }
 
-/* ===== Right Column: P&L Card ===== */
+/* ===== P&L Card ===== */
 .pnl-card {
   padding: 1.25rem;
 }
@@ -832,19 +1343,23 @@ usePolling(refresh, 10000)
   margin-bottom: 1rem;
 }
 .pnl-title {
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   font-weight: 700;
   margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .pnl-subtitle {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   color: var(--tp-text-dim);
   margin: 0.15rem 0 0;
+  font-weight: 600;
 }
 .pnl-total {
-  font-size: 1.5rem;
+  font-size: 1.4rem;
   font-weight: 800;
-  font-family: 'Inter', monospace;
+  font-family: var(--tp-font-mono);
+  line-height: 1;
 }
 
 .equity-chart {
@@ -854,6 +1369,7 @@ usePolling(refresh, 10000)
   background: var(--tp-bg-surface);
   border-radius: var(--tp-radius-sm);
   overflow: hidden;
+  border: 1px solid var(--tp-border);
 }
 .equity-svg {
   width: 100%;
@@ -863,25 +1379,28 @@ usePolling(refresh, 10000)
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.35rem;
-  padding: 1.5rem;
+  gap: 0.3rem;
+  padding: 1.25rem;
   color: var(--tp-text-dim);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   text-align: center;
 }
 
 .trade-bars {
   display: flex;
   align-items: flex-end;
-  gap: 2px;
-  height: 2.5rem;
+  gap: 1px;
+  height: 2rem;
   margin-bottom: 0.75rem;
-  padding: 0 2px;
+  padding: 0 1px;
+  background: var(--tp-bg-surface);
+  border-radius: var(--tp-radius-sm);
+  border: 1px solid var(--tp-border);
+  overflow: hidden;
 }
 .trade-bar {
   flex: 1;
-  border-radius: 2px 2px 0 0;
-  min-height: 3px;
+  min-height: 2px;
   transition: opacity 0.15s;
   cursor: default;
 }
@@ -892,45 +1411,75 @@ usePolling(refresh, 10000)
 .pnl-stats-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
+  gap: 0;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-radius-sm);
+  overflow: hidden;
 }
 .pnl-stat {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.4rem 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.72rem;
   border-bottom: 1px solid var(--tp-border);
-  font-size: 0.78rem;
+  border-right: 1px solid var(--tp-border);
 }
-.pnl-stat-label { color: var(--tp-text-dim); }
-.pnl-stat-value { font-weight: 700; font-family: 'Inter', monospace; }
+.pnl-stat:nth-child(even) {
+  border-right: none;
+}
+.pnl-stat:nth-last-child(-n+2) {
+  border-bottom: none;
+}
+.pnl-stat-label {
+  color: var(--tp-text-dim);
+  font-weight: 600;
+}
+.pnl-stat-value {
+  font-weight: 700;
+  font-family: var(--tp-font-mono);
+  font-size: 0.72rem;
+}
 
 .pnl-history-btn {
   width: 100%;
   justify-content: center;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
 }
 
 /* ===== Margin Card ===== */
 .margin-card {
-  padding: 1.25rem;
+  overflow: hidden;
 }
-.margin-header {
-  margin-bottom: 1rem;
+.margin-body {
+  padding: 0.75rem 1.25rem 1rem;
 }
-.margin-header h3 {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.95rem;
-  font-weight: 700;
+.margin-level-badge {
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+.badge-safe {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--tp-success);
+}
+.badge-warning {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--tp-warning);
+}
+.badge-danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--tp-danger);
 }
 .margin-bar-wrap {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
 }
 .margin-bar {
   flex: 1;
@@ -948,10 +1497,11 @@ usePolling(refresh, 10000)
 .bar-warning { background: var(--tp-warning); }
 .bar-danger { background: var(--tp-danger); }
 .margin-pct {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 700;
+  font-family: var(--tp-font-mono);
   color: var(--tp-text-dim);
-  min-width: 3rem;
+  min-width: 2.5rem;
   text-align: right;
 }
 .margin-detail-row {
@@ -964,147 +1514,227 @@ usePolling(refresh, 10000)
   border-top: 1px solid var(--tp-border);
 }
 .meta-label {
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   color: var(--tp-text-dim);
+  font-weight: 600;
 }
 .meta-value {
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 0.78rem;
+  font-weight: 700;
   color: var(--tp-text);
+  font-family: var(--tp-font-mono);
 }
 
 /* ===== Allocation Card ===== */
 .alloc-card {
-  padding: 1.25rem;
+  overflow: hidden;
 }
-.alloc-header {
-  margin-bottom: 1rem;
-}
-.alloc-header h3 {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.95rem;
-  font-weight: 700;
+.alloc-body {
+  padding: 0.75rem 1.25rem 1rem;
 }
 .alloc-bar {
   display: flex;
-  height: 10px;
-  border-radius: 5px;
+  height: 8px;
+  border-radius: 4px;
   overflow: hidden;
-  gap: 2px;
-  margin-bottom: 0.75rem;
+  gap: 1px;
+  margin-bottom: 0.6rem;
 }
 .alloc-segment {
-  min-width: 4px;
-  border-radius: 3px;
+  min-width: 3px;
+  border-radius: 2px;
   transition: width 0.5s ease;
 }
 .alloc-legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1rem;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 .alloc-legend-item {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
 }
 .alloc-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 .alloc-coin {
   font-weight: 700;
   color: var(--tp-text);
+  min-width: 2.5rem;
+}
+.alloc-side {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  min-width: 2.5rem;
 }
 .alloc-pct {
   color: var(--tp-text-dim);
-  font-weight: 500;
+  font-weight: 600;
+  font-family: var(--tp-font-mono);
+  min-width: 2.5rem;
+  text-align: right;
 }
 .alloc-val {
   color: var(--tp-text-dim);
-  font-size: 0.7rem;
+  font-size: 0.65rem;
+  font-family: var(--tp-font-mono);
+  margin-left: auto;
 }
 
-/* ===== Wallet Card ===== */
+/* ===== Wallet & Venues Card ===== */
 .wallet-card {
-  padding: 1.25rem;
+  overflow: hidden;
 }
-.wallet-header {
-  margin-bottom: 1rem;
-}
-.wallet-header h3 {
+.wallet-body {
+  padding: 0.75rem 1.25rem 1rem;
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.95rem;
-  font-weight: 700;
+  flex-direction: column;
+  gap: 0.75rem;
 }
-.wallet-address-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--tp-bg-surface);
+.venue-block {
+  padding: 0.65rem 0.75rem;
   border-radius: var(--tp-radius-sm);
-  margin-bottom: 0.75rem;
+  background: var(--tp-bg-surface);
+  border: 1px solid var(--tp-border);
 }
-.wallet-dot {
-  width: 8px;
-  height: 8px;
+.venue-block-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.venue-block-dot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
+  flex-shrink: 0;
+}
+.venue-block-dot.venue-ok {
   background: var(--tp-success);
   box-shadow: 0 0 6px var(--tp-success);
 }
-.wallet-addr {
-  font-family: var(--tp-font-mono);
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+.venue-block-dot.venue-warn {
+  background: var(--tp-warning);
+  box-shadow: 0 0 6px var(--tp-warning);
 }
-.wallet-chain {
-  font-size: 0.6rem;
+.venue-block-dot.venue-down {
+  background: var(--tp-danger);
+  box-shadow: 0 0 6px var(--tp-danger);
+}
+.venue-block-dot.venue-unknown {
+  background: var(--tp-text-dim);
+}
+.venue-block-name {
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: var(--tp-text);
+}
+.venue-block-chain {
+  font-size: 0.55rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--tp-text-dim);
   background: var(--tp-bg-glass);
-  padding: 0.1rem 0.4rem;
-  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
   margin-left: auto;
 }
-.wallet-detail-row {
+.wallet-address-row {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 0.35rem 0;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  background: var(--tp-bg-glass);
+  border-radius: 3px;
+  margin-bottom: 0.35rem;
 }
-.wallet-detail-row + .wallet-detail-row {
-  border-top: 1px solid var(--tp-border);
+.wallet-addr {
+  font-family: var(--tp-font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--tp-text-muted);
 }
+.venue-block-stats {
+  display: flex;
+  gap: 1rem;
+}
+.venue-mini-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.venue-mini-stat .meta-label {
+  font-size: 0.6rem;
+}
+.venue-mini-stat .meta-value {
+  font-size: 0.72rem;
+}
+
+/* ===== Utility Classes ===== */
+.text-success { color: var(--tp-success) !important; }
+.text-danger { color: var(--tp-danger) !important; }
 
 /* Error banner */
 .wallet-error-banner {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.75rem 1rem;
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  padding: 0.65rem 1rem;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.15);
   border-radius: var(--tp-radius-sm);
   color: var(--tp-danger);
-  font-size: 0.85rem;
-  margin-top: 1.5rem;
+  font-size: 0.8rem;
+  margin-top: 1rem;
+  font-weight: 600;
 }
 
+/* ===== Responsive ===== */
 @media (max-width: 768px) {
-  .prices-grid { grid-template-columns: repeat(3, 1fr); }
+  .system-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .system-bar-left {
+    flex-wrap: wrap;
+  }
+  .system-bar-right {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .system-bar-divider {
+    display: none;
+  }
+  .sys-stat {
+    border-left: none;
+    border-top: 1px solid var(--tp-border);
+    padding: 0.35rem 0.5rem;
+  }
+  .sys-stat:first-child {
+    border-top: none;
+  }
+  .prices-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .positions-header-right {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
 }
 @media (max-width: 480px) {
-  .prices-grid { grid-template-columns: repeat(2, 1fr); }
+  .prices-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .venue-health-group {
+    flex-wrap: wrap;
+  }
 }
 </style>

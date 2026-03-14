@@ -290,26 +290,32 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.run_backtest',
         'schedule': 60.0 * 60 * 6,  # every 6 hours
     },
-    # --- Hyperliquid tasks DISABLED: using Lighter.xyz instead ---
-    # 'sync-crypto-prices': {
-    #     'task': 'crypto.tasks.sync_crypto_prices',
-    #     'schedule': 60.0,
-    # },
-    # 'run-crypto-entry': {
-    #     'task': 'crypto.tasks.run_crypto_entry',
-    #     'schedule': 60.0,
-    # },
-    # 'run-crypto-exit': {
-    #     'task': 'crypto.tasks.run_crypto_exit',
-    #     'schedule': 30.0,
-    # },
+    # --- Hyperliquid: re-enabled alongside Lighter for multi-venue ---
+    'sync-crypto-prices': {
+        'task': 'crypto.tasks.sync_crypto_prices',
+        'schedule': 60.0,
+    },
+    'run-crypto-entry': {
+        'task': 'crypto.tasks.run_crypto_entry',
+        'schedule': 60.0,
+    },
+    'run-crypto-exit': {
+        'task': 'crypto.tasks.run_crypto_exit',
+        'schedule': 30.0,
+    },
+    # --- Lighter.xyz DEX (zero-fee venue) ---
     'run-lighter-entry': {
         'task': 'crypto.tasks.run_lighter_entry',
-        'schedule': 60.0,  # every 1 minute
+        'schedule': 60.0,
     },
     'run-lighter-exit': {
         'task': 'crypto.tasks.run_lighter_exit',
-        'schedule': 30.0,  # every 30 seconds
+        'schedule': 30.0,
+    },
+    # --- Funding Rate Arbitrage Monitor (Hyperliquid vs Lighter) ---
+    'run-funding-arb-scan': {
+        'task': 'crypto.tasks.run_funding_arb_scan',
+        'schedule': 300.0,  # every 5 minutes
     },
     # --- LLM-powered tasks DISABLED: $10/day API cost not justified at current scale ---
     # Re-enable when account is consistently profitable. These are "nice to have"

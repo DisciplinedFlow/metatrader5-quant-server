@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q, UniqueConstraint
 
 
 class CryptoPosition(models.Model):
@@ -18,6 +19,10 @@ class CryptoPosition(models.Model):
         TIME_EXIT = 'TIME_EXIT', 'Time Exit'
         MANUAL = 'MANUAL', 'Manual'
 
+    class Venue(models.TextChoices):
+        LIGHTER = 'LIGHTER', 'Lighter.xyz'
+        HYPERLIQUID = 'HYPERLIQUID', 'Hyperliquid'
+
     symbol = models.CharField(max_length=20)
     side = models.CharField(max_length=5, choices=Side.choices)
     entry_price = models.FloatField()
@@ -31,11 +36,25 @@ class CryptoPosition(models.Model):
     pnl_usd = models.FloatField(null=True, blank=True)
     close_reason = models.CharField(max_length=20, choices=CloseReason.choices, null=True, blank=True)
     peak_profit_usd = models.FloatField(null=True, blank=True, help_text="Peak unrealized PnL in USD, tracked for profit protection")
+    venue = models.CharField(max_length=12, choices=Venue.choices, default='LIGHTER')
     opened_at = models.DateTimeField(auto_now_add=True)
     closed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-opened_at']
+        indexes = [
+            models.Index(fields=['status']),
+            models.Index(fields=['symbol', 'status']),
+            models.Index(fields=['venue', 'status']),
+            models.Index(fields=['status', '-opened_at']),
+        ]
+        constraints = [
+            UniqueConstraint(
+                fields=['symbol', 'venue'],
+                condition=Q(status='OPEN'),
+                name='unique_open_position_per_symbol_venue',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.side} {self.symbol} {self.size} @ {self.entry_price}"

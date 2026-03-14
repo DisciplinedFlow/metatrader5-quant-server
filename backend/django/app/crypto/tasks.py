@@ -111,3 +111,25 @@ def run_lighter_exit():
         logger.error("run_lighter_exit timed out.")
     except Exception as e:
         logger.error(f"run_lighter_exit error: {e}")
+
+
+# ── Funding Rate Arbitrage Monitor ────────────────────────
+
+@shared_task(name='crypto.tasks.run_funding_arb_scan', max_retries=2, soft_time_limit=120)
+def run_funding_arb_scan():
+    """Scan funding rates across Hyperliquid and Lighter.xyz for arb opportunities."""
+    try:
+        from app.quant.algorithms.crypto.funding_arb import scan_funding_arb
+        result = scan_funding_arb()
+        if result.get('opportunity_count', 0) > 0:
+            logger.info(
+                "Funding arb scan: %d opportunities found across %s",
+                result['opportunity_count'],
+                [o['symbol'] for o in result['opportunities']],
+            )
+        else:
+            logger.debug("Funding arb scan: no opportunities (threshold=%.6f)", result.get('threshold', 0))
+    except SoftTimeLimitExceeded:
+        logger.error("run_funding_arb_scan timed out.")
+    except Exception as e:
+        logger.error(f"run_funding_arb_scan error: {e}")

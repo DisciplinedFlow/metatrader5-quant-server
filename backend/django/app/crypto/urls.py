@@ -6,6 +6,7 @@ from .views import (
     CryptoTradeViewSet,
     CryptoBacktestViewSet,
     CryptoBotControlView,
+    CryptoFundingArbView,
     CryptoLogsView,
     CryptoDashboardView,
     CryptoStrategyConfigView,
@@ -20,6 +21,8 @@ router.register(r'backtests', CryptoBacktestViewSet)
 urlpatterns = [
     path('', include(router.urls)),
     path('bot/status/', CryptoBotControlView.as_view(), name='crypto-bot-status'),
+    path('funding-arb/', CryptoFundingArbView.as_view(), name='crypto-funding-arb'),
+    path('funding-rates/', CryptoFundingArbView.as_view(), name='crypto-funding-rates'),
     path('logs/', CryptoLogsView.as_view(), name='crypto-logs'),
     path('dashboard/', CryptoDashboardView.as_view(), name='crypto-dashboard'),
     path('wallet/', CryptoWalletView.as_view(), name='crypto-wallet'),
