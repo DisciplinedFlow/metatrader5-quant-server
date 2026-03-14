@@ -25,10 +25,20 @@ const showInfo = ref(true)
 const showWarning = ref(true)
 const showError = ref(true)
 const sessionId = ref(Math.floor(Math.random() * 90000) + 10000)
+const botPaused = ref(false)
 
 async function refresh() {
-  try {
-    const data = await api.django(`v1/logs/?lines=${lines.value}`)
+  const [logsResult, botResult] = await Promise.allSettled([
+    api.django(`v1/logs/?lines=${lines.value}`),
+    api.getBotStatus(),
+  ])
+
+  if (botResult.status === 'fulfilled') {
+    botPaused.value = botResult.value.paused
+  }
+
+  if (logsResult.status === 'fulfilled') {
+    const data = logsResult.value
     if (!data.logs || data.logs.length === 0) {
       logs.value = []
       status.value = 'Empty log'
@@ -36,8 +46,8 @@ async function refresh() {
     }
     logs.value = data.logs
     status.value = `${data.logs.length} lines -- updated ${new Date().toLocaleTimeString()}`
-  } catch (err) {
-    status.value = `Error: ${err.message}`
+  } else {
+    status.value = `Error: ${logsResult.reason?.message || 'fetch failed'}`
   }
 }
 
@@ -122,9 +132,9 @@ const levelCounts = computed(() => ({
       <div class="logs-header-left">
         <div class="logs-title-row">
           <h1>Bot Logs</h1>
-          <div class="logs-badge-running">
+          <div :class="['logs-badge', botPaused ? 'logs-badge-paused' : 'logs-badge-running']">
             <span class="pulse-ring"></span>
-            Bot Running
+            {{ botPaused ? 'Paused' : 'Running' }}
           </div>
         </div>
         <p class="logs-subtitle">Real-time bot diagnostics & execution logs.</p>
@@ -261,8 +271,12 @@ const levelCounts = computed(() => ({
         <div class="logs-terminal-footer">
           <div class="footer-stats">
             <div class="stat-item">
-              <span class="stat-dot green"></span>
+              <span :class="['stat-dot', botPaused ? 'amber' : 'green']"></span>
               <span>{{ status || 'Connecting...' }}</span>
+            </div>
+            <div v-if="botPaused" class="stat-item">
+              <span class="stat-dot amber"></span>
+              <span>Bot paused</span>
             </div>
           </div>
           <div class="footer-right">

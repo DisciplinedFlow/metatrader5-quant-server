@@ -934,26 +934,31 @@ dialog footer {
   gap: 0.5rem;
 }
 
-/* Running badge */
-.logs-badge-running {
+/* Bot status badge (shared) */
+.logs-badge {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
   padding: 0.15rem 0.55rem;
   border-radius: 9999px;
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
   font-size: 0.6rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  border: 1px solid rgba(34, 197, 94, 0.2);
+  transition: background 0.3s, color 0.3s, border-color 0.3s;
 }
 
-.logs-badge-running .pulse-ring {
+.logs-badge .pulse-ring {
   position: relative;
   width: 8px;
   height: 8px;
+}
+
+/* Running state */
+.logs-badge-running {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.2);
 }
 
 .logs-badge-running .pulse-ring::before {
@@ -972,6 +977,21 @@ dialog footer {
   inset: 0;
   border-radius: 50%;
   background: #22c55e;
+}
+
+/* Paused state */
+.logs-badge-paused {
+  background: rgba(251, 191, 36, 0.1);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+}
+
+.logs-badge-paused .pulse-ring::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #fbbf24;
 }
 
 @keyframes logs-ping {
@@ -1471,6 +1491,10 @@ dialog footer {
 
 .logs-terminal-footer .stat-dot.green {
   background: var(--tp-success);
+}
+
+.logs-terminal-footer .stat-dot.amber {
+  background: #fbbf24;
 }
 
 .logs-terminal-footer .stat-dot.neutral {
