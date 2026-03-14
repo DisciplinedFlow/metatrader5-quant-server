@@ -11,6 +11,7 @@ source /scripts/02-common.sh
 
 # Start servers
 /scripts/07-start-wine-flask.sh
+/scripts/08-start-tick-streamer.sh
 
 # Keep the script running
 tail -f /dev/null
