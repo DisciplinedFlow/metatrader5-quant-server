@@ -95,6 +95,20 @@ def close_algorithm():
                         _update_ml_features(closed_trade)
                     except Exception as e:
                         logger.debug(f"ML feature update skipped: {e}")
+
+                    # Record to knowledge graph (async, fire-and-forget)
+                    try:
+                        from app.quant.tasks import record_to_graph
+                        from app.nexus.models import TradeFeature
+                        tf = TradeFeature.objects.filter(trade=closed_trade).first()
+                        features = tf.features_json if tf and isinstance(tf.features_json, dict) else {}
+                        record_to_graph.delay({
+                            'type': 'trade',
+                            'trade_id': closed_trade.id,
+                            'features': features,
+                        })
+                    except Exception:
+                        pass  # Graph recording is optional
                 else:
                     error_msg = f"Failed to close trade {ticket}."
                     logger.error({"error": error_msg, "ticket": ticket})

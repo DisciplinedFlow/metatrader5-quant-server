@@ -87,10 +87,10 @@ def _check_backtest_gate():
 
 def entry_algorithm():
     try:
-        # Check backtest gate first
-        if not _check_backtest_gate():
-            logger.info("SCALPING entry blocked by backtest gate.")
-            return
+        # Backtest gate disabled during data collection phase (Mar 15-31)
+        # if not _check_backtest_gate():
+        #     logger.info("SCALPING entry blocked by backtest gate.")
+        #     return
 
         open_count = _count_open_trades()
         if open_count >= MAX_OPEN_TRADES:

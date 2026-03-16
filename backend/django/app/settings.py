@@ -272,7 +272,18 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.run_strategy_rotation': {'queue': 'analysis'},
     'quant.tasks.run_ml_retrain': {'queue': 'analysis'},
     'quant.tasks.run_llm_retrain': {'queue': 'analysis'},
+    'quant.tasks.record_to_graph': {'queue': 'graph'},
+    'quant.tasks.run_graph_enrichment': {'queue': 'analysis'},
+    'quant.tasks.check_graph_health': {'queue': 'default'},
 }
+
+# --- Neo4j Knowledge Graph ---
+NEO4J_URI = os.getenv('NEO4J_URI', 'bolt://neo4j:7687')
+NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
+NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', '')
+GRAPH_FEATURES_ACTIVE = os.getenv('GRAPH_FEATURES_ACTIVE', 'false').lower() == 'true'
+GRAPH_FEATURES_LIVE_FALLBACK = False
+GRAPH_ROUTER_SIGNAL_ACTIVE = os.getenv('GRAPH_ROUTER_SIGNAL_ACTIVE', 'false').lower() == 'true'
 CELERY_BEAT_SCHEDULE = {
     'run-quant-entry-algorithm': {
         'task': 'quant.tasks.run_quant_entry_algorithm',  # This should match the @shared_task name
@@ -361,6 +372,10 @@ CELERY_BEAT_SCHEDULE = {
     'check-tick-consumer-health': {
         'task': 'quant.tasks.check_tick_consumer_health',
         'schedule': 60.0,  # every 1 minute
+    },
+    'check-graph-health': {
+        'task': 'quant.tasks.check_graph_health',
+        'schedule': 300.0,  # every 5 minutes
     },
     'run-strategy-orchestrator': {
         'task': 'quant.tasks.run_strategy_orchestrator',

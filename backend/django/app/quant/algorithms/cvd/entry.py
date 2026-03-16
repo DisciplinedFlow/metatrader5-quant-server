@@ -56,7 +56,8 @@ logger = logging.getLogger(__name__)
 # --- Adaptive Trading Thresholds ---
 CIRCUIT_BREAKER_SYMBOL_LOSSES = 3    # Consecutive losses on same symbol → pause
 CIRCUIT_BREAKER_GLOBAL_LOSSES = 5    # Consecutive losses across all symbols → pause
-CIRCUIT_BREAKER_COOLDOWN_HOURS = 1   # How long to pause after circuit breaker trips
+CIRCUIT_BREAKER_GLOBAL_COOLDOWN_MINUTES = 15   # Global cooldown (was 1h — too long for algo bot)
+CIRCUIT_BREAKER_SYMBOL_COOLDOWN_MINUTES = 30   # Per-symbol cooldown (pair may be unfavorable)
 SYMBOL_FILTER_LOOKBACK = 10          # Trades to check for symbol performance
 SYMBOL_FILTER_MIN_WR = 0.35          # Minimum win rate to continue trading a symbol
 SYMBOL_FILTER_COOLDOWN_HOURS = 8     # How long to skip a poorly-performing symbol
@@ -146,7 +147,8 @@ def _get_energy_overrides(symbol):
         from app.quant.indicators.energy import energy_volatility_regime
         df = fetch_data_pos(symbol, MT5Timeframe.H4, 100)
         if df is not None and len(df) >= 55:
-            regime = energy_volatility_regime(df)
+            regime_series = energy_volatility_regime(df)
+            regime = regime_series.iloc[-1] if hasattr(regime_series, 'iloc') else regime_series
             if regime == 'crisis':
                 overrides['vol_regime_mult'] = 0.0  # No new positions
                 logger.warning(
@@ -174,7 +176,8 @@ def _get_energy_overrides(symbol):
     try:
         from app.quant.indicators.energy import energy_session_filter
         if df is not None and len(df) > 0:
-            session = energy_session_filter(df)
+            session_series = energy_session_filter(df)
+            session = session_series.iloc[-1] if hasattr(session_series, 'iloc') else session_series
             if session == 'dead_zone':
                 overrides['vol_regime_mult'] = 0.0
                 logger.info(
@@ -194,7 +197,8 @@ def _get_energy_overrides(symbol):
         try:
             from app.quant.indicators.energy import ng_seasonal_filter
             if df is not None and len(df) > 0:
-                seasonal = ng_seasonal_filter(df)
+                seasonal_series = ng_seasonal_filter(df)
+                seasonal = seasonal_series.iloc[-1] if hasattr(seasonal_series, 'iloc') else seasonal_series
                 if seasonal == 'bearish':
                     overrides['vol_regime_mult'] *= 0.5
                     logger.info(
@@ -425,14 +429,24 @@ def _compute_sl_tp(symbol, entry_price, order_type, atr_val, sl_mult, tp_mult):
 def _is_trading_session():
     """Check if current UTC hour is within allowed trading sessions.
 
-    Currently disabled — trading 24/7 across all sessions to support
-    commodities (XAUUSD, NG-C, UKOUSDft) which trade 23:00-22:00 UTC.
-    Only blocks Sunday when all markets are closed.
+    Trading 24/7 across all sessions except:
+    - Saturday (markets closed)
+    - Sunday before 22:00 UTC (markets closed)
+    - Sunday 22:00-Monday 02:00 UTC (first 4h dead zone, thin liquidity)
     """
     from datetime import datetime, timezone as tz
     now = datetime.now(tz.utc)
-    # Block all Sunday trading (weekday 6 = Sunday, markets closed)
-    if now.weekday() == 6:
+    # Saturday = markets closed
+    if now.weekday() == 5:
+        return False
+    # Sunday before 22:00 UTC = markets closed
+    if now.weekday() == 6 and now.hour < 22:
+        return False
+    # Sunday 22:00-23:59 = first hours dead zone
+    if now.weekday() == 6 and now.hour >= 22:
+        return False
+    # Monday 00:00-01:59 = still dead zone (4h after Sunday open)
+    if now.weekday() == 0 and now.hour < 2:
         return False
     return True
 
@@ -528,10 +542,10 @@ def _check_circuit_breaker(strategy_config, symbol=None):
 
             if symbol_losses >= CIRCUIT_BREAKER_SYMBOL_LOSSES:
                 cache.set(cooldown_key, True,
-                          timeout=CIRCUIT_BREAKER_COOLDOWN_HOURS * 3600)
+                          timeout=CIRCUIT_BREAKER_SYMBOL_COOLDOWN_MINUTES * 60)
                 return False, (
                     f"Circuit breaker: {symbol_losses} consecutive losses on {symbol}, "
-                    f"pausing for {CIRCUIT_BREAKER_COOLDOWN_HOURS}h"
+                    f"pausing for {CIRCUIT_BREAKER_SYMBOL_COOLDOWN_MINUTES}m"
                 )
 
         # Check global consecutive losses
@@ -548,10 +562,10 @@ def _check_circuit_breaker(strategy_config, symbol=None):
 
         if global_losses >= CIRCUIT_BREAKER_GLOBAL_LOSSES:
             cache.set(global_key, True,
-                      timeout=CIRCUIT_BREAKER_COOLDOWN_HOURS * 3600)
+                      timeout=CIRCUIT_BREAKER_GLOBAL_COOLDOWN_MINUTES * 60)
             return False, (
                 f"Circuit breaker: {global_losses} consecutive global losses, "
-                f"pausing all entries for {CIRCUIT_BREAKER_COOLDOWN_HOURS}h"
+                f"pausing all entries for {CIRCUIT_BREAKER_GLOBAL_COOLDOWN_MINUTES}m"
             )
 
         return True, "OK"
@@ -1031,19 +1045,45 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
         if not TRAINING_MODE:
             if not _is_trading_session():
                 logger.info(f"CVD: Outside trading session (07:00-17:00 UTC), skipping.")
+                try:
+                    from app.quant.tasks import record_to_graph
+                    record_to_graph.delay({
+                        'type': 'rejection',
+                        'symbol': 'ALL',
+                        'direction': 'UNKNOWN',
+                        'rejection_layer': 'TIME_FILTER',
+                        'rejection_reason': 'Outside trading session',
+                        'confluence_score': 0,
+                        'regime': 'UNKNOWN',
+                    })
+                except Exception:
+                    pass
                 return
 
             # --- High-impact economic event guard (fast Redis check) ---
             event_blocked, event_name = _check_high_impact_events()
             if event_blocked:
                 logger.warning(f"CVD: Entry blocked: high-impact event '{event_name}' within 30min window")
+                try:
+                    from app.quant.tasks import record_to_graph
+                    record_to_graph.delay({
+                        'type': 'rejection',
+                        'symbol': 'ALL',
+                        'direction': 'UNKNOWN',
+                        'rejection_layer': 'MARKET_CONTEXT',
+                        'rejection_reason': f'High-impact event: {event_name}',
+                        'confluence_score': 0,
+                        'regime': 'UNKNOWN',
+                    })
+                except Exception:
+                    pass
                 return
 
         # --- Global circuit breaker check ---
         if not TRAINING_MODE:
             cb_ok, cb_reason = _check_circuit_breaker(strategy_config)
             if not cb_ok:
-                logger.warning(f"CVD: {cb_reason}")
+                logger.debug(f"CVD: {cb_reason}")
                 return
 
         # --- Streak multiplier (computed once per cycle, vol-targeting is per-pair) ---
@@ -1134,7 +1174,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             if not TRAINING_MODE:
                 cb_ok, cb_reason = _check_circuit_breaker(strategy_config, symbol=pair)
                 if not cb_ok:
-                    logger.warning(f"CVD: {cb_reason}")
+                    logger.debug(f"CVD: {pair} — {cb_reason}")
                     continue
 
             # --- Anti-churn: post-trade cooldown ---
@@ -1148,6 +1188,19 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             sym_ok, sym_mult, sym_reason = _check_symbol_performance(pair)
             if not sym_ok and not TRAINING_MODE:
                 logger.debug(f"CVD: {sym_reason}")
+                try:
+                    from app.quant.tasks import record_to_graph
+                    record_to_graph.delay({
+                        'type': 'rejection',
+                        'symbol': pair,
+                        'direction': 'UNKNOWN',
+                        'rejection_layer': 'SYMBOL_FILTER',
+                        'rejection_reason': sym_reason,
+                        'confluence_score': 0,
+                        'regime': 'UNKNOWN',
+                    })
+                except Exception:
+                    pass
                 continue
             if sym_mult < 1.0:
                 logger.info(f"CVD: {sym_reason}")
@@ -1237,6 +1290,19 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 )
                 if not ctx_ok:
                     logger.warning(f"CVD: {pair} {order_type} — {ctx_reason}")
+                    try:
+                        from app.quant.tasks import record_to_graph
+                        record_to_graph.delay({
+                            'type': 'rejection',
+                            'symbol': pair,
+                            'direction': order_type,
+                            'rejection_layer': 'MARKET_CONTEXT',
+                            'rejection_reason': ctx_reason,
+                            'confluence_score': 0,
+                            'regime': 'UNKNOWN',
+                        })
+                    except Exception:
+                        pass
                     continue
                 if ctx_mult < 1.0:
                     logger.info(f"CVD: {pair} {order_type} — {ctx_reason}")
@@ -1268,6 +1334,19 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     f"CVD: {grp_reason} — applying {GROUP_TENDENCY_SIZE_PENALTY:.0%} "
                     f"sizing penalty"
                 )
+                try:
+                    from app.quant.tasks import record_to_graph
+                    record_to_graph.delay({
+                        'type': 'rejection',
+                        'symbol': pair,
+                        'direction': order_type,
+                        'rejection_layer': 'GROUP_TENDENCY',
+                        'rejection_reason': f'{grp_reason} — {GROUP_TENDENCY_SIZE_PENALTY:.0%} sizing penalty',
+                        'confluence_score': 0,
+                        'regime': 'UNKNOWN',
+                    })
+                except Exception:
+                    pass
             else:
                 logger.debug(f"CVD: {grp_reason}")
 
@@ -1286,6 +1365,19 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 if not ml_accept and not TRAINING_MODE:
                     logger.info(f"CVD: ML REJECT {pair} {order_type} score={ml_score:.2f} — {ml_reason}")
                     _store_rejected_features(pair, ml_score, ml_features)
+                    try:
+                        from app.quant.tasks import record_to_graph
+                        record_to_graph.delay({
+                            'type': 'rejection',
+                            'symbol': pair,
+                            'direction': order_type,
+                            'rejection_layer': 'ML_META_FILTER',
+                            'rejection_reason': f'ML REJECT score={ml_score:.2f} — {ml_reason}',
+                            'confluence_score': 0,
+                            'regime': 'UNKNOWN',
+                        })
+                    except Exception:
+                        pass
                     continue
                 if not ml_accept:
                     logger.info(f"CVD: TRAINING MODE — ML would reject {pair} {order_type} score={ml_score:.2f}, taking anyway")
@@ -1446,13 +1538,47 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                             f"{confluence_score.total_score}/{confluence_score.max_possible} "
                             f"({confluence_score.band}) — skipping"
                         )
+                        try:
+                            from app.quant.tasks import record_to_graph
+                            record_to_graph.delay({
+                                'type': 'rejection',
+                                'symbol': pair,
+                                'direction': order_type,
+                                'rejection_layer': 'CONFLUENCE_GATE',
+                                'rejection_reason': f'Confluence too low: {confluence_score.total_score}/{confluence_score.max_possible} ({confluence_score.band})',
+                                'confluence_score': confluence_score.total_score,
+                                'regime': 'UNKNOWN',
+                            })
+                        except Exception:
+                            pass
                         continue
+
+                    # Raise minimum confluence outside kill zones (Livermore: patience)
+                    try:
+                        from app.quant.indicators.kill_zones import is_in_kill_zone
+                        if not is_in_kill_zone():
+                            router_min_confluence = max(router_min_confluence, 6)
+                    except Exception:
+                        pass
 
                     if confluence_score.total_score < router_min_confluence:
                         logger.info(
                             f"CVD: Router requires min confluence {router_min_confluence} "
                             f"for {pair}, got {confluence_score.total_score} — skipping"
                         )
+                        try:
+                            from app.quant.tasks import record_to_graph
+                            record_to_graph.delay({
+                                'type': 'rejection',
+                                'symbol': pair,
+                                'direction': order_type,
+                                'rejection_layer': 'CONFLUENCE_GATE',
+                                'rejection_reason': f'Router requires min confluence {router_min_confluence}, got {confluence_score.total_score}',
+                                'confluence_score': confluence_score.total_score,
+                                'regime': 'UNKNOWN',
+                            })
+                        except Exception:
+                            pass
                         continue
                 else:
                     logger.info(
@@ -1526,7 +1652,28 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     kz_name, kz_info = None, None
                 # Energy volatility regime multiplier
                 energy_mult = energy_overrides['vol_regime_mult'] if energy_overrides else 1.0
-                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult * kz_mult * router_mult * energy_mult
+                # Consecutive loss size reduction (Paul Tudor Jones: "decrease when trading poorly")
+                loss_streak_mult = 1.0
+                try:
+                    from app.nexus.models import Trade
+                    recent = Trade.objects.filter(
+                        close_time__isnull=False,
+                        strategy_config=strategy_config
+                    ).order_by('-close_time')[:5]
+                    consecutive_losses = 0
+                    for t in recent:
+                        if t.pnl and t.pnl <= 0:
+                            consecutive_losses += 1
+                        else:
+                            break
+                    if consecutive_losses >= 3:
+                        loss_streak_mult = 0.25
+                    elif consecutive_losses >= 2:
+                        loss_streak_mult = 0.50
+                except Exception:
+                    pass
+                conf_mult = confluence_score.size_multiplier if confluence_score else 1.0
+                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult * kz_mult * router_mult * energy_mult * loss_streak_mult * conf_mult
                 size_multiplier = max(0.1, min(2.0, size_multiplier))
                 base_capital = energy_overrides['capital_per_trade'] if energy_overrides else CAPITAL_PER_TRADE
                 order_capital = base_capital * size_multiplier
@@ -1538,7 +1685,8 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         f"${CAPITAL_PER_TRADE:.2f} x {size_multiplier:.2f} = ${order_capital:.2f} "
                         f"(vol={vol_mult:.2f}, sym={sym_mult:.2f}, ctx={ctx_mult:.2f}, "
                         f"grp={group_mult:.2f}, orch={orch_mult:.2f}, pres={pres_mult:.2f}, "
-                        f"kz={kz_mult:.2f} [{kz_desc}], router={router_mult:.2f})"
+                        f"kz={kz_mult:.2f} [{kz_desc}], router={router_mult:.2f}, "
+                        f"loss_streak={loss_streak_mult:.2f}, conf={conf_mult:.2f})"
                     )
 
                 order_size_usd = calculate_order_size_usd(order_capital, LEVERAGE)

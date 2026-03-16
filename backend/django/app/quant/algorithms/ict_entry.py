@@ -789,6 +789,22 @@ def evaluate_ict_setup(symbol: str) -> Optional[ICTSetup]:
     # -----------------------------------------------------------------------
     step1 = _check_step1_htf_bias(symbol)
     if step1 is None:
+        try:
+            from app.quant.tasks import record_to_graph
+            record_to_graph.delay({
+                'type': 'ict_partial',
+                'symbol': symbol,
+                'direction': '',
+                'steps_completed': 0,
+                'failed_at_step': 1,
+                'step1_bias': '',
+                'step2_sweep': False,
+                'step3_mss': '',
+                'step4_fvg': False,
+                'step5_price': False,
+            })
+        except Exception:
+            pass
         return None
 
     htf_direction = step1['direction']  # 'bullish' or 'bearish'
@@ -817,6 +833,22 @@ def evaluate_ict_setup(symbol: str) -> Optional[ICTSetup]:
     # -----------------------------------------------------------------------
     step2 = _check_step2_liquidity_sweep(df_m15, htf_direction, symbol)
     if step2 is None:
+        try:
+            from app.quant.tasks import record_to_graph
+            record_to_graph.delay({
+                'type': 'ict_partial',
+                'symbol': symbol,
+                'direction': htf_direction,
+                'steps_completed': 1,
+                'failed_at_step': 2,
+                'step1_bias': htf_direction,
+                'step2_sweep': False,
+                'step3_mss': '',
+                'step4_fvg': False,
+                'step5_price': False,
+            })
+        except Exception:
+            pass
         return None
 
     sweep_bar_idx = step2['bar_idx']
@@ -830,6 +862,22 @@ def evaluate_ict_setup(symbol: str) -> Optional[ICTSetup]:
         df_m15, sweep_bar_idx, htf_direction, symbol,
     )
     if step3 is None:
+        try:
+            from app.quant.tasks import record_to_graph
+            record_to_graph.delay({
+                'type': 'ict_partial',
+                'symbol': symbol,
+                'direction': htf_direction,
+                'steps_completed': 2,
+                'failed_at_step': 3,
+                'step1_bias': htf_direction,
+                'step2_sweep': True,
+                'step3_mss': '',
+                'step4_fvg': False,
+                'step5_price': False,
+            })
+        except Exception:
+            pass
         return None
 
     mss_bar_idx = step3['bar_idx']
@@ -839,6 +887,22 @@ def evaluate_ict_setup(symbol: str) -> Optional[ICTSetup]:
     # -----------------------------------------------------------------------
     step4 = _check_step4_fvg(df_m15, mss_bar_idx, htf_direction, symbol)
     if step4 is None:
+        try:
+            from app.quant.tasks import record_to_graph
+            record_to_graph.delay({
+                'type': 'ict_partial',
+                'symbol': symbol,
+                'direction': htf_direction,
+                'steps_completed': 3,
+                'failed_at_step': 4,
+                'step1_bias': htf_direction,
+                'step2_sweep': True,
+                'step3_mss': step3['type'],
+                'step4_fvg': False,
+                'step5_price': False,
+            })
+        except Exception:
+            pass
         return None
 
     fvg_zone = {
@@ -853,6 +917,22 @@ def evaluate_ict_setup(symbol: str) -> Optional[ICTSetup]:
     # -----------------------------------------------------------------------
     step5 = _check_step5_price_at_fvg(df_m15, fvg_zone, htf_direction, symbol)
     if step5 is None:
+        try:
+            from app.quant.tasks import record_to_graph
+            record_to_graph.delay({
+                'type': 'ict_partial',
+                'symbol': symbol,
+                'direction': htf_direction,
+                'steps_completed': 4,
+                'failed_at_step': 5,
+                'step1_bias': htf_direction,
+                'step2_sweep': True,
+                'step3_mss': step3['type'],
+                'step4_fvg': True,
+                'step5_price': False,
+            })
+        except Exception:
+            pass
         return None
 
     # -----------------------------------------------------------------------
@@ -911,6 +991,38 @@ def evaluate_ict_setup(symbol: str) -> Optional[ICTSetup]:
         f"5.Price@FVG | {trade_direction} entry={entry_price:.5f} "
         f"SL={sl_tp['sl']:.5f} TP={sl_tp['tp']:.5f} R:R={sl_tp['rr_ratio']}"
     )
+
+    # Record confirmed 5-step setup
+    try:
+        from app.quant.tasks import record_to_graph
+        record_to_graph.delay({
+            'type': 'ict_partial',
+            'symbol': symbol,
+            'direction': htf_direction,
+            'steps_completed': 5,
+            'failed_at_step': 0,
+            'step1_bias': htf_direction,
+            'step2_sweep': True,
+            'step3_mss': step3['type'],
+            'step4_fvg': True,
+            'step5_price': True,
+        })
+    except Exception:
+        pass
+
+    # Record HTF bias for confirmed setups
+    try:
+        from app.quant.tasks import record_to_graph
+        record_to_graph.delay({
+            'type': 'htf_bias',
+            'symbol': symbol,
+            'bias': htf_bias.bias,
+            'confidence': htf_bias.confidence,
+            'ema_direction': htf_bias.ema_direction,
+            'swing_structure': htf_bias.swing_structure,
+        })
+    except Exception:
+        pass
 
     return setup
 

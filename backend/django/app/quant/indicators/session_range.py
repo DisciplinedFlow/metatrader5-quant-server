@@ -61,7 +61,11 @@ def _extract_hours_series(index, df=None):
 # ---------------------------------------------------------------------------
 
 def asian_range(df, params):
-    """Calculate the Asian session high and low from the DataFrame.
+    """Calculate the Asian session high and low for each bar in the DataFrame.
+
+    For each bar, the most recent completed Asian session range (high/low/width)
+    is computed. Bars inside the Asian session or before any completed session
+    receive ``'neutral'``.
 
     The Asian session spans from ``asian_start_hour`` (default 22:00 UTC)
     to ``asian_end_hour`` (default 06:00 UTC).  Because 22:00 > 06:00 the
@@ -72,31 +76,76 @@ def asian_range(df, params):
         params: dict with optional keys ``asian_start_hour``, ``asian_end_hour``.
 
     Returns:
-        Pipe-delimited string:
+        pd.Series of pipe-delimited strings
         ``"range_high=X.XXXXX|range_low=X.XXXXX|range_width=X.XXXXX"``
-        or ``"neutral"`` when no Asian session data is available.
+        or ``"neutral"`` per bar.
     """
     asian_start = params.get('asian_start_hour', 22)
     asian_end = params.get('asian_end_hour', 6)
 
     if df.empty or len(df) < 2:
-        return 'neutral'
+        return pd.Series('neutral', index=df.index)
 
-    asian_mask = _asian_session_mask(df.index, asian_start, asian_end, df=df)
-    asian_bars = df.loc[asian_mask]
-
-    if asian_bars.empty:
-        return 'neutral'
-
-    range_high = float(asian_bars['high'].max())
-    range_low = float(asian_bars['low'].min())
-    range_width = range_high - range_low
-
-    return (
-        f"range_high={range_high:.5f}"
-        f"|range_low={range_low:.5f}"
-        f"|range_width={range_width:.5f}"
+    mask = np.asarray(
+        _asian_session_mask(df.index, asian_start, asian_end, df=df)
     )
+
+    if not mask.any():
+        return pd.Series('neutral', index=df.index)
+
+    highs = df['high'].values
+    lows = df['low'].values
+    n = len(df)
+    result = ['neutral'] * n
+
+    # Pre-compute completed Asian session ranges by scanning once.
+    # Track session boundaries: each contiguous block of Asian bars
+    # is a session. A session is "completed" once a non-Asian bar appears
+    # after it.
+    current_range_high = None
+    current_range_low = None
+    in_session = False
+    session_high = None
+    session_low = None
+
+    for i in range(n):
+        if mask[i]:
+            # Inside Asian session — accumulate session range
+            if not in_session:
+                in_session = True
+                session_high = highs[i]
+                session_low = lows[i]
+            else:
+                if highs[i] > session_high:
+                    session_high = highs[i]
+                if lows[i] < session_low:
+                    session_low = lows[i]
+            # Bars inside the Asian session get the previous completed range
+            if current_range_high is not None:
+                rw = current_range_high - current_range_low
+                result[i] = (
+                    f"range_high={current_range_high:.5f}"
+                    f"|range_low={current_range_low:.5f}"
+                    f"|range_width={rw:.5f}"
+                )
+            # else stays 'neutral'
+        else:
+            # Outside Asian session
+            if in_session:
+                # Session just completed — lock in the range
+                current_range_high = session_high
+                current_range_low = session_low
+                in_session = False
+            if current_range_high is not None:
+                rw = current_range_high - current_range_low
+                result[i] = (
+                    f"range_high={current_range_high:.5f}"
+                    f"|range_low={current_range_low:.5f}"
+                    f"|range_width={rw:.5f}"
+                )
+            # else stays 'neutral'
+
+    return pd.Series(result, index=df.index)
 
 
 # ---------------------------------------------------------------------------
@@ -106,74 +155,100 @@ def asian_range(df, params):
 def sweep_fade_signal(df, params):
     """Detect liquidity sweeps beyond the Asian range with a reversal back inside.
 
-    Logic:
-        1. Identify the most recent completed Asian session's high/low.
-        2. Check if any of the last ``confirmation_candles`` wicked beyond
-           the range by at least ``sweep_pips``.
-        3. Check if the latest candle closed back inside the range.
-        4. Optionally confirm with RSI divergence (higher-high price but
-           lower-high RSI for bearish, or lower-low price but higher-low
-           RSI for bullish).
+    For each bar the function:
+        1. Finds the most recent completed Asian session's high/low
+           before that bar.
+        2. Checks if any of the previous ``confirmation_candles`` bars
+           wicked beyond the range by at least ``sweep_pips``.
+        3. Checks if the current bar closed back inside the range.
 
     Args:
         df: DataFrame with DatetimeIndex (UTC) and OHLCV columns.
         params: dict with optional keys ``sweep_pips`` (default 3),
                 ``confirmation_candles`` (default 3), ``pip_size``
-                (default 0.0001), ``asian_start_hour``, ``asian_end_hour``,
-                ``rsi_period`` (default 14).
+                (default 0.0001), ``asian_start_hour``, ``asian_end_hour``.
 
     Returns:
-        ``'bullish_sweep'``, ``'bearish_sweep'``, or ``'neutral'``.
+        pd.Series of ``'bullish_sweep'``, ``'bearish_sweep'``, or
+        ``'neutral'`` per bar.
     """
     sweep_pips = params.get('sweep_pips', 3)
     confirmation_candles = params.get('confirmation_candles', 3)
     pip_size = params.get('pip_size', 0.0001)
     asian_start = params.get('asian_start_hour', 22)
     asian_end = params.get('asian_end_hour', 6)
-    rsi_period = params.get('rsi_period', 14)
 
     sweep_distance = sweep_pips * pip_size
 
     if df.empty or len(df) < confirmation_candles + 1:
-        return 'neutral'
+        return pd.Series('neutral', index=df.index)
 
-    # --- Resolve the most recent *completed* Asian session ----------------
-    range_high, range_low = _last_completed_asian_range(
-        df, asian_start, asian_end,
+    mask = np.asarray(
+        _asian_session_mask(df.index, asian_start, asian_end, df=df)
     )
-    if range_high is None or range_low is None:
-        return 'neutral'
 
-    # --- Check sweep & close-back within the look-back window -------------
-    window = df.iloc[-confirmation_candles:]
-    latest = df.iloc[-1]
+    highs = df['high'].values
+    lows = df['low'].values
+    closes = df['close'].values
+    n = len(df)
+    signals = ['neutral'] * n
 
-    swept_high = float(window['high'].max()) > range_high + sweep_distance
-    swept_low = float(window['low'].min()) < range_low - sweep_distance
+    # Track the completed Asian range as we scan forward.
+    current_range_high = None
+    current_range_low = None
+    in_session = False
+    session_high = None
+    session_low = None
 
-    closed_inside = range_low <= float(latest['close']) <= range_high
+    for i in range(n):
+        if mask[i]:
+            # Inside Asian session — accumulate range
+            if not in_session:
+                in_session = True
+                session_high = highs[i]
+                session_low = lows[i]
+            else:
+                if highs[i] > session_high:
+                    session_high = highs[i]
+                if lows[i] < session_low:
+                    session_low = lows[i]
+            # Bars inside the Asian session stay 'neutral' (range still forming)
+            continue
 
-    if not closed_inside:
-        return 'neutral'
+        # Outside Asian session
+        if in_session:
+            # Session just completed — lock in the range
+            current_range_high = session_high
+            current_range_low = session_low
+            in_session = False
 
-    # --- Determine direction and apply RSI divergence filter ---------------
-    rsi_vals = _rsi(df['close'], rsi_period)
+        if current_range_high is None:
+            continue
 
-    if swept_high and not swept_low:
-        # Bearish sweep fade — price took the high then reversed
-        if _bearish_rsi_divergence(df, rsi_vals, confirmation_candles):
-            return 'bearish_sweep'
-        # Even without divergence the structure is valid
-        return 'bearish_sweep'
+        # Not enough preceding bars for the confirmation window
+        if i < confirmation_candles:
+            continue
 
-    if swept_low and not swept_high:
-        # Bullish sweep fade — price took the low then reversed
-        if _bullish_rsi_divergence(df, rsi_vals, confirmation_candles):
-            return 'bullish_sweep'
-        return 'bullish_sweep'
+        # Check the look-back window of confirmation_candles bars BEFORE bar i
+        window_start = i - confirmation_candles
+        window_highs = highs[window_start:i]
+        window_lows = lows[window_start:i]
 
-    # Both sides swept (whipsaw) — ambiguous, stay flat
-    return 'neutral'
+        swept_high = float(window_highs.max()) > current_range_high + sweep_distance
+        swept_low = float(window_lows.min()) < current_range_low - sweep_distance
+
+        closed_inside = current_range_low <= closes[i] <= current_range_high
+
+        if not closed_inside:
+            continue
+
+        if swept_high and not swept_low:
+            signals[i] = 'bearish_sweep'
+        elif swept_low and not swept_high:
+            signals[i] = 'bullish_sweep'
+        # Both sides swept (whipsaw) — ambiguous, stays 'neutral'
+
+    return pd.Series(signals, index=df.index)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +256,7 @@ def sweep_fade_signal(df, params):
 # ---------------------------------------------------------------------------
 
 def session_filter(df, params):
-    """Return the current trading session based on the last candle's timestamp.
+    """Return the trading session for each bar based on its timestamp.
 
     Sessions (UTC):
         asian       22:00 - 06:00  (wraps midnight)
@@ -194,22 +269,21 @@ def session_filter(df, params):
         params: dict (unused, kept for interface consistency).
 
     Returns:
-        ``'asian'``, ``'london'``, ``'new_york'``, or ``'off_hours'``.
+        pd.Series of ``'asian'``, ``'london'``, ``'new_york'``, or
+        ``'off_hours'`` per bar.
     """
     if df.empty:
-        return 'off_hours'
+        return pd.Series('off_hours', index=df.index)
 
-    hour = _extract_hour(df)
-    if hour is None:
-        return 'off_hours'
+    hours = _extract_hours_series(df.index, df=df)
+    if hours is None:
+        return pd.Series('off_hours', index=df.index)
 
-    if hour >= 22 or hour < 6:
-        return 'asian'
-    if 7 <= hour < 12:
-        return 'london'
-    if 12 <= hour < 17:
-        return 'new_york'
-    return 'off_hours'
+    result = pd.Series('off_hours', index=df.index)
+    result[(hours >= 22) | (hours < 6)] = 'asian'
+    result[(hours >= 7) & (hours < 12)] = 'london'
+    result[(hours >= 12) & (hours < 17)] = 'new_york'
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +291,7 @@ def session_filter(df, params):
 # ---------------------------------------------------------------------------
 
 def london_killzone_active(df, params):
-    """Check whether the latest candle falls inside the London Kill Zone.
+    """Check whether each bar falls inside the London Kill Zone.
 
     The London Kill Zone (07:00-10:00 UTC) is the highest-probability
     window for GBPUSD sweep-fade setups.
@@ -227,17 +301,18 @@ def london_killzone_active(df, params):
         params: dict (unused).
 
     Returns:
-        ``'active'`` or ``'inactive'``.
+        pd.Series of ``'active'`` or ``'inactive'`` per bar.
     """
     if df.empty:
-        return 'inactive'
+        return pd.Series('inactive', index=df.index)
 
-    hour = _extract_hour(df)
-    if hour is None:
-        return 'inactive'
-    if 7 <= hour < 10:
-        return 'active'
-    return 'inactive'
+    hours = _extract_hours_series(df.index, df=df)
+    if hours is None:
+        return pd.Series('inactive', index=df.index)
+
+    result = pd.Series('inactive', index=df.index)
+    result[(hours >= 7) & (hours < 10)] = 'active'
+    return result
 
 
 # ---------------------------------------------------------------------------

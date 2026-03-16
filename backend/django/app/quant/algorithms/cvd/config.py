@@ -6,10 +6,10 @@ LEVERAGE = 200
 CAPITAL_PER_TRADE = 2000
 MAX_LOT_SIZE = 1.0     # Hard safety cap — never exceed this regardless of sizing math
 DEVIATION = 20
-MAX_OPEN_TRADES = 5    # Reduced from 10 — less exposure with only 3 active strategies
+MAX_OPEN_TRADES = 20   # Opened up for data collection — circuit breakers + daily halt still protect
 ATR_PERIOD = 14
 SL_ATR_MULTIPLIER = 1.8   # Room to breathe — noise stops at 1.2x killed 7-min median trades
-TP_ATR_MULTIPLIER = 3.5   # 2:1 R:R minimum — let winners develop, compound the edge
+TP_ATR_MULTIPLIER = 3.6   # Exact 1:2 R:R (1.8 × 2) — clean risk-reward ratio
 
 # ---------------------------------------------------------------------------
 # Energy-Specific Risk Configuration
@@ -25,7 +25,7 @@ NG_SYMBOLS = frozenset(['NG-C'])
 ENERGY_RISK_CONFIG = {
     'CAPITAL_PER_TRADE': 300,         # Lower than default ($2000) — oil ATR is 3-5x forex
     'SL_ATR_MULTIPLIER': 2.0,         # Wider stops — oil needs room to breathe
-    'TP_ATR_MULTIPLIER': 3.0,         # Maintain 1.5:1 minimum R:R
+    'TP_ATR_MULTIPLIER': 4.0,         # 1:2 R:R (2.0 × 2) — match forex ratio
     'MAX_LOSS_PER_TRADE': 50,         # Hard dollar cap same as forex
     'MAX_OPEN_OIL': 2,                # Max 2 oil positions (WTI+Brent = ~1 effective)
     'MAX_OPEN_NG': 1,                 # Max 1 NG — independent but very volatile

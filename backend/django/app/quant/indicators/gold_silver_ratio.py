@@ -25,7 +25,7 @@ def gold_silver_ratio(data, params=None):
         ratio_low   (float): threshold below which silver is overvalued  (default 65)
 
     Returns:
-        str signal:
+        pd.Series of signal strings per bar:
             'silver_undervalued' - ratio > ratio_high  (bullish silver)
             'silver_overvalued'  - ratio < ratio_low   (bearish silver)
             'neutral'            - ratio in normal range
@@ -35,22 +35,21 @@ def gold_silver_ratio(data, params=None):
     ratio_high = params.get('ratio_high', 80)
     ratio_low = params.get('ratio_low', 65)
 
+    result = pd.Series('neutral', index=data.index, dtype=object)
+
     if gold_price is None or len(data) == 0:
-        return 'neutral'
+        return result
 
-    silver_price = data['close'].iloc[-1]
+    silver_close = data['close']
+    valid = silver_close.notna() & (silver_close > 0)
 
-    if pd.isna(silver_price) or silver_price <= 0:
-        return 'neutral'
+    ratio = pd.Series(np.nan, index=data.index)
+    ratio[valid] = gold_price / silver_close[valid]
 
-    ratio = gold_price / silver_price
+    result[(ratio > ratio_high) & valid] = 'silver_undervalued'
+    result[(ratio < ratio_low) & valid] = 'silver_overvalued'
 
-    if ratio > ratio_high:
-        return 'silver_undervalued'
-    if ratio < ratio_low:
-        return 'silver_overvalued'
-
-    return 'neutral'
+    return result
 
 
 def momentum_trend(data, params=None):
@@ -67,7 +66,7 @@ def momentum_trend(data, params=None):
         ema_period (int): trend EMA period        (default 50)
 
     Returns:
-        str signal:
+        pd.Series of signal strings per bar:
             'strong_bullish' - MACD > signal, histogram growing, close > EMA
             'bullish'        - MACD > signal, close > EMA
             'strong_bearish' - MACD < signal, histogram shrinking, close < EMA
@@ -81,10 +80,11 @@ def momentum_trend(data, params=None):
     ema_period = params.get('ema_period', 50)
 
     df = data.copy()
+    result = pd.Series('neutral', index=df.index, dtype=object)
     min_bars = max(slow, ema_period) + signal_period + 2
 
     if len(df) < min_bars:
-        return 'neutral'
+        return result
 
     # MACD computation
     ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
@@ -92,41 +92,28 @@ def momentum_trend(data, params=None):
     macd_line = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
     histogram = macd_line - signal_line
+    hist_prev = histogram.shift(1)
 
     # Trend EMA
     ema_trend = df['close'].ewm(span=ema_period, adjust=False).mean()
 
-    close = df['close'].iloc[-1]
-    macd_val = macd_line.iloc[-1]
-    signal_val = signal_line.iloc[-1]
-    hist_curr = histogram.iloc[-1]
-    hist_prev = histogram.iloc[-2]
-    ema_val = ema_trend.iloc[-1]
+    close = df['close']
+    valid = macd_line.notna() & signal_line.notna() & histogram.notna() & hist_prev.notna() & ema_trend.notna()
 
-    if any(pd.isna(v) for v in [macd_val, signal_val, hist_curr, hist_prev, ema_val]):
-        return 'neutral'
-
-    macd_above_signal = macd_val > signal_val
-    macd_below_signal = macd_val < signal_val
-    close_above_ema = close > ema_val
-    close_below_ema = close < ema_val
-    histogram_growing = hist_curr > hist_prev      # histogram expanding bullishly
-    histogram_shrinking = hist_curr < hist_prev     # histogram expanding bearishly
+    macd_above = (macd_line > signal_line) & valid
+    macd_below = (macd_line < signal_line) & valid
+    close_above = (close > ema_trend) & valid
+    close_below = (close < ema_trend) & valid
+    hist_growing = (histogram > hist_prev) & valid
+    hist_shrinking = (histogram < hist_prev) & valid
 
     # Strong bullish: all three aligned upward
-    if macd_above_signal and histogram_growing and close_above_ema:
-        return 'strong_bullish'
-
+    result[macd_above & hist_growing & close_above] = 'strong_bullish'
     # Bullish: MACD crossover with trend confirmation
-    if macd_above_signal and close_above_ema:
-        return 'bullish'
-
+    result[macd_above & close_above & (result == 'neutral')] = 'bullish'
     # Strong bearish: all three aligned downward
-    if macd_below_signal and histogram_shrinking and close_below_ema:
-        return 'strong_bearish'
-
+    result[macd_below & hist_shrinking & close_below] = 'strong_bearish'
     # Bearish: MACD crossunder with trend confirmation
-    if macd_below_signal and close_below_ema:
-        return 'bearish'
+    result[macd_below & close_below & (result == 'neutral')] = 'bearish'
 
-    return 'neutral'
+    return result

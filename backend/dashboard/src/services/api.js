@@ -274,6 +274,28 @@ const api = {
     return this.django('v1/crypto/wallet/')
   },
 
+  getHyperliquidStatus() {
+    return this.django('v1/crypto/hyperliquid/control/')
+  },
+
+  setHyperliquidEnabled(enabled) {
+    return this.django('v1/crypto/hyperliquid/control/', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    })
+  },
+
+  getLighterProxyStatus() {
+    return this.django('v1/crypto/lighter/proxy/')
+  },
+
+  setLighterEnabled(enabled) {
+    return this.django('v1/crypto/lighter/proxy/', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    })
+  },
+
   // --- AI Brain API ---
 
   getAIBrainStatus() {
@@ -387,6 +409,16 @@ const api = {
 
   getTrainingHistory(limit = 20) {
     return this.django(`v1/training/history/?limit=${limit}`)
+  },
+
+  // --- Knowledge Graph API ---
+
+  getKnowledgeGraphSummary() {
+    return this.django('v1/knowledge-graph/summary/')
+  },
+
+  getKnowledgeGraphHealth() {
+    return this.django('v1/knowledge-graph/health/')
   },
 }
 

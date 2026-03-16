@@ -1,12 +1,13 @@
 """
-Lighter.xyz exit algorithm — monitors open positions for SL/TP/reversal exits
-plus position management: breakeven, profit protection, and time exit.
+Lighter.xyz exit algorithm — monitors open positions for SL/TP/trailing/reversal exits
+plus position management: breakeven, trailing stop, profit protection, and time exit.
 
 Phases (applied in order):
-1. BREAKEVEN: Move SL to entry price when unrealized profit exceeds 2% of entry
-2. PROFIT PROTECTION: Close if profit was above $0.50 but dropped below 40% of peak
-3. TIME EXIT: Close if open > 48 hours with less than 1% profit
-4. SL/TP: Standard stop loss and take profit checks
+1. BREAKEVEN: Move SL to entry price when profit exceeds 2%
+2. TRAILING STOP: Ratchet SL upward as price makes new highs (3 tiers)
+3. PROFIT PROTECTION: Close if profit drops below 40% of peak (after $0.50+ peak)
+4. TIME EXIT: Close if open > 48 hours with less than 1% profit
+5. SL/TP: Standard stop loss and take profit checks
 """
 import logging
 from datetime import timedelta
@@ -25,9 +26,19 @@ PROFIT_PROTECT_GIVEBACK = 0.40     # Close if profit drops below 40% of peak
 TIME_EXIT_HOURS = 48               # Close stale positions after 48 hours
 TIME_EXIT_MIN_PROFIT_PCT = 0.01    # ...unless profit exceeds 1%
 
+# -- Trailing stop tiers --
+# Each tier: (activation_pct, trail_pct)
+# activation_pct = profit % that activates this tier
+# trail_pct = how far below the peak price to set the SL
+TRAIL_TIERS = [
+    (0.03, 0.015),   # Tier 1: at +3% profit, trail 1.5% below peak
+    (0.06, 0.02),    # Tier 2: at +6% profit, trail 2% below peak (tighter)
+    (0.10, 0.025),   # Tier 3: at +10% profit, trail 2.5% below peak (wider to let runners run)
+]
+
 
 def exit_algorithm():
-    """Monitor Lighter positions and exit on SL/TP/signal reversal + position management."""
+    """Monitor Lighter positions and exit on SL/TP/trailing + position management."""
     from app.crypto.models import CryptoPosition, CryptoTrade
 
     open_positions = CryptoPosition.objects.filter(
@@ -58,15 +69,19 @@ def exit_algorithm():
             # ── Phase 1: Breakeven move ──
             _check_breakeven(position, current_price, profit_pct)
 
-            # ── Phase 2: Track peak profit & profit protection ──
+            # ── Phase 2: Trailing stop ──
+            _update_peak_price(position, current_price)
+            _check_trailing_stop(position, current_price, profit_pct)
+
+            # ── Phase 3: Track peak profit & profit protection ──
             _update_peak_profit(position, pnl_usd)
             close_reason = _check_profit_protection(position, pnl_usd)
 
-            # ── Phase 3: Time exit ──
+            # ── Phase 4: Time exit ──
             if not close_reason:
                 close_reason = _check_time_exit(position, profit_pct)
 
-            # ── Phase 4: Standard SL/TP checks ──
+            # ── Phase 5: Standard SL/TP checks (trailing SL is checked here) ──
             if not close_reason:
                 close_reason = _check_sl_tp(position, current_price)
 
@@ -137,7 +152,77 @@ def _check_breakeven(position, current_price, profit_pct):
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: Profit protection
+# Phase 2: Trailing stop
+# ---------------------------------------------------------------------------
+
+def _get_peak_price(position):
+    """Get cached peak price for trailing stop calculation."""
+    from django.core.cache import cache
+    key = f'lighter:peak:{position.id}'
+    return cache.get(key, position.entry_price)
+
+
+def _update_peak_price(position, current_price):
+    """Track the highest (for longs) or lowest (for shorts) price seen."""
+    from django.core.cache import cache
+    key = f'lighter:peak:{position.id}'
+    peak = cache.get(key, position.entry_price)
+
+    if position.side == 'LONG' and current_price > peak:
+        cache.set(key, current_price, timeout=7 * 86400)  # 7 day TTL
+    elif position.side == 'SHORT' and current_price < peak:
+        cache.set(key, current_price, timeout=7 * 86400)
+
+
+def _check_trailing_stop(position, current_price, profit_pct):
+    """Ratchet the SL upward based on trailing tiers.
+
+    Finds the highest tier the position qualifies for and sets
+    the SL at (peak_price * (1 - trail_pct)) for longs.
+    The SL only moves up, never down.
+    """
+    if profit_pct < TRAIL_TIERS[0][0]:
+        return  # Not yet at first tier
+
+    peak = _get_peak_price(position)
+
+    # Find the highest qualifying tier
+    active_trail_pct = None
+    for activation_pct, trail_pct in TRAIL_TIERS:
+        if profit_pct >= activation_pct:
+            active_trail_pct = trail_pct
+
+    if active_trail_pct is None:
+        return
+
+    # Calculate new trailing SL
+    if position.side == 'LONG':
+        new_sl = peak * (1 - active_trail_pct)
+    else:
+        new_sl = peak * (1 + active_trail_pct)
+
+    # SL only moves in the profitable direction
+    old_sl = position.stop_loss or 0
+    if position.side == 'LONG' and new_sl > old_sl:
+        position.stop_loss = new_sl
+        position.save(update_fields=['stop_loss'])
+        logger.info(
+            "TRAILING: %s %s SL %.4f -> %.4f (peak=%.4f, trail=%.1f%%, profit=%.1f%%)",
+            position.symbol, position.side, old_sl, new_sl, peak,
+            active_trail_pct * 100, profit_pct * 100,
+        )
+    elif position.side == 'SHORT' and (new_sl < old_sl or old_sl == 0):
+        position.stop_loss = new_sl
+        position.save(update_fields=['stop_loss'])
+        logger.info(
+            "TRAILING: %s %s SL %.4f -> %.4f (peak=%.4f, trail=%.1f%%, profit=%.1f%%)",
+            position.symbol, position.side, old_sl, new_sl, peak,
+            active_trail_pct * 100, profit_pct * 100,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Profit protection
 # ---------------------------------------------------------------------------
 
 def _update_peak_profit(position, current_pnl):
@@ -171,7 +256,7 @@ def _check_profit_protection(position, current_pnl):
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: Time exit
+# Phase 4: Time exit
 # ---------------------------------------------------------------------------
 
 def _check_time_exit(position, profit_pct):
@@ -189,7 +274,7 @@ def _check_time_exit(position, profit_pct):
 
     hours_open = age.total_seconds() / 3600
     logger.info(
-        "TIME EXIT: %s %s open %.1f hours, profit %.2f%% < %.0f%% threshold — closing",
+        "TIME EXIT: %s %s open %.1f hours, profit %.2f%% < %.0f%% threshold",
         position.symbol, position.side,
         hours_open, profit_pct * 100, TIME_EXIT_MIN_PROFIT_PCT * 100,
     )
@@ -197,19 +282,24 @@ def _check_time_exit(position, profit_pct):
 
 
 # ---------------------------------------------------------------------------
-# Phase 4: Standard SL/TP
+# Phase 5: Standard SL/TP
 # ---------------------------------------------------------------------------
 
 def _check_sl_tp(position, current_price):
-    """Check standard stop loss and take profit levels.
+    """Check stop loss (including trailing) and take profit levels.
 
     Returns close_reason string or None.
     """
-    # Stop loss
+    # Stop loss (covers both initial SL and trailing SL)
     if position.stop_loss:
         if position.side == 'LONG' and current_price <= position.stop_loss:
+            # Distinguish trailing from initial
+            if position.stop_loss > position.entry_price:
+                return 'TRAILING_STOP'
             return 'STOP_LOSS'
         elif position.side == 'SHORT' and current_price >= position.stop_loss:
+            if position.stop_loss < position.entry_price:
+                return 'TRAILING_STOP'
             return 'STOP_LOSS'
 
     # Take profit

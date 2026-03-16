@@ -160,6 +160,126 @@ class CryptoFundingArbView(views.APIView):
         return Response(data)
 
 
+class HyperliquidControlView(views.APIView):
+    """Enable/disable Hyperliquid trading via Redis flag."""
+
+    def get(self, request):
+        from django.core.cache import cache
+        enabled = not cache.get('hyperliquid:disabled', False)
+        return Response({'enabled': enabled})
+
+    def post(self, request):
+        from django.core.cache import cache
+        enabled = request.data.get('enabled')
+        if enabled is None:
+            return Response({'error': 'enabled field required'}, status=status.HTTP_400_BAD_REQUEST)
+        if bool(enabled):
+            cache.delete('hyperliquid:disabled')
+        else:
+            cache.set('hyperliquid:disabled', True, timeout=None)
+        return Response({
+            'enabled': bool(enabled),
+            'message': f"Hyperliquid trading {'enabled' if enabled else 'disabled'}",
+        })
+
+
+class LighterProxyView(views.APIView):
+    """Check Lighter signer proxy health and enable/disable Lighter trading."""
+
+    PROXY_URL = os.environ.get('LIGHTER_SIGNER_PROXY_URL', 'http://host.docker.internal:5555')
+
+    def get(self, request):
+        import requests as _requests
+        from django.core.cache import cache
+
+        enabled = not cache.get('lighter:disabled', False)
+        proxy_status = 'offline'
+        latency = None
+        account = None
+        equity = None
+        available = None
+        margin_used_pct = None
+        unrealized_pnl = None
+        positions = []
+
+        try:
+            start = __import__('time').time()
+            resp = _requests.get(f'{self.PROXY_URL}/health', timeout=3)
+            latency = round((__import__('time').time() - start) * 1000)
+            if resp.ok:
+                data = resp.json()
+                proxy_status = 'connected'
+                account = data.get('account')
+        except _requests.ConnectionError:
+            proxy_status = 'offline'
+        except Exception:
+            proxy_status = 'error'
+
+        # Fetch account balance from Lighter API
+        if proxy_status == 'connected':
+            try:
+                from app.quant.algorithms.lighter.client import get_account_info
+                from app.quant.algorithms.lighter.config import LIGHTER_MARKETS
+                id_to_sym = {v['id']: k for k, v in LIGHTER_MARKETS.items()}
+
+                acct = get_account_info()
+                a = acct.accounts[0] if hasattr(acct, 'accounts') and acct.accounts else None
+                if a:
+                    equity = float(a.cross_asset_value) if hasattr(a, 'cross_asset_value') else None
+                    available = float(a.available_balance) if hasattr(a, 'available_balance') else None
+                    collateral = float(a.collateral) if hasattr(a, 'collateral') else None
+                    if equity and collateral:
+                        margin_used_pct = round((1 - available / equity) * 100, 1) if equity > 0 else 0
+
+                    # Get live positions
+                    pnl_total = 0
+                    for pos in (a.positions or []):
+                        size = float(pos.position)
+                        if size != 0:
+                            mid = int(pos.market_id)
+                            sym = id_to_sym.get(mid, f'?{mid}')
+                            side = 'LONG' if size > 0 else 'SHORT'
+                            entry = float(pos.avg_entry_price) if hasattr(pos, 'avg_entry_price') else 0
+                            positions.append({
+                                'symbol': sym,
+                                'side': side,
+                                'size': abs(size),
+                                'entry_price': entry,
+                            })
+                    unrealized_pnl = round(equity - (collateral or equity), 2) if equity else 0
+            except Exception as e:
+                logger.debug(f"Lighter account fetch error: {e}")
+
+        return Response({
+            'proxy_status': proxy_status,
+            'enabled': enabled,
+            'latency_ms': latency,
+            'account': account,
+            'equity': equity,
+            'available_balance': available,
+            'margin_used_pct': margin_used_pct,
+            'unrealized_pnl': unrealized_pnl,
+            'positions': positions,
+        })
+
+    def post(self, request):
+        from django.core.cache import cache
+
+        enabled = request.data.get('enabled')
+        if enabled is None:
+            return Response({'error': 'enabled field required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if bool(enabled):
+            cache.delete('lighter:disabled')
+        else:
+            cache.set('lighter:disabled', True, timeout=None)
+
+        return Response({
+            'enabled': bool(enabled),
+            'message': f"Lighter trading {'enabled' if enabled else 'disabled'}",
+        })
+
+
 class CryptoWalletView(views.APIView):
     """Live wallet data from Hyperliquid: prices, account state, on-chain positions."""
 

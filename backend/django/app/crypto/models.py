@@ -15,9 +15,11 @@ class CryptoPosition(models.Model):
         SIGNAL_REVERSAL = 'SIGNAL_REVERSAL', 'Signal Reversal'
         STOP_LOSS = 'STOP_LOSS', 'Stop Loss'
         TAKE_PROFIT = 'TAKE_PROFIT', 'Take Profit'
+        TRAILING_STOP = 'TRAILING_STOP', 'Trailing Stop'
         PROFIT_PROTECTION = 'PROFIT_PROTECTION', 'Profit Protection'
         TIME_EXIT = 'TIME_EXIT', 'Time Exit'
         MANUAL = 'MANUAL', 'Manual'
+        SYNC = 'SYNC', 'Sync'
 
     class Venue(models.TextChoices):
         LIGHTER = 'LIGHTER', 'Lighter.xyz'

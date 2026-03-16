@@ -223,7 +223,7 @@ services:
       context: backend/django
       dockerfile: Dockerfile
     container_name: celery
-    command: bash -c "python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=8 -Q default,critical,analysis"
+    command: bash -c "python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=8 -Q default,critical,analysis,graph"
     volumes:
       - static_volume:/app/staticfiles
       - quant-logs:/app/logs
@@ -472,6 +472,36 @@ services:
       <<: *default-labels
     logging: *default-logging
 
+  neo4j:
+    image: neo4j:5-community
+    container_name: neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD}
+      - NEO4J_server_memory_heap_initial__size=256m
+      - NEO4J_server_memory_heap_max__size=512m
+      - NEO4J_server_memory_pagecache_size=256m
+      - NEO4J_db_transaction_timeout=30s
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    networks:
+      - default
+    labels:
+      <<: *default-labels
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7474/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    mem_limit: 1g
+    cpus: 0.5
+
 volumes:
   traefik-public-certificates: # Persistent volume for certificates
   grafana-data: {}
@@ -480,6 +510,8 @@ volumes:
   redis-data: {}
   static_volume: {}
   quant-logs: {}
+  neo4j-data: {}
+  neo4j-logs: {}
 
 networks:
   default:

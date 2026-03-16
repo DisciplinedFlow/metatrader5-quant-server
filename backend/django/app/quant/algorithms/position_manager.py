@@ -53,8 +53,8 @@ PARTIAL_CLOSE_TIERS = [
 ]
 SWING_TRAIL_LOOKBACK = 3       # bars on each side for swing detection
 SWING_TRAIL_ATR_BUFFER = 0.2   # ATR fraction for buffer beyond swing point
-TIME_EXIT_MINUTES = 30         # Back to 30min — data shows losers average 70min, cut them
-TIME_EXIT_MIN_PROFIT = 3.0     # Need $3+ to justify holding past 30 min
+TIME_EXIT_MINUTES = 20         # Marcus: "best trades work immediately" — cut dead trades at 20min
+TIME_EXIT_MIN_PROFIT = 2.0     # Need $2+ to justify holding past 20min
 ATR_PERIOD = 14
 
 # -- Profit protection thresholds --
@@ -273,6 +273,21 @@ def _check_hard_loss_ceiling(position, trade, current_pnl):
             f"HARD CEILING: {position.symbol} ticket={position.ticket} "
             f"${current_pnl:.2f} hit -${MAX_LOSS_PER_TRADE_USD} ceiling — CLOSED"
         )
+        try:
+            from app.quant.tasks import record_to_graph
+            minutes_in_trade = _get_minutes_in_trade(trade)
+            record_to_graph.delay({
+                'type': 'exit_event',
+                'trade_id': str(position.ticket),
+                'symbol': position.symbol,
+                'phase': 'MAX_LOSS',
+                'trigger_value': float(current_pnl),
+                'action': f'Hard loss ceiling ${current_pnl:.2f} hit -${MAX_LOSS_PER_TRADE_USD} max',
+                'pnl_at_event': float(current_pnl),
+                'minutes_in_trade': int(minutes_in_trade),
+            })
+        except Exception:
+            pass
         return True
     return False
 
@@ -301,6 +316,22 @@ def _check_profit_protection(position, trade, current_pnl):
             f"peak=${trade.max_profit:.2f} → current=${current_pnl:.2f} "
             f"(gave back {((trade.max_profit - current_pnl) / trade.max_profit * 100):.0f}%) — CLOSED"
         )
+        try:
+            from app.quant.tasks import record_to_graph
+            minutes_in_trade = _get_minutes_in_trade(trade)
+            giveback_pct = (trade.max_profit - current_pnl) / trade.max_profit * 100
+            record_to_graph.delay({
+                'type': 'exit_event',
+                'trade_id': str(position.ticket),
+                'symbol': position.symbol,
+                'phase': 'PROFIT_PROTECT',
+                'trigger_value': float(giveback_pct),
+                'action': f'Closed after {giveback_pct:.0f}% giveback from peak ${trade.max_profit:.2f}',
+                'pnl_at_event': float(current_pnl),
+                'minutes_in_trade': int(minutes_in_trade),
+            })
+        except Exception:
+            pass
         return True
     else:
         logger.warning(f"PROFIT PROTECTION: Failed to close {position.symbol} ticket={position.ticket}")
@@ -446,6 +477,20 @@ def _check_scale_in(position, trade, profit_distance, minutes_in_trade):
                     f"SCALE-IN SUCCESS: {symbol} ticket={ticket} "
                     f"added {remaining_volume} lots, new order={order.get('order', 'unknown')}"
                 )
+                try:
+                    from app.quant.tasks import record_to_graph
+                    record_to_graph.delay({
+                        'type': 'exit_event',
+                        'trade_id': str(ticket),
+                        'symbol': symbol,
+                        'phase': 'SCALE_IN',
+                        'trigger_value': float(profit_distance),
+                        'action': f'Added {remaining_volume} lots after +1x ATR confirmation',
+                        'pnl_at_event': float(position.profit),
+                        'minutes_in_trade': int(minutes_in_trade),
+                    })
+                except Exception:
+                    pass
             else:
                 logger.warning(
                     f"SCALE-IN FAILED: {symbol} ticket={ticket} "
@@ -508,6 +553,20 @@ def _check_mfe_acceleration(position, trade, current_pnl, minutes_in_trade, curr
                     f"${current_pnl:.2f} profit in {minutes_in_trade}min — "
                     f"SL locked at {new_sl:.5f} (60% of ${profit_distance*10000:.0f}pips)"
                 )
+                try:
+                    from app.quant.tasks import record_to_graph
+                    record_to_graph.delay({
+                        'type': 'exit_event',
+                        'trade_id': str(position.ticket),
+                        'symbol': position.symbol,
+                        'phase': 'MFE_LOCK',
+                        'trigger_value': float(current_pnl),
+                        'action': f'SL locked at {new_sl:.5f} after ${current_pnl:.2f} profit in {minutes_in_trade}min',
+                        'pnl_at_event': float(current_pnl),
+                        'minutes_in_trade': int(minutes_in_trade),
+                    })
+                except Exception:
+                    pass
         return False  # Don't close, just lock — let it run with protection
 
     # --- Rule 2: Kill flat trades after 20 min ---
@@ -519,6 +578,20 @@ def _check_mfe_acceleration(position, trade, current_pnl, minutes_in_trade, curr
                 f"MFE FLAT EXIT: {position.symbol} ticket={position.ticket} "
                 f"${current_pnl:.2f} after {minutes_in_trade}min — no momentum, closing"
             )
+            try:
+                from app.quant.tasks import record_to_graph
+                record_to_graph.delay({
+                    'type': 'exit_event',
+                    'trade_id': str(position.ticket),
+                    'symbol': position.symbol,
+                    'phase': 'MFE_FLAT_EXIT',
+                    'trigger_value': float(current_pnl),
+                    'action': f'Killed flat trade after {minutes_in_trade}min with ${current_pnl:.2f} profit',
+                    'pnl_at_event': float(current_pnl),
+                    'minutes_in_trade': int(minutes_in_trade),
+                })
+            except Exception:
+                pass
             return True
         else:
             logger.warning(
@@ -593,6 +666,21 @@ def _check_breakeven(position, trade, profit_distance, current_atr):
             f"BREAKEVEN: {position.symbol} ticket={position.ticket} "
             f"moved SL to {new_sl:.5f} (entry={entry_price:.5f})"
         )
+        try:
+            from app.quant.tasks import record_to_graph
+            minutes_in_trade = _get_minutes_in_trade(trade)
+            record_to_graph.delay({
+                'type': 'exit_event',
+                'trade_id': str(position.ticket),
+                'symbol': position.symbol,
+                'phase': 'BREAKEVEN',
+                'trigger_value': float(profit_distance),
+                'action': f'SL moved to entry {new_sl:.5f} after {profit_distance / trade.entry_atr:.1f}R profit',
+                'pnl_at_event': float(position.profit),
+                'minutes_in_trade': int(minutes_in_trade),
+            })
+        except Exception:
+            pass
     else:
         logger.warning(f"BREAKEVEN: Failed to modify SL for {position.symbol} ticket={position.ticket}")
 
@@ -670,6 +758,21 @@ def _check_partial_close(position, trade, profit_distance):
                 f"({tier['close_pct']:.0%}) at {current_price:.5f} "
                 f"(profit={profit_r:.1f}R)"
             )
+            try:
+                from app.quant.tasks import record_to_graph
+                minutes_in_trade = _get_minutes_in_trade(trade)
+                record_to_graph.delay({
+                    'type': 'exit_event',
+                    'trade_id': str(position.ticket),
+                    'symbol': position.symbol,
+                    'phase': 'PARTIAL_CLOSE',
+                    'trigger_value': float(profit_r),
+                    'action': f"Closed {partial_vol} lots ({tier['close_pct']:.0%}) at {tier['atr_mult']}R",
+                    'pnl_at_event': float(position.profit),
+                    'minutes_in_trade': int(minutes_in_trade),
+                })
+            except Exception:
+                pass
         else:
             logger.warning(
                 f"PARTIAL CLOSE ({tier['atr_mult']}R): Failed for "
@@ -771,6 +874,21 @@ def _check_swing_trail(position, trade, df, current_atr):
                 f"{'BUY' if position_type == BUY else 'SELL'} SL -> {candidate_sl:.5f} "
                 f"(profit={profit_r:.1f}R)"
             )
+            try:
+                from app.quant.tasks import record_to_graph
+                minutes_in_trade = _get_minutes_in_trade(trade)
+                record_to_graph.delay({
+                    'type': 'exit_event',
+                    'trade_id': str(position.ticket),
+                    'symbol': position.symbol,
+                    'phase': 'TRAIL',
+                    'trigger_value': float(candidate_sl),
+                    'action': f'{trail_label} SL -> {candidate_sl:.5f} at {profit_r:.1f}R',
+                    'pnl_at_event': float(position.profit),
+                    'minutes_in_trade': int(minutes_in_trade),
+                })
+            except Exception:
+                pass
 
 
 def _check_structure_invalidation(position, trade, df, profit_distance):
@@ -962,6 +1080,20 @@ def _check_time_exit(position, trade, current_pnl, minutes_in_trade):
             f"${current_pnl:.2f} after {minutes_in_trade}min (threshold: "
             f"{TIME_EXIT_MINUTES}min with <${TIME_EXIT_MIN_PROFIT})"
         )
+        try:
+            from app.quant.tasks import record_to_graph
+            record_to_graph.delay({
+                'type': 'exit_event',
+                'trade_id': str(position.ticket),
+                'symbol': position.symbol,
+                'phase': 'TIME_EXIT',
+                'trigger_value': float(minutes_in_trade),
+                'action': f'Closed stale trade after {minutes_in_trade}min with ${current_pnl:.2f} profit',
+                'pnl_at_event': float(current_pnl),
+                'minutes_in_trade': int(minutes_in_trade),
+            })
+        except Exception:
+            pass
     else:
         logger.warning(f"TIME EXIT: Failed to close {position.symbol} ticket={position.ticket}")
 

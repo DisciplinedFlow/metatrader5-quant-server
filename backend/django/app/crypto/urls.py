@@ -11,6 +11,8 @@ from .views import (
     CryptoDashboardView,
     CryptoStrategyConfigView,
     CryptoWalletView,
+    HyperliquidControlView,
+    LighterProxyView,
 )
 
 router = DefaultRouter()
@@ -27,4 +29,6 @@ urlpatterns = [
     path('dashboard/', CryptoDashboardView.as_view(), name='crypto-dashboard'),
     path('wallet/', CryptoWalletView.as_view(), name='crypto-wallet'),
     path('strategy/', CryptoStrategyConfigView.as_view(), name='crypto-strategy'),
+    path('lighter/proxy/', LighterProxyView.as_view(), name='lighter-proxy'),
+    path('hyperliquid/control/', HyperliquidControlView.as_view(), name='hyperliquid-control'),
 ]

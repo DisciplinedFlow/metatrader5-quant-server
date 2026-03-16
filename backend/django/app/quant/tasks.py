@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # When True, bypasses daily halt and raises position limits for max data collection.
 from app.quant.algorithms.cvd.entry import TRAINING_MODE
 
-GLOBAL_MAX = 20 if TRAINING_MODE else 10
-DAILY_MAX_LOSS_USD = 9999.0 if TRAINING_MODE else 300.0
+GLOBAL_MAX = 20  # Opened up for data collection — daily halt + circuit breakers still protect
+DAILY_MAX_LOSS_USD = 9999.0  # Disabled for data collection phase (Mar 15-31)
 DRAWDOWN_REDUCTION_THRESHOLD = 2000.0   # Total cumulative loss to trigger size reduction
 DRAWDOWN_REDUCED_CAPITAL = 100  # Fall back to conservative sizing
 
@@ -233,6 +233,14 @@ def run_quant_entry_algorithm():
         return
     try:
         from app.nexus.models import StrategyConfig, PairLock
+
+        # Fast global circuit breaker check — skip all strategy iteration
+        # when the global CB is active (prevents ~12 redundant checks + graph writes)
+        if not TRAINING_MODE:
+            from django.core.cache import cache
+            if cache.get('circuit_breaker:global'):
+                logger.debug("Global circuit breaker active — skipping all entry algorithms.")
+                return
 
         active_strategies = StrategyConfig.objects.filter(is_active=True).order_by('priority')
         if not active_strategies.exists():
@@ -1167,3 +1175,184 @@ def run_strategy_rotation(session_name=None):
         logger.error("Strategy rotation task timed out.")
     except Exception as e:
         logger.error(f"Strategy rotation error: {e}")
+
+
+# ========================================================================
+# Knowledge Graph Tasks
+# ========================================================================
+
+@shared_task(name='quant.tasks.record_to_graph', max_retries=3,
+             soft_time_limit=10, time_limit=20)
+def record_to_graph(payload):
+    """Async fire-and-forget write to Neo4j knowledge graph."""
+    if not payload:
+        return
+
+    try:
+        from app.quant.knowledge.connection import get_graph
+        graph = get_graph()
+        if graph is None:
+            return
+
+        record_type = payload.get('type')
+
+        if record_type == 'trade':
+            from app.nexus.models import Trade
+            trade = Trade.objects.get(id=payload['trade_id'])
+            features = payload.get('features', {})
+
+            # Get regime from cache
+            from django.core.cache import cache
+            regime_detail = cache.get(f':1:hmm_regime_detail:{trade.symbol}') or {}
+
+            trade_data = {
+                'trade_id': f"trade_{trade.id}",
+                'django_id': trade.id,
+                'symbol': trade.symbol,
+                'direction': trade.type,
+                'entry_time': trade.entry_time,
+                'close_time': trade.close_time,
+                'entry_price': trade.entry_price,
+                'close_price': trade.close_price,
+                'pnl': trade.pnl,
+                'entry_atr': trade.entry_atr,
+                'strategy': trade.strategy or (trade.strategy_config.name if trade.strategy_config else 'unknown'),
+                'closing_reason': trade.closing_reason or '',
+                'confluence_score': features.get('confluence_score', 0),
+                'regime_at_entry': regime_detail.get('label', 'UNKNOWN'),
+                'regime_confidence': regime_detail.get('confidence', 0),
+                'hour_utc': trade.entry_time.hour if trade.entry_time else 0,
+                'day_of_week': trade.entry_time.weekday() if trade.entry_time else 0,
+            }
+            graph.record_trade(trade_data)
+
+        elif record_type == 'market_condition':
+            graph.record_market_condition(
+                payload['symbol'], payload['condition']
+            )
+
+        elif record_type == 'regime_transition':
+            graph.record_regime_transition(
+                payload['symbol'],
+                payload['from_regime'],
+                payload['to_regime'],
+                payload.get('meta', {}),
+            )
+
+        elif record_type == 'news':
+            graph.record_news(payload.get('articles', []))
+
+        elif record_type == 'rejection':
+            graph.record_rejected_signal(payload)
+
+        elif record_type == 'exit_event':
+            graph.record_exit_event(payload)
+
+        elif record_type == 'confluence':
+            graph.record_confluence_breakdown(payload)
+
+        elif record_type == 'ict_partial':
+            graph.record_ict_partial(payload)
+
+        elif record_type == 'htf_bias':
+            graph.record_htf_bias(payload)
+
+        elif record_type == 'performance_snapshot':
+            graph.record_performance_snapshot(payload)
+
+    except Exception as e:
+        logger.error(f"Graph recording error: {e}")
+
+
+@shared_task(name='quant.tasks.run_graph_enrichment', max_retries=0,
+             soft_time_limit=30, time_limit=45)
+def run_graph_enrichment():
+    """Pre-compute graph-derived features into Redis for ML consumption."""
+    try:
+        from django.core.cache import cache
+        from app.quant.knowledge.enricher import compute_and_cache_features
+
+        scanned_symbols = [
+            'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD',
+            'USDCAD', 'USDCHF', 'EURGBP', 'XAUUSD', 'XAGUSD',
+            'USOUSD', 'UKOUSDft',
+        ]
+
+        for symbol in scanned_symbols:
+            regime_detail = cache.get(f':1:hmm_regime_detail:{symbol}') or {}
+            if regime_detail:
+                compute_and_cache_features(symbol, regime_detail)
+
+    except Exception as e:
+        logger.error(f"Graph enrichment error: {e}")
+
+
+@shared_task(name='quant.tasks.check_graph_health', max_retries=0)
+def check_graph_health():
+    """Health check for Neo4j knowledge graph."""
+    try:
+        from django.core.cache import cache
+        from app.quant.knowledge.connection import get_graph
+
+        graph = get_graph()
+        if graph is None:
+            cache.set('graph:status', {'connected': False}, timeout=600)
+            return
+
+        health = graph.health_check()
+        summary = graph.get_graph_summary()
+        cache.set('graph:status', {**health, **summary}, timeout=600)
+        logger.info(
+            f"Graph health: {health.get('status')} | "
+            f"trades={summary.get('trades', 0)} | "
+            f"conditions={summary.get('conditions', 0)}"
+        )
+
+    except Exception as e:
+        logger.error(f"Graph health check error: {e}")
+
+
+@shared_task(name='quant.tasks.record_daily_performance', max_retries=1,
+             soft_time_limit=30, time_limit=45)
+def record_daily_performance():
+    """Record daily performance snapshot to knowledge graph."""
+    try:
+        from app.nexus.models import Trade
+        from datetime import date, timedelta
+        from django.db.models import Sum, Count, Q, Max, Min
+
+        today = date.today()
+        trades_today = Trade.objects.filter(
+            close_time__date=today,
+            close_time__isnull=False
+        )
+
+        total = trades_today.count()
+        if total == 0:
+            return
+
+        wins = trades_today.filter(pnl__gt=0).count()
+        losses = trades_today.filter(pnl__lte=0).count()
+        agg = trades_today.aggregate(
+            total_pnl=Sum('pnl'),
+            best=Max('pnl'),
+            worst=Min('pnl'),
+        )
+
+        record_to_graph.delay({
+            'type': 'performance_snapshot',
+            'id': today.isoformat(),
+            'date': today.isoformat(),
+            'total_trades': total,
+            'wins': wins,
+            'losses': losses,
+            'win_rate': round(wins / total, 4) if total > 0 else 0,
+            'total_pnl': float(agg['total_pnl'] or 0),
+            'best_trade_pnl': float(agg['best'] or 0),
+            'worst_trade_pnl': float(agg['worst'] or 0),
+            'sharpe': 0,  # computed in Phase 2
+            'max_drawdown': 0,  # computed in Phase 2
+        })
+
+    except Exception as e:
+        logger.error(f"Daily performance snapshot error: {e}")

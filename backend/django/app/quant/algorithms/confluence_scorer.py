@@ -102,10 +102,10 @@ SCORE_BANDS = {
     'skip':     {'min': 0, 'max': 2, 'size_mult': 0.0},
     'reduced':  {'min': 3, 'max': 3, 'size_mult': 0.5},
     'full':     {'min': 4, 'max': 7, 'size_mult': 1.0},
-    'enhanced': {'min': 8, 'max': 11, 'size_mult': 1.5},
+    'enhanced': {'min': 8, 'max': 12, 'size_mult': 1.5},
 }
 
-MAX_POSSIBLE_SCORE = 11
+MAX_POSSIBLE_SCORE = 12  # 8 original factors + session quality = 12
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +411,47 @@ def _evaluate_displacement(displacement: Optional[bool]) -> ConfluenceFactor:
         )
 
 
+def _evaluate_session_quality(session_quality: Optional[bool] = None) -> ConfluenceFactor:
+    """Session quality factor (1 point).
+
+    Kill zones (London open, NY open) have 30-50% larger pip ranges and
+    tighter spreads — institutional participation is highest. Trading during
+    these windows increases setup reliability significantly.
+
+    Awards 1 point when current time is in a high-quality kill zone.
+    """
+    max_pts = 1
+
+    if session_quality is not None:
+        if session_quality:
+            return ConfluenceFactor(
+                name='session_quality', points=max_pts, max_points=max_pts,
+                present=True, detail='In high-quality kill zone',
+            )
+        return ConfluenceFactor(
+            name='session_quality', points=0, max_points=max_pts,
+            present=False, detail='Outside kill zone',
+        )
+
+    # Auto-detect from kill_zones module
+    try:
+        from app.quant.indicators.kill_zones import is_in_kill_zone
+        if is_in_kill_zone():
+            return ConfluenceFactor(
+                name='session_quality', points=max_pts, max_points=max_pts,
+                present=True, detail='Kill zone auto-detected',
+            )
+        return ConfluenceFactor(
+            name='session_quality', points=0, max_points=max_pts,
+            present=False, detail='Outside kill zone (auto-detected)',
+        )
+    except (ImportError, Exception):
+        return ConfluenceFactor(
+            name='session_quality', points=0, max_points=max_pts,
+            present=False, detail='Kill zone module not available',
+        )
+
+
 # ---------------------------------------------------------------------------
 # Score classification
 # ---------------------------------------------------------------------------
@@ -491,6 +532,7 @@ def score_confluence(
         _evaluate_order_block(order_block_at_entry),
         _evaluate_regime(regime_favorable, strategy_name),
         _evaluate_displacement(displacement),
+        _evaluate_session_quality(),
     ]
 
     # Sum the points

@@ -84,6 +84,12 @@ const routes = [
     component: () => import('@/pages/MLBrainPage.vue'),
   },
 
+  // --- Knowledge Brain ---
+  {
+    path: '/forex/knowledge',
+    component: () => import('@/pages/KnowledgeBrainPage.vue'),
+  },
+
   // --- Performance Analytics ---
   {
     path: '/forex/performance',

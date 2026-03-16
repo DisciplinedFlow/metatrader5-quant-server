@@ -182,6 +182,11 @@ def entry_algorithm():
     Uses multi-timeframe analysis (1h trend + 15m timing) and
     per-symbol performance filtering for adaptive risk management.
     """
+    from django.core.cache import cache
+    if cache.get('lighter:disabled'):
+        logger.debug("Lighter: trading disabled via dashboard toggle")
+        return
+
     from app.crypto.models import CryptoPosition, CryptoTrade
 
     open_positions = _get_open_positions()

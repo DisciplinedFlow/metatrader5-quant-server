@@ -42,6 +42,12 @@ const venueHealth = reactive({
   hyperliquid: { status: 'unknown', latency: null, lastCheck: null },
 })
 
+// Per-venue trading toggles
+const lighterEnabled = ref(true)
+const lighterToggling = ref(false)
+const hyperliquidEnabled = ref(true)
+const hyperliquidToggling = ref(false)
+
 // Active venue tab for positions
 const activeVenueTab = ref('all')
 
@@ -177,15 +183,22 @@ function getCoinColor(coin) {
 }
 
 async function checkVenueHealth() {
-  // Check Lighter proxy (port 5555)
+  // Check Lighter proxy via Django endpoint (also returns account data)
   try {
-    const start = Date.now()
-    const resp = await fetch('/api/django/v1/crypto/lighter/health/', { signal: AbortSignal.timeout(5000) })
-    const latency = Date.now() - start
-    if (resp.ok) {
-      venueHealth.lighter = { status: 'connected', latency, lastCheck: new Date() }
-    } else {
-      venueHealth.lighter = { status: 'error', latency: null, lastCheck: new Date() }
+    const data = await api.getLighterProxyStatus()
+    venueHealth.lighter = {
+      status: data.proxy_status || 'unknown',
+      latency: data.latency_ms,
+      lastCheck: new Date(),
+    }
+    lighterEnabled.value = data.enabled !== false
+
+    // Update account stats from Lighter (primary venue)
+    if (data.equity != null) {
+      accountValue.value = data.equity
+      withdrawable.value = data.available_balance ?? 0
+      totalMarginUsed.value = data.equity - (data.available_balance ?? 0)
+      totalNtlPos.value = data.equity - (data.available_balance ?? 0)
     }
   } catch {
     venueHealth.lighter = { status: 'offline', latency: null, lastCheck: new Date() }
@@ -197,6 +210,37 @@ async function checkVenueHealth() {
   } else if (walletError.value) {
     venueHealth.hyperliquid = { status: 'error', latency: null, lastCheck: new Date() }
   }
+
+  // Fetch Hyperliquid trading toggle state
+  try {
+    const hlData = await api.getHyperliquidStatus()
+    hyperliquidEnabled.value = hlData.enabled !== false
+  } catch {
+    // fail silently
+  }
+}
+
+async function toggleLighter() {
+  lighterToggling.value = true
+  try {
+    const resp = await api.setLighterEnabled(!lighterEnabled.value)
+    lighterEnabled.value = resp.enabled
+    await checkVenueHealth()
+  } catch (err) {
+    console.error('Lighter toggle error:', err)
+  }
+  lighterToggling.value = false
+}
+
+async function toggleHyperliquid() {
+  hyperliquidToggling.value = true
+  try {
+    const resp = await api.setHyperliquidEnabled(!hyperliquidEnabled.value)
+    hyperliquidEnabled.value = resp.enabled
+  } catch (err) {
+    console.error('Hyperliquid toggle error:', err)
+  }
+  hyperliquidToggling.value = false
 }
 
 async function fetchFundingRates() {
@@ -338,14 +382,32 @@ usePolling(refresh, 10000)
 
         <!-- Venue Health Indicators -->
         <div class="venue-health-group">
-          <div class="venue-chip" :class="venueStatusClass(venueHealth.hyperliquid.status)">
+          <div class="venue-chip" :class="[venueStatusClass(venueHealth.hyperliquid.status), { 'venue-disabled': !hyperliquidEnabled }]">
             <span class="material-symbols-outlined venue-chip-icon">{{ venueStatusIcon(venueHealth.hyperliquid.status) }}</span>
             <span class="venue-chip-name">Hyperliquid</span>
+            <button
+              class="venue-toggle-btn"
+              :class="hyperliquidEnabled ? 'vt-on' : 'vt-off'"
+              :aria-busy="hyperliquidToggling"
+              @click.stop="toggleHyperliquid"
+              :title="hyperliquidEnabled ? 'Disable Hyperliquid trading' : 'Enable Hyperliquid trading'"
+            >
+              <span class="material-symbols-outlined" style="font-size:13px">{{ hyperliquidEnabled ? 'pause' : 'play_arrow' }}</span>
+            </button>
           </div>
-          <div class="venue-chip" :class="venueStatusClass(venueHealth.lighter.status)">
+          <div class="venue-chip" :class="[venueStatusClass(venueHealth.lighter.status), { 'venue-disabled': !lighterEnabled }]">
             <span class="material-symbols-outlined venue-chip-icon">{{ venueStatusIcon(venueHealth.lighter.status) }}</span>
             <span class="venue-chip-name">Lighter</span>
             <span v-if="venueHealth.lighter.latency" class="venue-chip-latency">{{ venueHealth.lighter.latency }}ms</span>
+            <button
+              class="venue-toggle-btn"
+              :class="lighterEnabled ? 'vt-on' : 'vt-off'"
+              :aria-busy="lighterToggling"
+              @click.stop="toggleLighter"
+              :title="lighterEnabled ? 'Disable Lighter trading' : 'Enable Lighter trading'"
+            >
+              <span class="material-symbols-outlined" style="font-size:13px">{{ lighterEnabled ? 'pause' : 'play_arrow' }}</span>
+            </button>
           </div>
         </div>
       </div>
@@ -705,6 +767,15 @@ usePolling(refresh, 10000)
                 <span class="venue-block-dot" :class="venueStatusClass(venueHealth.hyperliquid.status)"></span>
                 <span class="venue-block-name">Hyperliquid L1</span>
                 <span class="venue-block-chain">Arbitrum</span>
+                <button
+                  class="venue-block-toggle"
+                  :class="hyperliquidEnabled ? 'vbt-on' : 'vbt-off'"
+                  :aria-busy="hyperliquidToggling"
+                  @click="toggleHyperliquid"
+                >
+                  <span class="material-symbols-outlined" style="font-size:13px">{{ hyperliquidEnabled ? 'pause' : 'play_arrow' }}</span>
+                  {{ hyperliquidEnabled ? 'Disable' : 'Enable' }}
+                </button>
               </div>
               <div v-if="walletAddress" class="wallet-address-row">
                 <span class="wallet-addr">{{ shortAddress }}</span>
@@ -727,6 +798,15 @@ usePolling(refresh, 10000)
                 <span class="venue-block-dot" :class="venueStatusClass(venueHealth.lighter.status)"></span>
                 <span class="venue-block-name">Lighter.xyz</span>
                 <span class="venue-block-chain">Zero-Fee</span>
+                <button
+                  class="venue-block-toggle"
+                  :class="lighterEnabled ? 'vbt-on' : 'vbt-off'"
+                  :aria-busy="lighterToggling"
+                  @click="toggleLighter"
+                >
+                  <span class="material-symbols-outlined" style="font-size:13px">{{ lighterEnabled ? 'pause' : 'play_arrow' }}</span>
+                  {{ lighterEnabled ? 'Disable' : 'Enable' }}
+                </button>
               </div>
               <div class="venue-block-stats">
                 <div class="venue-mini-stat">
@@ -735,7 +815,15 @@ usePolling(refresh, 10000)
                 </div>
                 <div class="venue-mini-stat">
                   <span class="meta-label">Proxy</span>
-                  <span class="meta-value">:5555</span>
+                  <span class="meta-value" :class="venueHealth.lighter.status === 'connected' ? 'val-ok' : 'val-down'">
+                    {{ venueHealth.lighter.status === 'connected' ? 'Online' : venueHealth.lighter.status }}
+                  </span>
+                </div>
+                <div class="venue-mini-stat">
+                  <span class="meta-label">Trading</span>
+                  <span class="meta-value" :class="lighterEnabled ? 'val-ok' : 'val-down'">
+                    {{ lighterEnabled ? 'Enabled' : 'Disabled' }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -1677,6 +1765,83 @@ usePolling(refresh, 10000)
 .venue-mini-stat .meta-value {
   font-size: 0.72rem;
 }
+
+/* Lighter Proxy Toggle (system bar) */
+.venue-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: transparent;
+  padding: 0;
+  margin-left: 0.15rem;
+}
+.vt-on {
+  color: var(--tp-success);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+.vt-on:hover {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--tp-warning);
+  border-color: var(--tp-warning);
+}
+.vt-off {
+  color: var(--tp-danger);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.vt-off:hover {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--tp-success);
+  border-color: var(--tp-success);
+}
+.venue-disabled {
+  opacity: 0.5;
+}
+
+/* Lighter Proxy Toggle (venue block) */
+.venue-block-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: transparent;
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.vbt-on {
+  color: var(--tp-success);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+.vbt-on:hover {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--tp-warning);
+  border-color: var(--tp-warning);
+}
+.vbt-off {
+  color: var(--tp-danger);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.vbt-off:hover {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--tp-success);
+  border-color: var(--tp-success);
+}
+
+/* Value status colors */
+.val-ok { color: var(--tp-success); }
+.val-down { color: var(--tp-danger); }
 
 /* ===== Utility Classes ===== */
 .text-success { color: var(--tp-success) !important; }

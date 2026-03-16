@@ -74,11 +74,17 @@ def _get_strategy() -> MomentumStrategy:
 
 def entry_algorithm():
     """Check signals and enter positions."""
+    from django.core.cache import cache
+    if cache.get('hyperliquid:disabled'):
+        logger.debug("Hyperliquid: trading disabled via dashboard toggle")
+        return
+
     from app.crypto.models import CryptoPosition, CryptoTrade
 
-    open_count = CryptoPosition.objects.filter(status='OPEN').count()
+    # Count only Hyperliquid positions (exclude Lighter positions which start with 'lighter:')
+    open_count = CryptoPosition.objects.filter(status='OPEN').exclude(entry_signal__startswith='lighter:').count()
     if not check_position_limits(open_count, CRYPTO_MAX_POSITIONS):
-        logger.info(f"Max positions reached ({open_count}/{CRYPTO_MAX_POSITIONS}), skipping entry.")
+        logger.info(f"Max Hyperliquid positions reached ({open_count}/{CRYPTO_MAX_POSITIONS}), skipping entry.")
         return
 
     strategy = _get_strategy()

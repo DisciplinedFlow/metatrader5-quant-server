@@ -1039,3 +1039,36 @@ class TrainingHistoryView(views.APIView):
                 'llm_result': r.llm_result,
             } for r in runs],
         })
+
+
+class KnowledgeGraphSummaryView(views.APIView):
+    """GET /v1/knowledge-graph/summary/ — Graph node counts and stats."""
+    def get(self, request):
+        # Try cache first (populated by check_graph_health task every 5min)
+        cached = cache.get('graph:status')
+        if cached:
+            return Response(cached)
+
+        # Live query fallback
+        try:
+            from app.quant.knowledge.connection import get_graph
+            graph = get_graph()
+            if graph is None:
+                return Response({'connected': False, 'status': 'unavailable'})
+            summary = graph.get_graph_summary()
+            return Response(summary)
+        except Exception as e:
+            return Response({'connected': False, 'error': str(e)})
+
+
+class KnowledgeGraphHealthView(views.APIView):
+    """GET /v1/knowledge-graph/health/ — Quick health probe."""
+    def get(self, request):
+        try:
+            from app.quant.knowledge.connection import get_graph
+            graph = get_graph()
+            if graph is None:
+                return Response({'connected': False, 'status': 'unavailable'})
+            return Response(graph.health_check())
+        except Exception as e:
+            return Response({'connected': False, 'error': str(e)})
