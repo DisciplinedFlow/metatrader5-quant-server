@@ -176,15 +176,73 @@ def _get_open_positions():
     )
 
 
+def _check_lighter_circuit_breaker():
+    """Circuit breaker: pause after 3 consecutive losses on Lighter."""
+    from django.core.cache import cache
+    if cache.get('lighter:circuit_breaker'):
+        return False, "Lighter circuit breaker active"
+
+    from app.crypto.models import CryptoPosition
+    recent = CryptoPosition.objects.filter(
+        status='CLOSED',
+        entry_signal__startswith=PLATFORM_PREFIX,
+        pnl_usd__isnull=False,
+    ).order_by('-closed_at')[:3]
+
+    losses = sum(1 for p in recent if p.pnl_usd < 0)
+    if len(recent) >= 3 and losses >= 3:
+        cache.set('lighter:circuit_breaker', True, timeout=1800)  # 30 min cooldown
+        return False, f"Lighter: 3 consecutive losses, pausing 30 min"
+    return True, "OK"
+
+
+def _check_lighter_daily_loss():
+    """Daily loss limit: pause if total day loss exceeds threshold."""
+    from django.core.cache import cache
+    from django.utils import timezone
+    from app.crypto.models import CryptoPosition
+
+    today = timezone.now().date()
+    day_trades = CryptoPosition.objects.filter(
+        status='CLOSED',
+        entry_signal__startswith=PLATFORM_PREFIX,
+        closed_at__date=today,
+        pnl_usd__isnull=False,
+    )
+    day_pnl = sum(t.pnl_usd for t in day_trades)
+    if day_pnl < -5.0:  # $5 daily loss limit
+        cache.set('lighter:daily_halt', True, timeout=3600)
+        return False, f"Lighter: daily loss ${day_pnl:.2f} exceeds -$5 limit"
+    return True, "OK"
+
+
 def entry_algorithm():
     """Check signals on Lighter markets and enter positions.
 
     Uses multi-timeframe analysis (1h trend + 15m timing) and
     per-symbol performance filtering for adaptive risk management.
+
+    Quality gates (adapted from forex):
+    1. Dashboard toggle
+    2. Circuit breaker (3 consecutive losses → 30min pause)
+    3. Daily loss limit ($5)
+    4. Per-symbol performance filter
     """
     from django.core.cache import cache
     if cache.get('lighter:disabled'):
         logger.debug("Lighter: trading disabled via dashboard toggle")
+        return
+
+    # Circuit breaker
+    cb_ok, cb_reason = _check_lighter_circuit_breaker()
+    if not cb_ok:
+        logger.info(cb_reason)
+        return
+
+    # Daily loss limit
+    dl_ok, dl_reason = _check_lighter_daily_loss()
+    if not dl_ok:
+        logger.info(dl_reason)
         return
 
     from app.crypto.models import CryptoPosition, CryptoTrade
@@ -265,9 +323,14 @@ def entry_algorithm():
             if result.get('error'):
                 continue
 
-            # Calculate SL/TP levels
-            sl_pct = 0.03  # 3% stop loss
-            tp_pct = 0.06  # 6% take profit (2:1 RR)
+            # Calculate SL/TP levels — asset-class aware
+            # Forex: tight (0.5%/1%), Metals: medium (1.5%/3%), Crypto: wide (3%/6%)
+            if symbol in ('EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'):
+                sl_pct, tp_pct = 0.005, 0.01    # Forex: 0.5% SL, 1% TP
+            elif symbol in ('XAU', 'XAG', 'PAXG', 'WTI'):
+                sl_pct, tp_pct = 0.015, 0.03    # Metals/commodities: 1.5% SL, 3% TP
+            else:
+                sl_pct, tp_pct = 0.03, 0.06     # Crypto: 3% SL, 6% TP
             if is_buy:
                 stop_loss = current_price * (1 - sl_pct)
                 take_profit = current_price * (1 + tp_pct)

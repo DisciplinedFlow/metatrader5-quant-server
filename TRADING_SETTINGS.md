@@ -4,21 +4,23 @@
 
 ---
 
-## Active Configuration (as of Mar 16, 2026 06:50 CET)
+## Active Configuration (as of Mar 16, 2026 08:45 CET)
 
 | Parameter | Value | File | Notes |
 |-----------|-------|------|-------|
 | TRAINING_MODE | `False` | `cvd/entry.py:74` | All protection gates active except those explicitly disabled below |
-| CAPITAL_PER_TRADE | `$2,000` | `cvd/config.py:6` | Energy: $300 |
-| SL_ATR_MULTIPLIER | `1.8` | `cvd/config.py:11` | Energy: 2.0 |
+| **Position Sizing** | **Risk-based** | `entry.py:1692`, `arithmetics.py` | `lots = target_risk / loss_per_lot_at_SL` (was `capital × leverage`) |
+| MAX_LOSS_PER_TRADE | `$50` | `entry.py:80` | Now drives position sizing (not just SL clamping) |
+| Target Risk | `$5 – $50` | `entry.py:1697` | `MAX_LOSS × size_multiplier`, floored at $5, capped at $50 |
+| SL_ATR_MULTIPLIER | `1.8` | `cvd/config.py:11` | Energy: 2.0. SL stays at full ATR (no longer clamped tight) |
 | TP_ATR_MULTIPLIER | `3.6` | `cvd/config.py:12` | Energy: 4.0 |
 | R:R Ratio | `1:2.0` | Computed | Exact |
+| LEVERAGE | `200` (unused) | `cvd/config.py:5` | Legacy — no longer used for sizing, kept for reference |
 | MAX_OPEN_TRADES | `20` | `cvd/config.py:9` | Was 5 |
 | GLOBAL_MAX | `20` | `tasks.py:25` | Was 10 |
 | Per-strategy max_positions | `10` | DB: StrategyConfig | Was 3 |
 | DAILY_MAX_LOSS_USD | `$9,999` (disabled) | `tasks.py:26` | Was $300 |
 | DRAWDOWN_REDUCTION | `$2,000` | `tasks.py:27` | Still active — falls to $100/trade |
-| MAX_LOSS_PER_TRADE | `$50` | `entry.py:80` | Broker SL, still active |
 | Circuit Breaker (symbol) | `3 losses → 30m` | `entry.py:57,60` | Was 1h — reduced for algo bot |
 | Circuit Breaker (global) | `5 losses → 15m` | `entry.py:58,59` | Was 1h — reduced for algo bot |
 | Time Filter | `24/7 (Mon-Fri)` | `entry.py:425` | Only blocks Sat + Sun before 22:00 UTC |
@@ -26,9 +28,22 @@
 | Lighter trading toggle | API + Dashboard | `crypto/views.py`, `lighter/entry.py` | Runtime enable/disable via Redis |
 | Hyperliquid trading toggle | API + Dashboard | `crypto/views.py`, `crypto/entry.py` | Runtime enable/disable via Redis |
 
+## Position Sizing (Risk-Based)
+Positions are sized so that **loss at SL = target risk** (max $50). Uses MT5 `trade_tick_value` for correct cross-instrument P&L.
+
+| Symbol | Contract | Old (leverage=200) | New (risk=$50) |
+|--------|----------|--------------------|----------------|
+| XAGUSD | 5000 oz | 0.6 lots ($237K) | ~0.01 lots ($5K) |
+| EURUSD | 100K | 0.6 lots ($68K) | ~0.06 lots ($6K) |
+| XAUUSD | 100 oz | capped lots | ~0.01 lots ($3K) |
+| USOUSD | 1000 bbl | capped lots | ~0.01 lots ($1K) |
+
+The `size_multiplier` (10 factors: vol, symbol WR, regime, group, orchestrator, profit preservation, kill zone, energy, loss streak, confluence) now scales the **risk target** ($5-$50) instead of a leveraged notional.
+
 ## Protection Still Active
+- **Risk-based position sizing** (loss at SL = $50 max, scaled by multiplier)
 - Circuit breakers (3 symbol consecutive losses → 30m pause, 5 global → 15m pause)
-- Max loss per trade ($50 broker SL)
+- Max loss per trade ($50 — now enforced by sizing, not SL clamping)
 - Drawdown reduction ($2,000 cumulative → $100/trade fallback)
 - Anti-churn (30s cooldown same symbol)
 - Confluence gate (min score 4, min 6 outside kill zones)
@@ -57,6 +72,15 @@
 | 6 | **Session quality 9th confluence factor** | +1 point in kill zones, max score now 12 | confluence_scorer.py |
 
 ## Change Log
+
+### Mar 16, 2026 — 07:45 UTC (Risk-Based Position Sizing)
+- **CRITICAL FIX:** Replaced `capital × leverage` sizing with **risk-based sizing** (`lots = target_risk / loss_per_lot_at_SL`)
+- **New function:** `calculate_risk_based_lots()` in `arithmetics.py` — uses MT5 `trade_tick_value` for correct cross-instrument sizing
+- **Removed:** SL clamping (no longer needed — position is sized to match risk, SL stays at full ATR distance)
+- **Removed:** `convert_usd_to_lots()` from sizing pipeline (still exists for other uses)
+- **LEVERAGE=200** no longer used for sizing (kept for reference)
+- **Reason:** XAGUSD trade sized at 0.6 lots ($237K notional) on $2K capital, peak drawdown -$346 in seconds. Contract size differences (XAGUSD=5000oz vs EURUSD=100K) made flat leverage sizing dangerous for non-forex instruments
+- **Broker:** Vantage International (VFSC) — forex up to 1:1000, metals/energies up to 1:500
 
 ### Mar 16, 2026 — 05:50 UTC (Circuit Breaker Tuning + Venue Controls + Backtest Gate)
 - **Circuit Breaker (global):** 1h → **15m** cooldown after 5 consecutive global losses

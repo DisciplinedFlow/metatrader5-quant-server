@@ -77,7 +77,7 @@ onMounted(fetchHistory)
     <div class="page-header">
       <div>
         <h1>Trade History</h1>
-        <p>All crypto trades tracked by the bot — Hyperliquid Perpetuals.</p>
+        <p>All crypto trades tracked by the bot — Lighter.xyz & Hyperliquid Perpetuals.</p>
       </div>
       <button class="tp-btn tp-btn-outline" @click="fetchHistory" :disabled="loading">
         <span class="material-symbols-outlined" style="font-size:16px">refresh</span>

@@ -26,15 +26,34 @@ PROFIT_PROTECT_GIVEBACK = 0.40     # Close if profit drops below 40% of peak
 TIME_EXIT_HOURS = 48               # Close stale positions after 48 hours
 TIME_EXIT_MIN_PROFIT_PCT = 0.01    # ...unless profit exceeds 1%
 
-# -- Trailing stop tiers --
+# -- Trailing stop tiers (per asset class) --
 # Each tier: (activation_pct, trail_pct)
-# activation_pct = profit % that activates this tier
-# trail_pct = how far below the peak price to set the SL
-TRAIL_TIERS = [
-    (0.03, 0.015),   # Tier 1: at +3% profit, trail 1.5% below peak
-    (0.06, 0.02),    # Tier 2: at +6% profit, trail 2% below peak (tighter)
-    (0.10, 0.025),   # Tier 3: at +10% profit, trail 2.5% below peak (wider to let runners run)
+TRAIL_TIERS_CRYPTO = [
+    (0.03, 0.015),   # Tier 1: at +3%, trail 1.5% below peak
+    (0.06, 0.02),    # Tier 2: at +6%, trail 2%
+    (0.10, 0.025),   # Tier 3: at +10%, trail 2.5% (wider for runners)
 ]
+TRAIL_TIERS_METALS = [
+    (0.01, 0.006),   # Tier 1: at +1%, trail 0.6% below peak
+    (0.02, 0.008),   # Tier 2: at +2%, trail 0.8%
+    (0.04, 0.012),   # Tier 3: at +4%, trail 1.2%
+]
+TRAIL_TIERS_FOREX = [
+    (0.003, 0.002),  # Tier 1: at +0.3%, trail 0.2% below peak
+    (0.005, 0.003),  # Tier 2: at +0.5%, trail 0.3%
+    (0.008, 0.004),  # Tier 3: at +0.8%, trail 0.4%
+]
+
+FOREX_SYMBOLS = {'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'}
+METALS_SYMBOLS = {'XAU', 'XAG', 'PAXG', 'WTI'}
+
+
+def _get_trail_tiers(symbol):
+    if symbol in FOREX_SYMBOLS:
+        return TRAIL_TIERS_FOREX
+    elif symbol in METALS_SYMBOLS:
+        return TRAIL_TIERS_METALS
+    return TRAIL_TIERS_CRYPTO
 
 
 def exit_algorithm():
@@ -114,6 +133,27 @@ def exit_algorithm():
             logger.info("Lighter position closed: %s pnl=$%.2f reason=%s",
                          position.symbol, pnl_usd, close_reason)
 
+            # Record to Neo4j knowledge graph
+            try:
+                from app.quant.tasks import record_to_graph
+                record_to_graph.delay({
+                    'type': 'trade',
+                    'trade_id': f'lighter_{position.id}',
+                    'django_id': position.id,
+                    'symbol': position.symbol,
+                    'direction': 'BUY' if position.side == 'LONG' else 'SELL',
+                    'entry_price': position.entry_price,
+                    'close_price': current_price,
+                    'pnl': pnl_usd,
+                    'strategy': position.entry_signal,
+                    'closing_reason': close_reason,
+                    'entry_time': position.opened_at,
+                    'close_time': position.closed_at,
+                    'venue': 'LIGHTER',
+                })
+            except Exception:
+                pass
+
         except Exception as e:
             logger.error("Lighter exit error for %s: %s", position.symbol, e)
 
@@ -128,7 +168,9 @@ def _check_breakeven(position, current_price, profit_pct):
     Once breakeven is set, we never move it back. We detect it's already done
     by checking if stop_loss equals entry_price (within a tiny tolerance).
     """
-    if profit_pct < BREAKEVEN_PROFIT_PCT:
+    # Asset-class aware breakeven threshold
+    be_pct = 0.003 if position.symbol in FOREX_SYMBOLS else (0.01 if position.symbol in METALS_SYMBOLS else BREAKEVEN_PROFIT_PCT)
+    if profit_pct < be_pct:
         return
 
     # Already at breakeven or better?
@@ -181,14 +223,15 @@ def _check_trailing_stop(position, current_price, profit_pct):
     the SL at (peak_price * (1 - trail_pct)) for longs.
     The SL only moves up, never down.
     """
-    if profit_pct < TRAIL_TIERS[0][0]:
+    tiers = _get_trail_tiers(position.symbol)
+    if profit_pct < tiers[0][0]:
         return  # Not yet at first tier
 
     peak = _get_peak_price(position)
 
     # Find the highest qualifying tier
     active_trail_pct = None
-    for activation_pct, trail_pct in TRAIL_TIERS:
+    for activation_pct, trail_pct in tiers:
         if profit_pct >= activation_pct:
             active_trail_pct = trail_pct
 

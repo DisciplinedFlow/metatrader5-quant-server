@@ -157,6 +157,73 @@ def get_symbol_contract_info(symbol: str) -> dict:
         return None
 
 
+def calculate_risk_based_lots(symbol: str, sl_distance: float, target_risk: float, order_type: str) -> float:
+    """Risk-based position sizing: compute lots so that loss at SL = target_risk.
+
+    Uses MT5 trade_tick_value for correct cross-currency P&L conversion.
+    Works correctly across all instrument types (forex, metals, energies)
+    because tick_value already encodes contract_size and currency conversion.
+
+    :param symbol: Trading symbol (e.g. 'EURUSD', 'XAGUSD')
+    :param sl_distance: Absolute price distance from entry to SL
+    :param target_risk: Max acceptable loss in USD (e.g. $50)
+    :param order_type: 'BUY' or 'SELL'
+    :return: Position size in lots (clamped to broker limits)
+    """
+    symbol_info_data = symbol_info(symbol)
+    if symbol_info_data is None:
+        raise ValueError(f"Symbol {symbol} not found in MT5")
+
+    # tick_value_loss = USD P&L per tick per 1 lot (accounts for contract size + currency conversion)
+    tick_value = _extract_scalar(symbol_info_data.get('trade_tick_value_loss'), 0)
+    tick_size = _extract_scalar(symbol_info_data.get('trade_tick_size'), 0)
+    volume_min = _extract_scalar(symbol_info_data.get('volume_min'), 0.01)
+    volume_max = _extract_scalar(symbol_info_data.get('volume_max'), 100.0)
+    volume_step = _extract_scalar(symbol_info_data.get('volume_step'), 0.01)
+    contract_size = _extract_scalar(symbol_info_data.get('trade_contract_size'), 100000)
+
+    if tick_value <= 0 or tick_size <= 0 or sl_distance <= 0:
+        raise ValueError(
+            f"Invalid risk params for {symbol}: tick_value={tick_value}, "
+            f"tick_size={tick_size}, sl_distance={sl_distance}"
+        )
+
+    # loss_per_lot = (SL ticks) * (USD per tick per lot)
+    loss_per_lot = (sl_distance / tick_size) * tick_value
+    lots = target_risk / loss_per_lot
+
+    # Round to broker volume_step
+    lots = round(lots / volume_step) * volume_step
+
+    # Clamp to broker limits
+    if lots < volume_min:
+        logger.warning(
+            f"Risk-based sizing: {symbol} computed {lots:.4f} lots < volume_min {volume_min}, "
+            f"clamping up (risk=${target_risk:.2f}, loss_per_lot=${loss_per_lot:.2f})"
+        )
+        lots = volume_min
+    if lots > volume_max:
+        lots = volume_max
+
+    price = _extract_scalar(
+        symbol_info_data.get('bid' if order_type == 'SELL' else 'ask'), 0
+    )
+    notional = lots * contract_size * price
+
+    logger.info({
+        'message': 'Risk-based lot calculation',
+        'symbol': symbol,
+        'target_risk': round(target_risk, 2),
+        'sl_distance': round(sl_distance, 5),
+        'loss_per_lot': round(loss_per_lot, 2),
+        'lots': float(lots),
+        'contract_size': contract_size,
+        'notional_usd': round(notional, 2),
+    })
+
+    return lots
+
+
 def convert_usd_to_lots(symbol: str, usd_amount: float, type: str) -> float:
     """
     Convert USD amount to lots for a given symbol.

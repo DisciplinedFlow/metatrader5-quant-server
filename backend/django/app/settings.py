@@ -264,6 +264,7 @@ CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_ROUTES = {
     'quant.tasks.run_quant_trailing_stop_algorithm': {'queue': 'critical'},
     'quant.tasks.run_quant_close_algorithm': {'queue': 'critical'},
+    'quant.tasks.run_position_reconciliation': {'queue': 'critical'},
     'quant.tasks.run_quant_entry_algorithm': {'queue': 'critical'},
     'quant.tasks.run_ict_scanner': {'queue': 'analysis'},
     'quant.tasks.run_regime_scan': {'queue': 'analysis'},
@@ -297,6 +298,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.run_quant_close_algorithm',  # This should match the @shared_task name
         'schedule': 15,
     },
+    'run-position-reconciliation': {
+        'task': 'quant.tasks.run_position_reconciliation',
+        'schedule': 30,  # every 30s — catches MT5↔DB desync from crashes/timeouts
+    },
     'run-backtest': {
         'task': 'quant.tasks.run_backtest',
         'schedule': 60.0 * 60 * 6,  # every 6 hours
@@ -315,13 +320,18 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 30.0,
     },
     # --- Lighter.xyz DEX (zero-fee venue) ---
-    'run-lighter-entry': {
-        'task': 'crypto.tasks.run_lighter_entry',
-        'schedule': 60.0,
-    },
+    # EMA entry disabled — grid-only mode for faster captures
+    # 'run-lighter-entry': {
+    #     'task': 'crypto.tasks.run_lighter_entry',
+    #     'schedule': 60.0,
+    # },
     'run-lighter-exit': {
         'task': 'crypto.tasks.run_lighter_exit',
         'schedule': 30.0,
+    },
+    'run-lighter-grid': {
+        'task': 'crypto.tasks.run_lighter_grid',
+        'schedule': 45.0,
     },
     # --- Funding Rate Arbitrage Monitor (Hyperliquid vs Lighter) ---
     'run-funding-arb-scan': {

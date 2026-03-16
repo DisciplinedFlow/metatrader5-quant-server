@@ -246,3 +246,118 @@ def _update_ml_features(closed_trade):
 
     except Exception as e:
         logger.debug(f"ML feature update error: {e}")
+
+
+def reconcile_positions():
+    """Reconcile MT5 broker positions with Django Trade records.
+
+    Fixes both directions of desync:
+    1. MT5 position exists but no DB record → create Trade record
+    2. DB record is open but MT5 position gone → close Trade with deal history
+
+    Should run every 30-60s alongside close_algorithm.
+    """
+    try:
+        from app.nexus.models import Trade
+        from django.utils import timezone
+
+        positions = get_positions()
+        if positions is None or positions.empty:
+            return
+
+        mt5_tickets = {}
+        for _, p in positions.iterrows():
+            mt5_tickets[int(p.ticket)] = p
+
+        db_open = Trade.objects.filter(close_time__isnull=True)
+        db_tickets = {int(t.transaction_broker_id): t for t in db_open}
+
+        # --- Direction 1: MT5 position without DB record → create Trade ---
+        for ticket, pos in mt5_tickets.items():
+            if ticket in db_tickets:
+                continue
+
+            # This MT5 position has no DB record — create one
+            symbol = pos.symbol
+            order_type = 'BUY' if int(pos.type) == 0 else 'SELL'
+            entry_price = float(pos.price_open)
+            volume = float(pos.volume)
+            entry_time = pos.time if hasattr(pos, 'time') and pos.time else timezone.now()
+
+            # Infer strategy from magic number or default
+            strategy = 'RECONCILED'
+            if hasattr(pos, 'magic') and pos.magic:
+                magic = int(pos.magic)
+                if magic == 234000:
+                    strategy = 'CVD_RECONCILED'
+                elif magic == 0:
+                    strategy = 'SCALPING_RECONCILED'
+
+            try:
+                trade = Trade.objects.create(
+                    transaction_broker_id=str(ticket),
+                    symbol=symbol,
+                    entry_time=entry_time,
+                    entry_price=entry_price,
+                    type=order_type,
+                    order_volume=volume,
+                    position_size_usd=0,
+                    capital=0,
+                    leverage=0,
+                    liquidity_price=entry_price,
+                    break_even_price=entry_price,
+                    order_commission=0,
+                    strategy=strategy,
+                    broker='VantageInternational-Demo',
+                    market_type='FOREX',
+                    timeframe='M15',
+                )
+                logger.warning(
+                    f"RECONCILE: Created DB record for MT5 position "
+                    f"{symbol} {order_type} ticket={ticket} vol={volume} "
+                    f"entry={entry_price}"
+                )
+            except Exception as e:
+                logger.error(f"RECONCILE: Failed to create Trade for ticket {ticket}: {e}")
+
+        # --- Direction 2: DB record open but gone from MT5 → close Trade ---
+        # (Already handled by _close_orphaned_trades in close_algorithm,
+        #  but we add deal history lookup for better accuracy)
+        for ticket, trade in db_tickets.items():
+            if ticket in mt5_tickets:
+                continue
+
+            # Trade is open in DB but gone from MT5
+            if trade.closing_reason:
+                continue  # Already being processed
+
+            try:
+                now = datetime.now(TIMEZONE)
+                deal = get_deal_from_ticket(ticket, now - timedelta(hours=48), now)
+
+                if deal is not None:
+                    trade.close_time = deal.get('time', now)
+                    trade.close_price = deal.get('price', trade.entry_price)
+                    trade.pnl = deal.get('profit', 0)
+                    trade.pnl_excluding_commission = trade.pnl - deal.get('commission', 0)
+                    trade.closing_reason = 'RECONCILE_SYNCED'
+                else:
+                    trade.close_time = now
+                    trade.close_price = trade.entry_price
+                    trade.pnl = 0
+                    trade.pnl_excluding_commission = 0
+                    trade.closing_reason = 'RECONCILE_NO_DEAL'
+
+                trade.save(update_fields=[
+                    'close_time', 'close_price', 'pnl',
+                    'pnl_excluding_commission', 'closing_reason',
+                ])
+                logger.warning(
+                    f"RECONCILE: Closed orphan {trade.symbol} ticket={ticket} "
+                    f"PnL=${trade.pnl:.2f} reason={trade.closing_reason}"
+                )
+            except Exception as e:
+                logger.error(f"RECONCILE: Error closing orphan ticket {ticket}: {e}")
+
+    except Exception as e:
+        logger.error(f"Reconciliation error: {e}\n{traceback.format_exc()}")

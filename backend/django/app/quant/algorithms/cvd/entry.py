@@ -1689,30 +1689,25 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         f"loss_streak={loss_streak_mult:.2f}, conf={conf_mult:.2f})"
                     )
 
-                order_size_usd = calculate_order_size_usd(order_capital, LEVERAGE)
-                commission = calculate_commission(order_size_usd, pair)
+                # --- Risk-based position sizing ---
+                # Size so that loss at SL = target_risk. This replaces the old
+                # capital * leverage approach which created insane notionals for
+                # large-contract instruments (XAGUSD 5000oz, oils 1000bbl).
+                sl_distance = abs(last_tick_price - sl_price)
+                target_risk = MAX_LOSS_PER_TRADE * size_multiplier
+                target_risk = max(5.0, min(target_risk, MAX_LOSS_PER_TRADE))
 
-                # Clamp SL so max loss does not exceed $50 hard ceiling
-                # (position_manager also enforces this, but broker SL is the real safety net)
-                max_loss_allowed = min(order_capital, MAX_LOSS_PER_TRADE)
-                pnl_at_sl, _ = get_pnl_at_price(
-                    sl_price, last_tick_price, order_size_usd, LEVERAGE, order_type, commission
-                )
-                if pnl_at_sl < -max_loss_allowed:
-                    sl_price, _ = get_price_at_pnl(
-                        desired_pnl=-max_loss_allowed,
-                        entry_price=last_tick_price,
-                        order_size_usd=order_size_usd,
-                        leverage=LEVERAGE,
-                        type=order_type,
-                        commission=commission,
+                from app.utils.arithmetics import calculate_risk_based_lots
+                try:
+                    full_volume_lots = calculate_risk_based_lots(
+                        pair, sl_distance, target_risk, order_type
                     )
-                    logger.info(f"CVD: Clamped SL for {pair} to limit loss to ${max_loss_allowed:.2f}")
+                except Exception as e:
+                    logger.error(f"CVD: Risk-based sizing failed for {pair}: {e}")
+                    PairLock.objects.filter(symbol=pair).delete()
+                    continue
 
-                # --- Fetch broker contract specs for this symbol ---
-                # Contract sizes vary wildly: forex=100k, XAUUSD=100oz,
-                # XAGUSD=5000oz, NG-C=10000, oils=1000 barrels.
-                # We use these to validate volume_min/max from the broker.
+                # Fetch broker contract specs for validation + recording
                 contract_info = get_symbol_contract_info(pair)
                 if contract_info:
                     broker_volume_min = contract_info['volume_min']
@@ -1720,36 +1715,22 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     broker_volume_step = contract_info['volume_step']
                     broker_contract_size = contract_info['trade_contract_size']
                 else:
-                    # Fallback: assume forex defaults if MT5 info unavailable
                     broker_volume_min = 0.01
                     broker_volume_max = 100.0
                     broker_volume_step = 0.01
                     broker_contract_size = 100000
 
-                # Convert to lots — uses trade_contract_size from MT5
-                full_volume_lots = convert_usd_to_lots(pair, order_size_usd, order_type)
-                if isinstance(full_volume_lots, (pd.Series, pd.DataFrame)):
-                    full_volume_lots = full_volume_lots.iloc[0] if not full_volume_lots.empty else 0.0
-
-                # Validate against broker's volume_min (not hard-coded 0.01)
-                if full_volume_lots < broker_volume_min:
-                    logger.error(
-                        f"CVD: Order volume too low for {pair}: {full_volume_lots:.4f} lots "
-                        f"< broker minimum {broker_volume_min} "
-                        f"(contract_size={broker_contract_size}, notional=${order_size_usd:.2f})"
-                    )
-                    PairLock.objects.filter(symbol=pair).delete()
-                    continue
-
-                # Hard safety cap — use the stricter of MAX_LOT_SIZE and broker volume_max
+                # Hard safety cap
                 effective_max_lots = min(MAX_LOT_SIZE, broker_volume_max)
                 if full_volume_lots > effective_max_lots:
                     logger.warning(
-                        f"CVD: CAPPING {pair} from {full_volume_lots:.2f} to {effective_max_lots} lots "
-                        f"(MAX_LOT_SIZE={MAX_LOT_SIZE}, broker_max={broker_volume_max}, "
-                        f"contract_size={broker_contract_size}, capital=${order_capital:.2f})"
+                        f"CVD: CAPPING {pair} from {full_volume_lots:.2f} to {effective_max_lots} lots"
                     )
                     full_volume_lots = effective_max_lots
+
+                # Compute notional for record-keeping (replaces old order_size_usd)
+                order_size_usd = full_volume_lots * broker_contract_size * last_tick_price
+                commission = calculate_commission(order_size_usd, pair)
 
                 # Livermore scale-in: enter at 60%, add 40% on confirmation
                 # Round to broker's volume_step (e.g. 0.1 for NG-C, 0.01 for forex)

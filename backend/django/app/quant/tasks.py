@@ -346,6 +346,18 @@ def run_quant_close_algorithm():
         logger.error(f"Error in quant close algorithm: {e}")
 
 
+@shared_task(name='quant.tasks.run_position_reconciliation', soft_time_limit=20, time_limit=30)
+def run_position_reconciliation():
+    """Reconcile MT5 positions with Django DB every 30s."""
+    try:
+        from app.quant.algorithms.close.close import reconcile_positions
+        reconcile_positions()
+    except SoftTimeLimitExceeded:
+        logger.error("Reconciliation task timed out.")
+    except Exception as e:
+        logger.error(f"Reconciliation error: {e}")
+
+
 @shared_task(name='quant.tasks.run_regime_scan', soft_time_limit=60, time_limit=90)
 def run_regime_scan():
     """Classify market regime for all pairs. Runs every 5 minutes."""
