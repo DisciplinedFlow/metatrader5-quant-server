@@ -6,7 +6,7 @@ from time import sleep
 import pandas as pd
 
 from app.utils.api.positions import get_positions
-from app.utils.api.ticket import get_order_from_ticket, get_deal_from_ticket
+from app.utils.api.ticket import get_order_from_ticket, get_deal_from_ticket, history_deals_bulk
 from app.utils.constants import TIMEZONE
 from app.utils.db.close import close_trade
 
@@ -321,43 +321,60 @@ def reconcile_positions():
                 logger.error(f"RECONCILE: Failed to create Trade for ticket {ticket}: {e}")
 
         # --- Direction 2: DB record open but gone from MT5 → close Trade ---
-        # (Already handled by _close_orphaned_trades in close_algorithm,
-        #  but we add deal history lookup for better accuracy)
+        # Collect orphaned tickets (open in DB, gone from MT5)
+        orphan_tickets = {}
         for ticket, trade in db_tickets.items():
             if ticket in mt5_tickets:
                 continue
-
-            # Trade is open in DB but gone from MT5
             if trade.closing_reason:
                 continue  # Already being processed
+            orphan_tickets[ticket] = trade
 
-            try:
-                now = datetime.now(TIMEZONE)
-                deal = get_deal_from_ticket(ticket, now - timedelta(hours=48), now)
+        if orphan_tickets:
+            # Bulk-fetch ALL deals in last 48h in a single API call
+            now = datetime.now(TIMEZONE)
+            all_deals = history_deals_bulk(now - timedelta(hours=48), now)
 
-                if deal is not None:
-                    trade.close_time = deal.get('time', now)
-                    trade.close_price = deal.get('price', trade.entry_price)
-                    trade.pnl = deal.get('profit', 0)
-                    trade.pnl_excluding_commission = trade.pnl - deal.get('commission', 0)
-                    trade.closing_reason = 'RECONCILE_SYNCED'
-                else:
-                    trade.close_time = now
-                    trade.close_price = trade.entry_price
-                    trade.pnl = 0
-                    trade.pnl_excluding_commission = 0
-                    trade.closing_reason = 'RECONCILE_NO_DEAL'
+            # Index deals by position_id for fast lookup
+            deals_by_position = {}
+            for d in all_deals:
+                pos_id = d.get('position_id')
+                if pos_id:
+                    deals_by_position.setdefault(pos_id, []).append(d)
 
-                trade.save(update_fields=[
-                    'close_time', 'close_price', 'pnl',
-                    'pnl_excluding_commission', 'closing_reason',
-                ])
-                logger.warning(
-                    f"RECONCILE: Closed orphan {trade.symbol} ticket={ticket} "
-                    f"PnL=${trade.pnl:.2f} reason={trade.closing_reason}"
-                )
-            except Exception as e:
-                logger.error(f"RECONCILE: Error closing orphan ticket {ticket}: {e}")
+            for ticket, trade in orphan_tickets.items():
+                try:
+                    pos_deals = deals_by_position.get(ticket, [])
+                    entry_deals = [d for d in pos_deals if d.get('entry') == 0]
+                    exit_deals = [d for d in pos_deals if d.get('entry') == 1]
+
+                    if exit_deals:
+                        exit_deal = exit_deals[-1]
+                        total_profit = sum(d.get('profit', 0) for d in pos_deals)
+                        total_commission = sum(d.get('commission', 0) for d in pos_deals)
+
+                        trade.close_time = datetime.fromtimestamp(exit_deal['time'], tz=TIMEZONE) if 'time' in exit_deal else now
+                        trade.close_price = exit_deal.get('price', trade.entry_price)
+                        trade.pnl = total_profit
+                        trade.pnl_excluding_commission = total_profit - total_commission
+                        trade.closing_reason = 'RECONCILE_SYNCED'
+                    else:
+                        trade.close_time = now
+                        trade.close_price = trade.entry_price
+                        trade.pnl = 0
+                        trade.pnl_excluding_commission = 0
+                        trade.closing_reason = 'RECONCILE_NO_DEAL'
+
+                    trade.save(update_fields=[
+                        'close_time', 'close_price', 'pnl',
+                        'pnl_excluding_commission', 'closing_reason',
+                    ])
+                    logger.warning(
+                        f"RECONCILE: Closed orphan {trade.symbol} ticket={ticket} "
+                        f"PnL=${trade.pnl:.2f} reason={trade.closing_reason}"
+                    )
+                except Exception as e:
+                    logger.error(f"RECONCILE: Error closing orphan ticket {ticket}: {e}")
 
     except Exception as e:
         logger.error(f"Reconciliation error: {e}\n{traceback.format_exc()}")

@@ -100,6 +100,19 @@ def run_lighter_entry():
         logger.error(f"run_lighter_entry error: {e}")
 
 
+@shared_task(name='crypto.tasks.run_lighter_mean_reversion', max_retries=2, soft_time_limit=30)
+def run_lighter_mean_reversion():
+    if is_crypto_bot_paused():
+        return
+    try:
+        from app.quant.algorithms.lighter.mean_reversion import mean_reversion_algorithm
+        mean_reversion_algorithm()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_mean_reversion timed out.")
+    except Exception as e:
+        logger.error(f"run_lighter_mean_reversion error: {e}")
+
+
 @shared_task(name='crypto.tasks.run_lighter_grid', max_retries=2, soft_time_limit=45)
 def run_lighter_grid():
     if is_crypto_bot_paused():
@@ -111,6 +124,19 @@ def run_lighter_grid():
         logger.error("run_lighter_grid timed out.")
     except Exception as e:
         logger.error(f"run_lighter_grid error: {e}")
+
+
+@shared_task(name='crypto.tasks.run_lighter_rsi_scalper', max_retries=2, soft_time_limit=20)
+def run_lighter_rsi_scalper():
+    if is_crypto_bot_paused():
+        return
+    try:
+        from app.quant.algorithms.lighter.rsi_scalper import rsi_scalper_algorithm
+        rsi_scalper_algorithm()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_rsi_scalper timed out.")
+    except Exception as e:
+        logger.error(f"run_lighter_rsi_scalper error: {e}")
 
 
 @shared_task(name='crypto.tasks.run_lighter_exit', max_retries=3, soft_time_limit=60)

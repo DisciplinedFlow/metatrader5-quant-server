@@ -327,11 +327,19 @@ CELERY_BEAT_SCHEDULE = {
     # },
     'run-lighter-exit': {
         'task': 'crypto.tasks.run_lighter_exit',
-        'schedule': 30.0,
+        'schedule': 10.0,  # Every 10s — balanced: fast enough for crypto, avoids rate limits
     },
     'run-lighter-grid': {
         'task': 'crypto.tasks.run_lighter_grid',
-        'schedule': 45.0,
+        'schedule': 30.0,  # Every 30s — grid doesn't need ultra-fast refresh
+    },
+    'run-lighter-mean-reversion': {
+        'task': 'crypto.tasks.run_lighter_mean_reversion',
+        'schedule': 20.0,  # Every 20s — staggered from RSI to spread API load
+    },
+    'run-lighter-rsi-scalper': {
+        'task': 'crypto.tasks.run_lighter_rsi_scalper',
+        'schedule': 15.0,  # Every 15s — fast enough for 5m candle signals
     },
     # --- Funding Rate Arbitrage Monitor (Hyperliquid vs Lighter) ---
     'run-funding-arb-scan': {

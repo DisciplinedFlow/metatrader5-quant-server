@@ -23,6 +23,7 @@ from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
 from .client import (
     get_candles, get_best_bid_ask, place_market_order_usd,
     update_leverage, cancel_all_orders, place_limit_order,
+    place_limit_order_post_only,
 )
 
 logger = logging.getLogger('app.lighter')
@@ -42,7 +43,7 @@ DEFAULT_CONFIG = {'spacing_pct': 0.003, 'levels': 5, 'size_usd': 10, 'range_mult
 
 # Safety limits
 MAX_POSITION_USD = 100       # Max notional per symbol before grid pauses
-ADX_TREND_THRESHOLD = 35     # Pause grid when ADX > this (strong trend)
+ADX_TREND_THRESHOLD = 45     # Relaxed — only pause in extreme trends
 GRID_REFRESH_MINUTES = 5     # How often to recenter the grid
 
 
@@ -203,7 +204,7 @@ def _place_grid(symbol, center_price, config, meta):
             continue
 
         try:
-            result = place_limit_order(symbol, is_buy=True, base_amount=base_size, price=price)
+            result = place_limit_order_post_only(symbol, is_buy=True, base_amount=base_size, price=price)
             if not result.get('error'):
                 orders_placed += 1
             else:
@@ -221,7 +222,7 @@ def _place_grid(symbol, center_price, config, meta):
             continue
 
         try:
-            result = place_limit_order(symbol, is_buy=False, base_amount=base_size, price=price)
+            result = place_limit_order_post_only(symbol, is_buy=False, base_amount=base_size, price=price)
             if not result.get('error'):
                 orders_placed += 1
             else:

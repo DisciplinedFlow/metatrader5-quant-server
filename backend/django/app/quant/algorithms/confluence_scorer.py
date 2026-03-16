@@ -1,5 +1,5 @@
 """
-Confluence Scorer — quantifies trade quality from 0 to 11.
+Confluence Scorer — quantifies trade quality from 0 to 14.
 
 Inspired by Mark Weinstein (Market Wizards): "Use multiple confirmations —
 don't trade on one indicator alone." And Bruce Kovner: "The best trades
@@ -18,14 +18,17 @@ Fair Value Gap present      1     ICT: FVG = institutional imbalance
 Order Block at entry        1     ICT: OB = institutional origin point
 Regime favorable            1     HMM regime aligns with strategy type
 Displacement detected       1     Research: 3+ strong candles = institutional move
+Session quality             1     Kill zone timing bonus
+VWAP alignment              1     Institutional benchmark: direction matches VWAP bias
+Session level sweep         1     Near prev day/Asian highs-lows = liquidity sweep zone
 -----------------------------------------------------
-Maximum:                   11
+Maximum:                   14
 
 Scoring bands:
   0-2: NO TRADE -- need at least volume + one confirmation
   3:   REDUCED SIZE (50%) -- edge present but thin
   4-7: FULL SIZE (100%) -- CVD + trend = the core edge, trade it
-  8-11: ENHANCED SIZE (150%) -- everything aligned, size up
+  8-14: ENHANCED SIZE (150%) -- everything aligned, size up
 
 Paul Tudor Jones: "Risk/reward: don't take a trade unless potential reward
 is at least 3x the risk." High confluence = higher expected R:R.
@@ -57,8 +60,8 @@ class ConfluenceScore:
     """Complete confluence assessment for a potential trade."""
     symbol: str
     direction: str            # 'long' or 'short'
-    total_score: int          # Sum of all factor points (0-11)
-    max_possible: int         # Maximum possible score (11)
+    total_score: int          # Sum of all factor points (0-14)
+    max_possible: int         # Maximum possible score (14)
     factors: List[ConfluenceFactor] = field(default_factory=list)
     size_multiplier: float = 0.0   # Computed from score bands
     should_trade: bool = False      # True if score >= 4
@@ -102,10 +105,10 @@ SCORE_BANDS = {
     'skip':     {'min': 0, 'max': 2, 'size_mult': 0.0},
     'reduced':  {'min': 3, 'max': 3, 'size_mult': 0.5},
     'full':     {'min': 4, 'max': 7, 'size_mult': 1.0},
-    'enhanced': {'min': 8, 'max': 12, 'size_mult': 1.5},
+    'enhanced': {'min': 8, 'max': 14, 'size_mult': 1.5},
 }
 
-MAX_POSSIBLE_SCORE = 12  # 8 original factors + session quality = 12
+MAX_POSSIBLE_SCORE = 14  # 9 original factors + VWAP + session level sweep = 14
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +455,69 @@ def _evaluate_session_quality(session_quality: Optional[bool] = None) -> Conflue
         )
 
 
+def _evaluate_vwap_alignment(direction: str, vwap_bias: Optional[str]) -> ConfluenceFactor:
+    """VWAP alignment (1 point).
+
+    Institutional benchmark: VWAP is the volume-weighted fair price for the
+    session. Price above VWAP = buyers in control (bullish bias), below =
+    sellers in control (bearish bias). Trading in alignment with VWAP bias
+    means trading with the dominant institutional flow.
+    """
+    max_pts = 1
+
+    if vwap_bias is None:
+        return ConfluenceFactor(
+            name='vwap_alignment', points=0, max_points=max_pts,
+            present=False, detail='VWAP data not available',
+        )
+
+    vwap_lower = vwap_bias.lower()
+    aligned = (
+        (direction == 'long' and vwap_lower == 'bullish') or
+        (direction == 'short' and vwap_lower == 'bearish')
+    )
+
+    if aligned:
+        return ConfluenceFactor(
+            name='vwap_alignment', points=max_pts, max_points=max_pts,
+            present=True, detail=f'VWAP bias {vwap_bias} aligns with {direction}',
+        )
+
+    return ConfluenceFactor(
+        name='vwap_alignment', points=0, max_points=max_pts,
+        present=False,
+        detail=f'VWAP bias {vwap_bias} does not align with {direction}',
+    )
+
+
+def _evaluate_session_level_sweep(sweep_setup: Optional[bool]) -> ConfluenceFactor:
+    """Session level sweep proximity (1 point).
+
+    Price near previous day high/low or Asian session high/low indicates
+    a potential liquidity sweep zone. Institutional traders hunt stops at
+    these well-known levels before reversing — entering near these levels
+    increases the probability of catching an institutional reversal.
+    """
+    max_pts = 1
+
+    if sweep_setup is None:
+        return ConfluenceFactor(
+            name='session_level_sweep', points=0, max_points=max_pts,
+            present=False, detail='Session level data not available',
+        )
+
+    if sweep_setup:
+        return ConfluenceFactor(
+            name='session_level_sweep', points=max_pts, max_points=max_pts,
+            present=True, detail='Price near key session level (sweep zone)',
+        )
+
+    return ConfluenceFactor(
+        name='session_level_sweep', points=0, max_points=max_pts,
+        present=False, detail='Price not near key session levels',
+    )
+
+
 # ---------------------------------------------------------------------------
 # Score classification
 # ---------------------------------------------------------------------------
@@ -466,7 +532,7 @@ def _classify_score(total_score: int) -> tuple:
             should_trade = band_name != 'skip'
             return band_name, band_def['size_mult'], should_trade
 
-    # Fallback (should never reach here with valid scores 0-11)
+    # Fallback (should never reach here with valid scores 0-14)
     return 'skip', 0.0, False
 
 
@@ -486,10 +552,12 @@ def score_confluence(
     order_block_at_entry: Optional[bool] = None,  # True if OB at entry level
     regime_favorable: Optional[bool] = None,    # True if HMM regime supports strategy
     displacement: Optional[bool] = None,        # True if displacement move detected
+    vwap_bias: Optional[str] = None,            # 'BULLISH', 'BEARISH', 'NEUTRAL' from VWAP
+    session_level_sweep: Optional[bool] = None, # True if price near key session level
     # Optional context for auto-detection
     strategy_name: Optional[str] = None,        # For regime auto-detect from orchestrator
 ) -> ConfluenceScore:
-    """Score a potential trade's confluence from 0 to 11.
+    """Score a potential trade's confluence from 0 to 14.
 
     Missing factors (None) are scored as 0 points but don't count against.
     This allows progressive integration -- start with available factors,
@@ -510,6 +578,8 @@ def score_confluence(
         order_block_at_entry: Whether an Order Block exists at entry level
         regime_favorable: Whether the HMM regime supports the strategy type
         displacement: Whether a displacement move was detected
+        vwap_bias: VWAP bias direction ('BULLISH'/'BEARISH'/'NEUTRAL')
+        session_level_sweep: Whether price is near a key session level (sweep zone)
         strategy_name: Strategy name for auto-detecting regime from orchestrator
 
     Returns:
@@ -533,6 +603,8 @@ def score_confluence(
         _evaluate_regime(regime_favorable, strategy_name),
         _evaluate_displacement(displacement),
         _evaluate_session_quality(),
+        _evaluate_vwap_alignment(direction, vwap_bias),
+        _evaluate_session_level_sweep(session_level_sweep),
     ]
 
     # Sum the points

@@ -5,6 +5,7 @@ These let the entry algorithm:
   1. Check free margin before placing an order
   2. Dry-run an order to validate it will succeed
   3. Read account equity/balance for risk calculations
+  4. Pre-calculate P&L using MT5's own math
 """
 
 import traceback
@@ -18,8 +19,11 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def account_info() -> Optional[Dict]:
-    """Fetch account balance, equity, margin, free margin, leverage."""
+def get_account_info() -> Optional[Dict]:
+    """Fetch account info from MT5: balance, equity, margin, margin_free, leverage, profit.
+
+    GET http://mt5:5001/account_info
+    """
     try:
         url = f"{BASE_URL}/account_info"
         response = get_session().get(url, timeout=10)
@@ -30,23 +34,29 @@ def account_info() -> Optional[Dict]:
         return None
 
 
-def order_calc_margin(symbol: str, volume: float, action: str = 'BUY', price: float = None) -> Optional[Dict]:
-    """
-    Calculate margin required for a hypothetical order.
+# Backward-compatible alias (used in check_margin_safe and elsewhere)
+account_info = get_account_info
+
+
+def check_margin_for_order(symbol: str, volume: float, order_type: str = 'BUY',
+                           price: float = None) -> Optional[Dict]:
+    """Pre-calculate margin required for a trade.
+
+    GET http://mt5:5001/order_calc_margin?action=BUY&symbol=EURUSD&volume=0.1&price=1.14
 
     Returns dict with keys: margin, margin_free, can_trade
     """
     try:
         url = f"{BASE_URL}/order_calc_margin"
-        payload = {
-            "action": action,
+        params = {
+            "action": order_type,
             "symbol": symbol,
             "volume": volume,
         }
         if price is not None:
-            payload["price"] = price
+            params["price"] = price
 
-        response = get_session().post(url, json=payload, timeout=10)
+        response = get_session().get(url, params=params, timeout=10)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -54,13 +64,47 @@ def order_calc_margin(symbol: str, volume: float, action: str = 'BUY', price: fl
         return None
 
 
-def order_check(symbol: str, volume: float, order_type: str = 'BUY',
-                sl: float = None, tp: float = None) -> Optional[Dict]:
+# Backward-compatible alias
+order_calc_margin = check_margin_for_order
+
+
+def calc_profit(symbol: str, volume: float, price_open: float, price_close: float,
+                order_type: str = 'BUY') -> Optional[float]:
+    """Calculate P&L for a trade using MT5's own math.
+
+    GET http://mt5:5001/order_calc_profit?action=BUY&symbol=EURUSD&volume=0.1&price_open=1.14&price_close=1.15
+
+    Returns the profit as a float, or None on failure.
     """
-    Dry-run an order without execution.
+    try:
+        url = f"{BASE_URL}/order_calc_profit"
+        params = {
+            "action": order_type,
+            "symbol": symbol,
+            "volume": volume,
+            "price_open": price_open,
+            "price_close": price_close,
+        }
+        response = get_session().get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        # Endpoint returns {"profit": <float>} or the profit directly
+        if isinstance(data, dict):
+            return data.get('profit')
+        return float(data)
+    except Exception as e:
+        logger.error(f"Exception calculating profit for {symbol}: {e}\n{traceback.format_exc()}")
+        return None
+
+
+def check_order(symbol: str, volume: float, order_type: str = 'BUY',
+                sl: float = None, tp: float = None) -> Optional[Dict]:
+    """Dry-run order validation - checks margin, stops, volume before sending.
+
+    POST http://mt5:5001/order_check with order request body.
 
     Returns the full OrderCheckResult including retcode, margin impact,
-    and comment explaining any rejection reason.
+    and comment explaining any rejection reason. retcode 0 = OK.
     """
     try:
         url = f"{BASE_URL}/order_check"
@@ -80,6 +124,10 @@ def order_check(symbol: str, volume: float, order_type: str = 'BUY',
     except Exception as e:
         logger.error(f"Exception in order_check for {symbol}: {e}\n{traceback.format_exc()}")
         return None
+
+
+# Backward-compatible alias
+order_check_dry_run = check_order
 
 
 def terminal_info() -> Optional[Dict]:
@@ -102,7 +150,7 @@ def check_margin_safe(symbol: str, volume: float, action: str = 'BUY',
     Returns True if placing this order keeps margin_level above min_margin_level (%).
     Default 200% = conservative buffer (broker margin call typically at 100%).
     """
-    result = order_calc_margin(symbol, volume, action)
+    result = check_margin_for_order(symbol, volume, action)
     if result is None:
         logger.warning(f"Margin check failed for {symbol} — allowing trade (fail-open)")
         return True
@@ -114,7 +162,7 @@ def check_margin_safe(symbol: str, volume: float, action: str = 'BUY',
         return False
 
     # Check margin level stays healthy
-    info = account_info()
+    info = get_account_info()
     if info and info.get('margin_level') and info['margin_level'] < min_margin_level:
         logger.warning(f"MARGIN LEVEL LOW: {info['margin_level']:.1f}% < {min_margin_level}% — blocking trade")
         return False

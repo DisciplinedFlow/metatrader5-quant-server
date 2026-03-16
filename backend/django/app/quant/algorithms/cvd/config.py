@@ -1,5 +1,9 @@
 from app.utils.constants import MT5Timeframe
 
+# Account currency: EUR (VantageInternational-Demo)
+# Risk target of $50 is actually €50. MT5 tick_value already returns EUR values.
+# No code changes needed — risk-based sizing uses tick_value which is in account currency.
+
 # Default config for CVD strategies — overridden by CustomStrategy.definition
 DEFAULT_TIMEFRAME = MT5Timeframe.M15
 LEVERAGE = 200

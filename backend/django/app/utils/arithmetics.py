@@ -151,6 +151,8 @@ def get_symbol_contract_info(symbol: str) -> dict:
             'bid': _extract_scalar(symbol_info_data.get('bid'), 0.0),
             'point': _extract_scalar(symbol_info_data.get('point'), 0.00001),
             'digits': _extract_scalar(symbol_info_data.get('digits'), 5),
+            'trade_tick_value': _extract_scalar(symbol_info_data.get('trade_tick_value_loss'), 0.0),
+            'trade_tick_size': _extract_scalar(symbol_info_data.get('trade_tick_size'), 0.0),
         }
     except Exception as e:
         logger.error(f"get_symbol_contract_info failed for {symbol}: {e}\n{traceback.format_exc()}")

@@ -19,7 +19,7 @@ from .config import (
     LIGHTER_PAIRS, LIGHTER_CAPITAL_USD, LIGHTER_MAX_POSITIONS,
     LIGHTER_LEVERAGE, LIGHTER_POSITION_SIZE_PCT, LIGHTER_MARKETS,
 )
-from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage
+from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
 
 logger = logging.getLogger('app.lighter')
 
@@ -360,6 +360,17 @@ def entry_algorithm():
                 fee=0.0,  # Lighter has zero fees
                 status='FILLED',
             )
+
+            # Place native on-chain SL/TP as OCO group (one-cancels-other)
+            try:
+                oco_result = place_oco_sltp(symbol, is_buy, base_size, stop_loss, take_profit)
+                if oco_result.get('error'):
+                    logger.warning("Lighter OCO SL/TP failed for %s: %s", symbol, oco_result['error'])
+                else:
+                    logger.info("Lighter OCO SL/TP placed: %s SL=%.4f TP=%.4f tx=%s",
+                                symbol, stop_loss, take_profit, oco_result.get('tx_hash', '?'))
+            except Exception as e:
+                logger.warning("Lighter OCO SL/TP exception for %s: %s", symbol, e)
 
             open_count += 1
             logger.info("Lighter position opened: %s %s size=%.6f signal=%s tx=%s",

@@ -5,6 +5,7 @@ plus position management: breakeven, trailing stop, profit protection, and time 
 Phases (applied in order):
 1. BREAKEVEN: Move SL to entry price when profit exceeds 2%
 2. TRAILING STOP: Ratchet SL upward as price makes new highs (3 tiers)
+2.5 FIB EXTENSION TP: Close at Fibonacci extension levels (1.272, 1.618) after 2min hold
 3. PROFIT PROTECTION: Close if profit drops below 40% of peak (after $0.50+ peak)
 4. TIME EXIT: Close if open > 48 hours with less than 1% profit
 5. SL/TP: Standard stop loss and take profit checks
@@ -92,9 +93,13 @@ def exit_algorithm():
             _update_peak_price(position, current_price)
             _check_trailing_stop(position, current_price, profit_pct)
 
+            # ── Phase 2.5: Fib Extension TP ──
+            close_reason = _check_fib_extension_tp(position, current_price, profit_pct)
+
             # ── Phase 3: Track peak profit & profit protection ──
             _update_peak_profit(position, pnl_usd)
-            close_reason = _check_profit_protection(position, pnl_usd)
+            if not close_reason:
+                close_reason = _check_profit_protection(position, pnl_usd)
 
             # ── Phase 4: Time exit ──
             if not close_reason:
@@ -262,6 +267,90 @@ def _check_trailing_stop(position, current_price, profit_pct):
             position.symbol, position.side, old_sl, new_sl, peak,
             active_trail_pct * 100, profit_pct * 100,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.5: Fib Extension TP
+# ---------------------------------------------------------------------------
+
+# Minimum hold time before Fib TP can trigger (avoids premature exits)
+FIB_MIN_HOLD_SECONDS = 120  # 2 minutes
+# Fib ZigZag parameters per asset class
+FIB_PARAMS = {
+    'crypto':  {'min_deviation_pct': 0.5, 'depth': 10},
+    'forex':   {'min_deviation_pct': 0.15, 'depth': 12},
+    'metals':  {'min_deviation_pct': 0.3, 'depth': 10},
+}
+
+
+def _check_fib_extension_tp(position, current_price, profit_pct):
+    """Close if price reaches a Fibonacci extension level (1.272 or 1.618).
+
+    Only fires if the position has been profitable for at least 2 minutes
+    to avoid premature exits on noise spikes. Uses 5m candles for swing
+    detection to keep the Fib levels relevant to the current move.
+
+    Returns close_reason string or None.
+    """
+    try:
+        # Only check when position is in profit
+        if profit_pct <= 0:
+            return None
+
+        # Enforce minimum hold time
+        age_seconds = (timezone.now() - position.opened_at).total_seconds()
+        if age_seconds < FIB_MIN_HOLD_SECONDS:
+            return None
+
+        from .fibonacci import get_fib_tp_targets
+        from .client import get_candles
+
+        # Select ZigZag params by asset class
+        if position.symbol in FOREX_SYMBOLS:
+            params = FIB_PARAMS['forex']
+        elif position.symbol in METALS_SYMBOLS:
+            params = FIB_PARAMS['metals']
+        else:
+            params = FIB_PARAMS['crypto']
+
+        direction = 'up' if position.side == 'LONG' else 'down'
+
+        # Fetch 5m candles for swing detection (recent structure)
+        candles = get_candles(position.symbol, resolution='5m', count_back=100)
+        if not candles or len(candles) < params['depth'] * 3:
+            return None
+
+        targets = get_fib_tp_targets(
+            candles, direction,
+            min_deviation_pct=params['min_deviation_pct'],
+            depth=params['depth'],
+        )
+        if not targets:
+            return None
+
+        # Check if current price has reached or exceeded any Fib extension
+        for target_price, label in targets:
+            if direction == 'up' and current_price >= target_price:
+                logger.info(
+                    "FIB TP: %s %s hit %s at %.4f (target=%.4f, profit=%.1f%%, held=%ds)",
+                    position.symbol, position.side, label, current_price,
+                    target_price, profit_pct * 100, int(age_seconds),
+                )
+                return f'FIB_EXTENSION_{label.upper()}'
+            elif direction == 'down' and current_price <= target_price:
+                logger.info(
+                    "FIB TP: %s %s hit %s at %.4f (target=%.4f, profit=%.1f%%, held=%ds)",
+                    position.symbol, position.side, label, current_price,
+                    target_price, profit_pct * 100, int(age_seconds),
+                )
+                return f'FIB_EXTENSION_{label.upper()}'
+
+        return None
+
+    except Exception as e:
+        # Fib failures must never break the exit loop
+        logger.debug("Fib extension check failed for %s: %s", position.symbol, e)
+        return None
 
 
 # ---------------------------------------------------------------------------

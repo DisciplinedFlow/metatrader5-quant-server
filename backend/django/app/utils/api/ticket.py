@@ -111,6 +111,33 @@ def get_deal_from_ticket(ticket: int, from_date: datetime, to_date: datetime) ->
     }
 
 
+def history_deals_bulk(from_date: datetime, to_date: datetime) -> list:
+    """Fetch ALL deals in date range (no position filter). For reconciliation.
+
+    GET http://mt5:5001/history_deals_get?from_date=...&to_date=...
+    The position parameter is now optional on the MT5 side, so omitting it
+    returns every deal in the window — much more efficient than per-ticket queries.
+
+    Returns a list of deal dicts, or an empty list on failure.
+    """
+    try:
+        params = {
+            'from_date': from_date.isoformat(),
+            'to_date': to_date.isoformat(),
+        }
+        url = f"{BASE_URL}/history_deals_get"
+        response = get_session().get(url, params=params, timeout=30)
+        response.raise_for_status()
+
+        data = response.json()
+        if data is None:
+            return []
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.error(f"Exception fetching bulk deal history: {e}\n{traceback.format_exc()}")
+        return []
+
+
 def get_order_from_ticket(ticket: int) -> Dict:
     # Get the order history
     orders = history_orders_get(ticket=ticket)

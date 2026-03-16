@@ -1113,6 +1113,22 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
         long_rules = entry_rules.get('long', [])
         short_rules = entry_rules.get('short', [])
 
+        # Session filter: restrict strategy to specific UTC hours
+        session_filter = definition.get('session_filter', None)
+        if session_filter:
+            from datetime import datetime, timezone as tz
+            current_hour = datetime.now(tz.utc).hour
+            allowed_hours = session_filter.get('hours_utc', [])
+            if allowed_hours and current_hour not in allowed_hours:
+                logger.debug(
+                    f"CVD ({custom.name}): Outside session filter "
+                    f"(hour={current_hour}, allowed={allowed_hours})"
+                )
+                return
+
+        # Min confluence override from strategy definition
+        strategy_min_confluence = definition.get('min_confluence', None)
+
         for pair in pairs:
             if positions_opened >= remaining_slots:
                 logger.info(f"CVD ({custom.name}): Remaining slots exhausted ({remaining_slots}), stopping.")
@@ -1516,6 +1532,22 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 except Exception:
                     pass
 
+                # VWAP bias for confluence scoring
+                try:
+                    from app.quant.indicators.vwap import get_vwap_bias
+                    vwap_info = get_vwap_bias(df)
+                    vwap_bias = vwap_info.get('bias', 'NEUTRAL')
+                except Exception:
+                    vwap_bias = None
+
+                # Session level sweep detection for confluence scoring
+                try:
+                    from app.quant.indicators.session_levels import get_session_levels
+                    session_info = get_session_levels(df)
+                    session_sweep = session_info.get('sweep_setup', False)
+                except Exception:
+                    session_sweep = None
+
                 # CVD divergence is True if we got this far (signal IS the CVD)
                 confluence_score = score_confluence(
                     symbol=pair,
@@ -1528,6 +1560,8 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     order_block_at_entry=has_ob,
                     regime_favorable=regime_ok,
                     strategy_name=strategy_config.name,
+                    vwap_bias=vwap_bias,
+                    session_level_sweep=session_sweep,
                 )
                 log_confluence_decision(confluence_score)
 
@@ -1560,6 +1594,14 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                             router_min_confluence = max(router_min_confluence, 6)
                     except Exception:
                         pass
+
+                    # Strategy-level min confluence override (e.g. London Open requires 5)
+                    if strategy_min_confluence is not None:
+                        router_min_confluence = max(router_min_confluence, strategy_min_confluence)
+
+                    # Silver gets a lower confluence gate — thinner liquidity makes CVD signals more reliable
+                    if pair == 'XAGUSD':
+                        router_min_confluence = min(router_min_confluence, 3)
 
                     if confluence_score.total_score < router_min_confluence:
                         logger.info(
@@ -1720,6 +1762,24 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     broker_volume_step = 0.01
                     broker_contract_size = 100000
 
+                # Guard: skip if vol_min forces excessive risk (e.g. NG-C vol_min=0.1
+                # but risk-based sizing computes 0.02 lots → clamped up → actual risk
+                # far exceeds target). Prevents oversized positions on large-contract
+                # instruments where the minimum tradeable lot already exceeds our risk budget.
+                if contract_info and contract_info.get('trade_tick_value') and contract_info.get('trade_tick_size'):
+                    tick_value = contract_info['trade_tick_value']
+                    tick_size = contract_info['trade_tick_size']
+                    if tick_size > 0 and tick_value > 0:
+                        actual_risk = (sl_distance / tick_size) * tick_value * full_volume_lots
+                        if actual_risk > target_risk * 2.5:
+                            logger.warning(
+                                f"CVD: {pair} vol_min forces excessive risk: "
+                                f"${actual_risk:.2f} vs target ${target_risk:.2f} "
+                                f"(lots={full_volume_lots}, vol_min={broker_volume_min}) — skipping"
+                            )
+                            PairLock.objects.filter(symbol=pair).delete()
+                            continue
+
                 # Hard safety cap
                 effective_max_lots = min(MAX_LOT_SIZE, broker_volume_max)
                 if full_volume_lots > effective_max_lots:
@@ -1791,13 +1851,35 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
                 # --- Pre-trade margin safety check ---
                 try:
-                    from app.utils.api.account import check_margin_safe
-                    if not check_margin_safe(pair, order_volume_lots, order_type):
-                        logger.warning(f"CVD: MARGIN BLOCKED {pair} {order_type} {order_volume_lots} lots — skipping")
+                    from app.utils.api.account import check_margin_for_order, get_account_info
+                    margin_result = check_margin_for_order(pair, order_volume_lots, order_type)
+                    if margin_result is not None:
+                        if margin_result.get('can_trade') is False:
+                            logger.warning(
+                                f"CVD: MARGIN BLOCKED {pair} {order_type} {order_volume_lots} lots — "
+                                f"required={margin_result.get('margin'):.2f} free={margin_result.get('margin_free'):.2f}"
+                            )
+                            PairLock.objects.filter(symbol=pair).delete()
+                            continue
+                        # Check margin level stays above 200%
+                        acct = get_account_info()
+                        if acct and acct.get('margin_level') and acct['margin_level'] < 200.0:
+                            logger.warning(f"CVD: MARGIN LEVEL LOW {acct['margin_level']:.1f}% — skipping {pair}")
+                            PairLock.objects.filter(symbol=pair).delete()
+                            continue
+                except Exception as e:
+                    logger.debug(f"CVD: Margin check unavailable ({e}), proceeding with trade")
+
+                # --- Pre-validate order before sending (dry-run) ---
+                try:
+                    from app.utils.api.account import check_order
+                    check_result = check_order(pair, order_volume_lots, order_type, sl=sl_price, tp=tp_price)
+                    if check_result and check_result.get('retcode') != 0:
+                        logger.warning(f"CVD: Order check failed for {pair}: {check_result.get('comment')}")
                         PairLock.objects.filter(symbol=pair).delete()
                         continue
                 except Exception as e:
-                    logger.debug(f"CVD: Margin check unavailable ({e}), proceeding with trade")
+                    logger.debug(f"Order check unavailable: {e}")
 
                 # Send market order
                 order = send_market_order(

@@ -26,6 +26,7 @@ env_path = Path(__file__).resolve().parent.parent.parent / '.env'
 load_dotenv(env_path)
 
 import lighter
+from lighter.signer_client import CreateOrderTxReq
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger('lighter-proxy')
@@ -174,12 +175,13 @@ def market_order():
 
 @app.route('/order/limit', methods=['POST'])
 def limit_order():
-    """Place a limit order."""
+    """Place a limit order. Supports post_only flag for maker-only orders."""
     data = request.json
     symbol = data['symbol']
     is_buy = data['is_buy']
     base_amount = float(data['base_amount'])
     price = float(data['price'])
+    post_only = data.get('post_only', False)
 
     meta = MARKETS.get(symbol)
     if not meta:
@@ -192,6 +194,7 @@ def limit_order():
         async def _execute():
             signer = await _create_signer()
             try:
+                tif = signer.ORDER_TIME_IN_FORCE_POST_ONLY if post_only else signer.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME
                 tx, resp, err = await signer.create_order(
                     market_index=meta['id'],
                     client_order_index=0,
@@ -199,18 +202,151 @@ def limit_order():
                     price=sdk_price,
                     is_ask=not is_buy,
                     order_type=signer.ORDER_TYPE_LIMIT,
-                    time_in_force=signer.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    time_in_force=tif,
                 )
                 if err:
                     return {'error': err}
                 tx_hash = resp.tx_hash if hasattr(resp, 'tx_hash') else str(resp)
-                return {'tx_hash': tx_hash, 'symbol': symbol}
+                return {'tx_hash': tx_hash, 'symbol': symbol, 'post_only': post_only}
             finally:
                 await signer.close()
 
         result = _run(_execute())
+        logger.info("Limit order: %s %s %.6f @ %.4f %s-> %s",
+                     symbol, 'BUY' if is_buy else 'SELL', base_amount, price,
+                     '(post-only) ' if post_only else '',
+                     result.get('error') or result.get('tx_hash'))
         return jsonify(result)
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/order/twap', methods=['POST'])
+def twap_order():
+    """Place a TWAP order that executes over a duration.
+
+    Uses ORDER_TYPE_TWAP with create_order. The SDK treats TWAP as an order type
+    where the exchange slices execution over time. The base_amount is calculated
+    from quote_amount_usd using the current mid price.
+    """
+    data = request.json
+    symbol = data['symbol']
+    is_buy = data['is_buy']
+    quote_amount_usd = float(data['quote_amount_usd'])
+    duration_seconds = int(data.get('duration_seconds', 300))  # default 5 min
+
+    meta = MARKETS.get(symbol)
+    if not meta:
+        return jsonify({'error': f'Unknown symbol: {symbol}'}), 400
+
+    try:
+        async def _execute():
+            signer = await _create_signer()
+            try:
+                # Get current best price to estimate base amount from USD
+                best_price = await signer.get_best_price(meta['id'], not is_buy)
+                if not best_price or best_price <= 0:
+                    return {'error': f'Cannot get price for {symbol}'}
+
+                # Convert quote amount (USD) to base amount
+                price_float = best_price / (10 ** meta['price_dec'])
+                base_amount = quote_amount_usd / price_float
+                sdk_amount = int(round(base_amount * (10 ** meta['size_dec'])))
+                sdk_price = best_price  # already in SDK units
+
+                tx, resp, err = await signer.create_order(
+                    market_index=meta['id'],
+                    client_order_index=0,
+                    base_amount=sdk_amount,
+                    price=sdk_price,
+                    is_ask=not is_buy,
+                    order_type=signer.ORDER_TYPE_TWAP,
+                    time_in_force=signer.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    order_expiry=duration_seconds,
+                )
+                if err:
+                    return {'error': err}
+                tx_hash = resp.tx_hash if hasattr(resp, 'tx_hash') else str(resp)
+                return {
+                    'tx_hash': tx_hash,
+                    'symbol': symbol,
+                    'type': 'twap',
+                    'duration': duration_seconds,
+                    'estimated_base': base_amount,
+                }
+            finally:
+                await signer.close()
+
+        result = _run(_execute())
+        logger.info("TWAP order: %s %s $%.2f over %ds -> %s",
+                     symbol, 'BUY' if is_buy else 'SELL', quote_amount_usd,
+                     duration_seconds, result.get('error') or result.get('tx_hash'))
+        status_code = 500 if result.get('error') else 200
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error("TWAP order error: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/order/batch', methods=['POST'])
+def batch_orders():
+    """Place multiple limit orders in a single request.
+
+    Each order is submitted individually via create_order. For atomic grouped
+    orders (OCO, OTO), use the /order/grouped endpoint instead.
+    """
+    data = request.json
+    orders = data.get('orders', [])
+
+    if not orders:
+        return jsonify({'error': 'No orders provided'}), 400
+
+    try:
+        async def _execute():
+            signer = await _create_signer()
+            try:
+                results = []
+                for order in orders:
+                    symbol = order['symbol']
+                    meta = MARKETS.get(symbol)
+                    if not meta:
+                        results.append({'error': f'Unknown symbol: {symbol}'})
+                        continue
+
+                    is_buy = order['is_buy']
+                    base_amount = float(order['base_amount'])
+                    price = float(order['price'])
+                    post_only = order.get('post_only', False)
+
+                    sdk_amount = int(round(base_amount * (10 ** meta['size_dec'])))
+                    sdk_price = int(round(price * (10 ** meta['price_dec'])))
+
+                    tif = signer.ORDER_TIME_IN_FORCE_POST_ONLY if post_only else signer.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME
+
+                    tx, resp, err = await signer.create_order(
+                        market_index=meta['id'],
+                        client_order_index=0,
+                        base_amount=sdk_amount,
+                        price=sdk_price,
+                        is_ask=not is_buy,
+                        order_type=signer.ORDER_TYPE_LIMIT,
+                        time_in_force=tif,
+                    )
+                    if err:
+                        results.append({'error': err, 'symbol': symbol})
+                    else:
+                        tx_hash = resp.tx_hash if hasattr(resp, 'tx_hash') else str(resp)
+                        results.append({'tx_hash': tx_hash, 'symbol': symbol})
+
+                return {'results': results, 'total': len(results)}
+            finally:
+                await signer.close()
+
+        result = _run(_execute())
+        logger.info("Batch orders: %d submitted", len(orders))
+        return jsonify(result)
+    except Exception as e:
+        logger.error("Batch order error: %s", e)
         return jsonify({'error': str(e)}), 500
 
 
@@ -299,6 +435,99 @@ def take_profit_order():
         result = _run(_execute())
         return jsonify(result)
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/order/oco-sltp', methods=['POST'])
+def oco_sltp_order():
+    """Place SL + TP as an OCO group. When one fills, the other auto-cancels."""
+    data = request.json
+    symbol = data['symbol']
+    is_long = data['is_long']
+    base_amount = float(data['base_amount'])
+    stop_loss_price = float(data['stop_loss_price'])
+    take_profit_price = float(data['take_profit_price'])
+
+    meta = MARKETS.get(symbol)
+    if not meta:
+        return jsonify({'error': f'Unknown symbol: {symbol}'}), 400
+
+    sdk_amount = int(round(base_amount * (10 ** meta['size_dec'])))
+
+    # SL/TP exit direction: if long, exit is sell (is_ask=True); if short, exit is buy (is_ask=False)
+    is_ask = is_long
+
+    # Stop-loss price conversion
+    sdk_sl_trigger = int(round(stop_loss_price * (10 ** meta['price_dec'])))
+    slippage = 0.02
+    if is_ask:
+        # Selling to close long — accept lower price
+        sdk_sl_price = int(round(stop_loss_price * (1 - slippage) * (10 ** meta['price_dec'])))
+    else:
+        # Buying to close short — accept higher price
+        sdk_sl_price = int(round(stop_loss_price * (1 + slippage) * (10 ** meta['price_dec'])))
+
+    # Take-profit price conversion
+    sdk_tp_trigger = int(round(take_profit_price * (10 ** meta['price_dec'])))
+    sdk_tp_price = sdk_tp_trigger
+
+    try:
+        async def _execute():
+            signer = await _create_signer()
+            try:
+                # Build SL order struct
+                sl_order = CreateOrderTxReq(
+                    MarketIndex=meta['id'],
+                    ClientOrderIndex=0,
+                    BaseAmount=sdk_amount,
+                    Price=sdk_sl_price,
+                    IsAsk=int(is_ask),
+                    Type=signer.ORDER_TYPE_STOP_LOSS,
+                    TimeInForce=signer.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+                    ReduceOnly=0,
+                    TriggerPrice=sdk_sl_trigger,
+                    OrderExpiry=signer.DEFAULT_28_DAY_ORDER_EXPIRY,
+                )
+                # Build TP order struct
+                tp_order = CreateOrderTxReq(
+                    MarketIndex=meta['id'],
+                    ClientOrderIndex=0,
+                    BaseAmount=sdk_amount,
+                    Price=sdk_tp_price,
+                    IsAsk=int(is_ask),
+                    Type=signer.ORDER_TYPE_TAKE_PROFIT,
+                    TimeInForce=signer.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+                    ReduceOnly=0,
+                    TriggerPrice=sdk_tp_trigger,
+                    OrderExpiry=signer.DEFAULT_28_DAY_ORDER_EXPIRY,
+                )
+
+                tx, resp, err = await signer.create_grouped_orders(
+                    grouping_type=signer.GROUPING_TYPE_ONE_CANCELS_THE_OTHER,
+                    orders=[sl_order, tp_order],
+                )
+                if err:
+                    return {'error': err}
+                tx_hash = resp.tx_hash if hasattr(resp, 'tx_hash') else str(resp)
+                return {
+                    'tx_hash': tx_hash,
+                    'symbol': symbol,
+                    'type': 'oco_sltp',
+                    'stop_loss': stop_loss_price,
+                    'take_profit': take_profit_price,
+                }
+            finally:
+                await signer.close()
+
+        result = _run(_execute())
+        logger.info("OCO SL/TP: %s %s SL=%.4f TP=%.4f -> %s",
+                     symbol, 'LONG' if is_long else 'SHORT',
+                     stop_loss_price, take_profit_price,
+                     result.get('error') or result.get('tx_hash'))
+        status_code = 500 if result.get('error') else 200
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error("OCO SL/TP error: %s", e)
         return jsonify({'error': str(e)}), 500
 
 

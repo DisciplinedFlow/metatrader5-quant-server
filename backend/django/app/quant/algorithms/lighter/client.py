@@ -156,6 +156,80 @@ def get_exchange_stats() -> dict:
     return _run(_fetch())
 
 
+def get_recent_liquidations(market_id: int = 0, limit: int = 100) -> list:
+    """Fetch recent liquidation events from Lighter API.
+
+    Uses recent_trades endpoint and filters for liquidation/deleverage types.
+    Each trade has type in ('trade', 'liquidation', 'deleverage', 'market-settlement').
+    Falls back to raw HTTP if SDK parsing fails.
+
+    Returns list of dicts: {trade_id, type, market_id, price, size, usd_amount, timestamp, is_maker_ask}
+    """
+    import json
+
+    async def _fetch():
+        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        try:
+            order_api = lighter.OrderApi(api)
+            # Use raw response to avoid SDK parsing issues (same pattern as candles)
+            resp = await order_api.recent_trades_without_preload_content(
+                market_id=market_id, limit=limit,
+            )
+            body = await resp.read()
+            data = json.loads(body.decode())
+            trades = data.get('trades', [])
+            # Filter for liquidation and deleverage trades only
+            liq_trades = []
+            for t in trades:
+                if t.get('type') in ('liquidation', 'deleverage'):
+                    liq_trades.append({
+                        'trade_id': t.get('trade_id'),
+                        'type': t.get('type'),
+                        'market_id': t.get('market_id'),
+                        'price': t.get('price', '0'),
+                        'size': t.get('size', '0'),
+                        'usd_amount': t.get('usd_amount', '0'),
+                        'timestamp': t.get('timestamp', 0),
+                        'is_maker_ask': t.get('is_maker_ask', False),
+                    })
+            return liq_trades
+        finally:
+            await api.close()
+
+    try:
+        return _run(_fetch())
+    except Exception as e:
+        # Fallback: raw HTTP request
+        logger.warning("SDK liquidation fetch failed, trying raw HTTP: %s", e)
+        return _fetch_liquidations_http(market_id, limit)
+
+
+def _fetch_liquidations_http(market_id: int = 0, limit: int = 100) -> list:
+    """Fallback: fetch liquidations via raw HTTP to Lighter API."""
+    url = f"{LIGHTER_API_URL}/api/v1/recent_trades"
+    try:
+        resp = requests.get(url, params={'market_id': market_id, 'limit': limit}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        trades = data.get('trades', [])
+        return [
+            {
+                'trade_id': t.get('trade_id'),
+                'type': t.get('type'),
+                'market_id': t.get('market_id'),
+                'price': t.get('price', '0'),
+                'size': t.get('size', '0'),
+                'usd_amount': t.get('usd_amount', '0'),
+                'timestamp': t.get('timestamp', 0),
+                'is_maker_ask': t.get('is_maker_ask', False),
+            }
+            for t in trades if t.get('type') in ('liquidation', 'deleverage')
+        ]
+    except Exception as e:
+        logger.error("Raw HTTP liquidation fetch failed: %s", e)
+        return []
+
+
 # ── Write APIs (via signer proxy) ────────────────────────
 
 def _proxy_post(endpoint: str, data: dict) -> dict:
@@ -209,6 +283,36 @@ def place_limit_order(symbol: str, is_buy: bool, base_amount: float, price: floa
     })
 
 
+def place_limit_order_post_only(symbol: str, is_buy: bool, base_amount: float, price: float) -> dict:
+    """Place a post-only limit order (maker only). Routes through signer proxy."""
+    return _proxy_post('/order/limit', {
+        'symbol': symbol,
+        'is_buy': is_buy,
+        'base_amount': base_amount,
+        'price': price,
+        'post_only': True,
+    })
+
+
+def place_twap_order(symbol: str, is_buy: bool, quote_amount_usd: float, duration_seconds: int = 300) -> dict:
+    """Place a TWAP order that executes over a duration. Routes through signer proxy."""
+    return _proxy_post('/order/twap', {
+        'symbol': symbol,
+        'is_buy': is_buy,
+        'quote_amount_usd': quote_amount_usd,
+        'duration_seconds': duration_seconds,
+    })
+
+
+def place_batch_orders(orders: list) -> dict:
+    """Place multiple limit orders in a single batch. Routes through signer proxy.
+
+    Each order dict: {'symbol': str, 'is_buy': bool, 'base_amount': float,
+                      'price': float, 'post_only': bool (optional)}
+    """
+    return _proxy_post('/order/batch', {'orders': orders})
+
+
 def place_stop_loss(symbol: str, is_buy: bool, base_amount: float, trigger_price: float) -> dict:
     """Place a stop-loss order. Routes through signer proxy."""
     return _proxy_post('/order/stop-loss', {
@@ -227,6 +331,30 @@ def place_take_profit(symbol: str, is_buy: bool, base_amount: float, trigger_pri
         'base_amount': base_amount,
         'trigger_price': trigger_price,
     })
+
+
+def place_oco_sltp(symbol: str, is_long: bool, base_amount: float, stop_loss_price: float, take_profit_price: float) -> dict:
+    """Place SL + TP as an OCO (one-cancels-other) group.
+
+    When one order fills, the other auto-cancels on-chain. This prevents
+    orphaned SL/TP orders that can trigger on future trades.
+    """
+    result = _proxy_post('/order/oco-sltp', {
+        'symbol': symbol,
+        'is_long': is_long,
+        'base_amount': base_amount,
+        'stop_loss_price': stop_loss_price,
+        'take_profit_price': take_profit_price,
+    })
+    if result.get('error'):
+        logger.error("Lighter OCO SL/TP failed: %s %s SL=%.4f TP=%.4f — %s",
+                      symbol, 'LONG' if is_long else 'SHORT',
+                      stop_loss_price, take_profit_price, result['error'])
+    else:
+        logger.info("Lighter OCO SL/TP placed: %s %s SL=%.4f TP=%.4f tx=%s",
+                     symbol, 'LONG' if is_long else 'SHORT',
+                     stop_loss_price, take_profit_price, result.get('tx_hash', '?'))
+    return result
 
 
 def close_position(symbol: str) -> dict:

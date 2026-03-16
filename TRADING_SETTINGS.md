@@ -25,6 +25,11 @@
 | Circuit Breaker (global) | `5 losses → 15m` | `entry.py:58,59` | Was 1h — reduced for algo bot |
 | Time Filter | `24/7 (Mon-Fri)` | `entry.py:425` | Only blocks Sat + Sun before 22:00 UTC |
 | Active Strategies | `15` | DB | Including CVD Lack of Participants + Absorption |
+| Account Currency | `EUR` | Broker setting | VantageInternational-Demo; tick_value returns EUR values |
+| Broker Leverage | `500:1` | Broker setting | Max for metals/energies; forex up to 1:1000 |
+| Margin Call | `50%` | Broker setting | Margin level warning threshold |
+| Stop Out | `20%` | Broker setting | Forced liquidation threshold |
+| NG-C vol_min guard | skip when risk > 2.5x target | `entry.py:1743` | Prevents oversized positions when vol_min clamp exceeds risk budget |
 | Lighter trading toggle | API + Dashboard | `crypto/views.py`, `lighter/entry.py` | Runtime enable/disable via Redis |
 | Hyperliquid trading toggle | API + Dashboard | `crypto/views.py`, `crypto/entry.py` | Runtime enable/disable via Redis |
 
