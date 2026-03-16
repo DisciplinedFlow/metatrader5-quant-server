@@ -110,3 +110,8 @@ ml_models/
 
 # D-Bus session files
 config/.dbus/
+# Local drafts / notes
+JOURNAL.md
+PRD_LATENCY_REDUCTION.md
+research/ELITE_TRADER_PSYCHOLOGY_2026.md
+config/.dbus/
