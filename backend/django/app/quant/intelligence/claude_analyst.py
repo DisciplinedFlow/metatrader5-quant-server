@@ -91,7 +91,7 @@ Be concise. JSON only, no markdown."""
     try:
         response = c.messages.create(
             model=MODEL,
-            max_tokens=500,
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
         text = response.content[0].text.strip()
@@ -104,16 +104,31 @@ Be concise. JSON only, no markdown."""
                 f"(~${(usage.input_tokens * 0.25 + usage.output_tokens * 1.25) / 1_000_000:.4f})"
             )
 
-        # Parse JSON from response
-        if text.startswith('{'):
-            result = json.loads(text)
-        else:
-            # Try to extract JSON from response
-            start = text.find('{')
-            end = text.rfind('}') + 1
-            if start == -1 or end == 0:
-                raise ValueError(f"No JSON found in response: {text[:200]}")
-            result = json.loads(text[start:end])
+        # Strip markdown code fences (```json ... ```)
+        text = text.strip()
+        if text.startswith('```'):
+            # Remove opening fence (```json or ``` or ```JSON)
+            first_newline = text.find('\n')
+            text = text[first_newline + 1:] if first_newline > 0 else text[3:]
+        if text.endswith('```'):
+            text = text[:-3]
+        text = text.strip()
+
+        # Extract JSON block
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        if start == -1 or end == 0:
+            raise ValueError(f"No JSON found in response: {text[:200]}")
+        json_str = text[start:end]
+
+        # Parse with json5 (handles trailing commas, comments, etc)
+        try:
+            import pyjson5
+            result = pyjson5.loads(json_str)
+        except ImportError:
+            import re
+            json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+            result = json.loads(json_str)
 
         cache.set(cache_key, result, timeout=600)
         logger.info(f"Claude news analysis: {result.get('risk_level')} | {result.get('overall_sentiment')}")
