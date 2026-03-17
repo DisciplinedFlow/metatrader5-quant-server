@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePolling } from '@/composables/usePolling'
+import { useWebSocket } from '@/composables/useWebSocket'
 import api from '@/services/api'
 import SectionNav from '@/components/SectionNav.vue'
 
@@ -50,6 +51,40 @@ const hyperliquidToggling = ref(false)
 
 // Active venue tab for positions
 const activeVenueTab = ref('all')
+
+// News feed
+const newsFeed = ref([])
+const newsLoading = ref(false)
+
+// WebSocket (enhancement over polling — polling remains the primary data source)
+const { connected: wsConnected, on: wsOn } = useWebSocket()
+
+wsOn('bot_status', (data) => {
+  if (data && data.paused != null) botPaused.value = data.paused
+})
+
+wsOn('trade_opened', () => {
+  refresh()
+})
+
+wsOn('trade_closed', () => {
+  refresh()
+})
+
+wsOn('position_update', () => {
+  refresh()
+})
+
+wsOn('price_update', () => {
+  fetchWalletData()
+})
+
+wsOn('news_alert', (data) => {
+  if (data && data.headline) {
+    newsFeed.value.unshift(data)
+    if (newsFeed.value.length > 20) newsFeed.value.pop()
+  }
+})
 
 // Funding rates (mock structure — will populate from API when available)
 const fundingRates = ref([
@@ -193,15 +228,18 @@ async function checkVenueHealth() {
     }
     lighterEnabled.value = data.enabled !== false
 
-    // Update account stats from Lighter (primary venue)
-    if (data.equity != null) {
+    // Update account stats from Lighter — ONLY if data is valid (never reset to zero)
+    if (data.equity != null && data.equity > 0) {
       accountValue.value = data.equity
       withdrawable.value = data.available_balance ?? 0
       totalMarginUsed.value = data.equity - (data.available_balance ?? 0)
       totalNtlPos.value = data.equity - (data.available_balance ?? 0)
     }
   } catch {
-    venueHealth.lighter = { status: 'offline', latency: null, lastCheck: new Date() }
+    // Don't reset venue health on failure — keep last known state
+    if (venueHealth.lighter.status === 'unknown') {
+      venueHealth.lighter = { status: 'offline', latency: null, lastCheck: new Date() }
+    }
   }
 
   // Hyperliquid health is inferred from wallet call success
@@ -255,6 +293,45 @@ async function fetchFundingRates() {
   } catch {
     // Funding rates are optional — fail silently
   }
+}
+
+async function fetchWalletData() {
+  try {
+    const w = await api.getCryptoWallet()
+    walletAddress.value = w.wallet_address ?? ''
+    accountValue.value = w.account_value ?? 0
+    totalMarginUsed.value = w.total_margin_used ?? 0
+    totalNtlPos.value = w.total_ntl_pos ?? 0
+    withdrawable.value = w.withdrawable ?? 0
+    livePositions.value = w.positions ?? []
+    prices.value = w.prices ?? []
+    walletError.value = ''
+    walletLoaded.value = true
+  } catch (err) {
+    walletError.value = err.message || 'Failed to load wallet'
+  }
+}
+
+async function fetchNews() {
+  newsLoading.value = true
+  try {
+    const data = await api.getCryptoNews()
+    if (Array.isArray(data)) {
+      newsFeed.value = data.slice(0, 20)
+    }
+  } catch {
+    // News is optional — fail silently
+  }
+  newsLoading.value = false
+}
+
+function timeAgo(timestamp) {
+  if (!timestamp) return ''
+  const seconds = Math.floor(Date.now() / 1000) - timestamp
+  if (seconds < 60) return 'just now'
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago'
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago'
+  return Math.floor(seconds / 86400) + 'd ago'
 }
 
 async function refresh() {
@@ -350,8 +427,12 @@ function venueStatusClass(status) {
   }
 }
 
-onMounted(refresh)
-usePolling(refresh, 10000)
+onMounted(() => {
+  refresh()
+  fetchNews()
+})
+usePolling(refresh, 30000)  // 30s — Lighter API is slow + rate limited
+usePolling(fetchNews, 300000)  // 5 min — news doesn't need real-time polling
 </script>
 
 <template>
@@ -377,6 +458,8 @@ usePolling(refresh, 10000)
             {{ botPaused ? 'Resume' : 'Pause' }}
           </button>
         </div>
+
+        <span v-if="wsConnected" class="ws-badge" title="WebSocket connected">WS</span>
 
         <div class="system-bar-divider"></div>
 
@@ -671,6 +754,42 @@ usePolling(refresh, 10000)
             <span class="material-symbols-outlined" style="font-size:16px">history</span>
             View Full History
           </button>
+        </div>
+
+        <!-- Crypto News Feed -->
+        <div class="tp-card card-terminal news-card">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="material-symbols-outlined card-icon">newspaper</span>
+              <h3>Crypto News</h3>
+            </div>
+            <span v-if="newsLoading" class="tp-badge tp-badge-dim" style="font-size: 0.55rem;">
+              <span class="material-symbols-outlined" style="font-size:12px">sync</span> Loading
+            </span>
+          </div>
+          <div class="news-body">
+            <template v-if="newsFeed.length > 0">
+              <a
+                v-for="article in newsFeed.slice(0, 8)"
+                :key="article.id || article.datetime"
+                :href="article.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="news-item"
+              >
+                <div class="news-item-top">
+                  <span class="news-source-badge">{{ article.source }}</span>
+                  <span class="news-time">{{ timeAgo(article.datetime) }}</span>
+                </div>
+                <div class="news-headline">{{ article.headline }}</div>
+                <span class="news-link-icon material-symbols-outlined">open_in_new</span>
+              </a>
+            </template>
+            <div v-else class="news-empty">
+              <span class="material-symbols-outlined" style="font-size:1.5rem;color:var(--tp-text-dim)">newspaper</span>
+              <p>No recent crypto news</p>
+            </div>
+          </div>
         </div>
 
         <!-- Margin & Risk Card -->
@@ -1842,6 +1961,116 @@ usePolling(refresh, 10000)
 /* Value status colors */
 .val-ok { color: var(--tp-success); }
 .val-down { color: var(--tp-danger); }
+
+/* ===== WS Badge ===== */
+.ws-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--tp-success);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+/* ===== News Card ===== */
+.news-card {
+  overflow: hidden;
+}
+.news-body {
+  padding: 0;
+  max-height: 24rem;
+  overflow-y: auto;
+}
+.news-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.6rem 1.25rem;
+  border-bottom: 1px solid var(--tp-border);
+  text-decoration: none;
+  color: inherit;
+  position: relative;
+  transition: background 0.15s ease;
+  cursor: pointer;
+}
+.news-item:hover {
+  background: var(--tp-bg-hover);
+}
+.news-item:last-child {
+  border-bottom: none;
+}
+.news-item-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.news-source-badge {
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  flex-shrink: 0;
+}
+.news-time {
+  font-size: 0.6rem;
+  color: var(--tp-text-dim);
+  font-weight: 600;
+}
+.news-headline {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--tp-text);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  padding-right: 1.5rem;
+}
+.news-link-icon {
+  position: absolute;
+  right: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  color: var(--tp-text-dim);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.news-item:hover .news-link-icon {
+  opacity: 1;
+  color: var(--tp-primary);
+}
+.news-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 2rem;
+  color: var(--tp-text-dim);
+  font-size: 0.75rem;
+  text-align: center;
+}
+.tp-badge-dim {
+  background: rgba(100, 116, 139, 0.1);
+  color: var(--tp-text-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-weight: 700;
+}
 
 /* ===== Utility Classes ===== */
 .text-success { color: var(--tp-success) !important; }

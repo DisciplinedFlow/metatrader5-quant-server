@@ -1,0 +1,231 @@
+Backtest Data Download Summary
+Generated: 2026-03-17T03:17:28.881470
+
+Backtest Data Downloader -- 2026-03-17T03:16:06.081426
+Output directory: /Users/rosaria/Desktop/metatrader5-quant-server-python/research/backtest_data
+============================================================
+MT5 DATA DOWNLOAD (fetch_data_pos)
+============================================================
+MT5 API health check: 200
+
+Fetching MT5: XAGUSD M15 (5000 bars)...
+  OK: 5000 bars, 2025-12-29 15:30:00 to 2026-03-17 05:15:00 (2.0s)
+
+Fetching MT5: XAGUSD H1 (5000 bars)...
+  OK: 5000 bars, 2025-05-12 21:00:00 to 2026-03-17 05:00:00 (4.3s)
+
+Fetching MT5: XAGUSD D1 (5000 bars)...
+  OK: 5000 bars, 2007-04-19 00:00:00 to 2026-03-17 00:00:00 (0.8s)
+
+Fetching MT5: XAUUSD M15 (5000 bars)...
+  OK: 5000 bars, 2025-12-29 15:30:00 to 2026-03-17 05:15:00 (1.2s)
+
+Fetching MT5: XAUUSD H1 (5000 bars)...
+  OK: 5000 bars, 2025-05-12 20:00:00 to 2026-03-17 05:00:00 (4.8s)
+
+Fetching MT5: XAUUSD D1 (5000 bars)...
+  OK: 4952 bars, 2007-06-22 00:00:00 to 2026-03-17 00:00:00 (2.0s)
+
+Fetching MT5: EURUSD M15 (5000 bars)...
+  OK: 5000 bars, 2026-01-02 03:30:00 to 2026-03-17 05:15:00 (2.9s)
+
+Fetching MT5: EURUSD H1 (5000 bars)...
+  OK: 5000 bars, 2025-05-26 22:00:00 to 2026-03-17 05:00:00 (1.0s)
+
+Fetching MT5: EURUSD D1 (5000 bars)...
+  OK: 5000 bars, 2006-12-08 00:00:00 to 2026-03-17 00:00:00 (1.2s)
+
+Fetching MT5: GBPUSD M15 (5000 bars)...
+  OK: 5000 bars, 2026-01-02 03:30:00 to 2026-03-17 05:15:00 (0.7s)
+
+Fetching MT5: GBPUSD H1 (5000 bars)...
+  OK: 5000 bars, 2025-05-26 22:00:00 to 2026-03-17 05:00:00 (4.0s)
+
+Fetching MT5: GBPUSD D1 (5000 bars)...
+  OK: 5000 bars, 2002-12-12 00:00:00 to 2026-03-17 00:00:00 (0.8s)
+
+Fetching MT5: USDJPY M15 (5000 bars)...
+  OK: 5000 bars, 2026-01-02 03:30:00 to 2026-03-17 05:15:00 (1.4s)
+
+Fetching MT5: USDJPY H1 (5000 bars)...
+  OK: 5000 bars, 2025-05-26 22:00:00 to 2026-03-17 05:00:00 (4.1s)
+
+Fetching MT5: USDJPY D1 (5000 bars)...
+  OK: 5000 bars, 2006-12-06 00:00:00 to 2026-03-17 00:00:00 (0.8s)
+
+Fetching MT5: AUDUSD M15 (5000 bars)...
+  OK: 5000 bars, 2026-01-02 03:30:00 to 2026-03-17 05:15:00 (0.9s)
+
+Fetching MT5: AUDUSD H1 (5000 bars)...
+  OK: 5000 bars, 2025-05-26 22:00:00 to 2026-03-17 05:00:00 (4.4s)
+
+Fetching MT5: AUDUSD D1 (5000 bars)...
+  OK: 5000 bars, 2005-11-29 00:00:00 to 2026-03-17 00:00:00 (0.7s)
+
+Fetching MT5: USOUSD M15 (5000 bars)...
+  OK: 5000 bars, 2025-12-29 15:30:00 to 2026-03-17 05:15:00 (0.7s)
+
+Fetching MT5: USOUSD H1 (5000 bars)...
+  OK: 5000 bars, 2025-05-12 13:00:00 to 2026-03-17 05:00:00 (0.9s)
+
+Fetching MT5: USOUSD D1 (5000 bars)...
+  OK: 3317 bars, 2013-10-01 00:00:00 to 2026-03-17 00:00:00 (0.5s)
+
+============================================================
+MT5 DATE-RANGE DOWNLOAD (extended history)
+============================================================
+
+Skipping range download for XAGUSD M15 -- already have 5000 bars
+
+Skipping range download for XAGUSD H1 -- already have 5000 bars
+
+Skipping range download for XAGUSD D1 -- already have 5000 bars
+
+Skipping range download for XAUUSD M15 -- already have 5000 bars
+
+Skipping range download for XAUUSD H1 -- already have 5000 bars
+
+Skipping range download for XAUUSD D1 -- already have 4952 bars
+
+Skipping range download for EURUSD M15 -- already have 5000 bars
+
+Skipping range download for EURUSD H1 -- already have 5000 bars
+
+Skipping range download for EURUSD D1 -- already have 5000 bars
+
+Skipping range download for GBPUSD M15 -- already have 5000 bars
+
+Skipping range download for GBPUSD H1 -- already have 5000 bars
+
+Skipping range download for GBPUSD D1 -- already have 5000 bars
+
+Skipping range download for USDJPY M15 -- already have 5000 bars
+
+Skipping range download for USDJPY H1 -- already have 5000 bars
+
+Skipping range download for USDJPY D1 -- already have 5000 bars
+
+Skipping range download for AUDUSD M15 -- already have 5000 bars
+
+Skipping range download for AUDUSD H1 -- already have 5000 bars
+
+Skipping range download for AUDUSD D1 -- already have 5000 bars
+
+Skipping range download for USOUSD M15 -- already have 5000 bars
+
+Skipping range download for USOUSD H1 -- already have 5000 bars
+
+Fetching MT5 range: USOUSD D1 (60 months back)...
+  Chunk 2021-04-12 to 2022-04-07: 257 bars
+  Chunk 2022-04-07 to 2023-04-02: 253 bars
+  Chunk 2023-04-02 to 2024-03-27: 255 bars
+  Chunk 2024-03-27 to 2025-03-22: 254 bars
+  Chunk 2025-03-22 to 2026-03-17: 254 bars
+  TOTAL: 1273 bars, 2021-04-13 00:00:00 to 2026-03-17 00:00:00
+  Basic file already has more data (3317 >= 1273), keeping it
+
+============================================================
+YFINANCE DATA DOWNLOAD
+============================================================
+yfinance version: 1.2.0
+
+Fetching yfinance: EURUSD D1 (max history) [ticker: EURUSD=X]...
+  OK: 5782 bars, 2003-12-01 00:00:00 to 2026-03-17 00:00:00
+Fetching yfinance: EURUSD H1 (60d) [ticker: EURUSD=X]...
+  OK: 1374 bars, 2025-12-24 00:00:00 to 2026-03-17 02:00:00
+Fetching yfinance: EURUSD M15 (60d) [ticker: EURUSD=X]...
+  OK: 5451 bars, 2025-12-24 00:00:00 to 2026-03-17 02:15:00
+
+Fetching yfinance: GBPUSD D1 (max history) [ticker: GBPUSD=X]...
+  OK: 5794 bars, 2003-12-01 00:00:00 to 2026-03-17 00:00:00
+Fetching yfinance: GBPUSD H1 (60d) [ticker: GBPUSD=X]...
+  OK: 1375 bars, 2025-12-24 00:00:00 to 2026-03-17 02:00:00
+Fetching yfinance: GBPUSD M15 (60d) [ticker: GBPUSD=X]...
+  OK: 5454 bars, 2025-12-24 00:00:00 to 2026-03-17 02:15:00
+
+Fetching yfinance: USDJPY D1 (max history) [ticker: JPY=X]...
+  OK: 7616 bars, 1996-10-30 00:00:00 to 2026-03-17 00:00:00
+Fetching yfinance: USDJPY H1 (60d) [ticker: JPY=X]...
+  OK: 1351 bars, 2025-12-24 00:00:00 to 2026-03-17 02:00:00
+Fetching yfinance: USDJPY M15 (60d) [ticker: JPY=X]...
+  OK: 5359 bars, 2025-12-24 00:00:00 to 2026-03-17 02:15:00
+
+Fetching yfinance: AUDUSD D1 (max history) [ticker: AUDUSD=X]...
+  OK: 5158 bars, 2006-05-16 00:00:00 to 2026-03-17 00:00:00
+Fetching yfinance: AUDUSD H1 (60d) [ticker: AUDUSD=X]...
+  OK: 1400 bars, 2025-12-24 00:00:00 to 2026-03-17 02:00:00
+Fetching yfinance: AUDUSD M15 (60d) [ticker: AUDUSD=X]...
+  OK: 5570 bars, 2025-12-24 00:00:00 to 2026-03-17 02:15:00
+
+Fetching yfinance: XAUUSD D1 (max history) [ticker: GC=F]...
+  OK: 6408 bars, 2000-08-30 00:00:00 to 2026-03-16 00:00:00
+Fetching yfinance: XAUUSD H1 (60d) [ticker: GC=F]...
+  OK: 1127 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00
+Fetching yfinance: XAUUSD M15 (60d) [ticker: GC=F]...
+  OK: 4496 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00
+
+Fetching yfinance: XAGUSD D1 (max history) [ticker: SI=F]...
+  OK: 6410 bars, 2000-08-30 00:00:00 to 2026-03-16 00:00:00
+Fetching yfinance: XAGUSD H1 (60d) [ticker: SI=F]...
+  OK: 1127 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00
+Fetching yfinance: XAGUSD M15 (60d) [ticker: SI=F]...
+  OK: 4496 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00
+
+Fetching yfinance: USOUSD D1 (max history) [ticker: CL=F]...
+  OK: 6417 bars, 2000-08-23 00:00:00 to 2026-03-16 00:00:00
+Fetching yfinance: USOUSD H1 (60d) [ticker: CL=F]...
+  OK: 1115 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00
+Fetching yfinance: USOUSD M15 (60d) [ticker: CL=F]...
+  OK: 4445 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00
+
+============================================================
+FILES PRODUCED
+============================================================
+
+--- mt5/ ---
+  AUDUSD_D1.csv: 5,000 bars, 2005-11-29 to 2026-03-17, 233 KB
+  AUDUSD_H1.csv: 5,000 bars, 2025-05-26 22:00:00 to 2026-03-17 05:00:00, 276 KB
+  AUDUSD_M15.csv: 5,000 bars, 2026-01-02 03:30:00 to 2026-03-17 05:15:00, 274 KB
+  EURUSD_D1.csv: 5,000 bars, 2006-12-08 to 2026-03-17, 252 KB
+  EURUSD_H1.csv: 5,000 bars, 2025-05-26 22:00:00 to 2026-03-17 05:00:00, 289 KB
+  EURUSD_M15.csv: 5,000 bars, 2026-01-02 03:30:00 to 2026-03-17 05:15:00, 287 KB
+  GBPUSD_D1.csv: 5,000 bars, 2002-12-12 to 2026-03-17, 271 KB
+  GBPUSD_H1.csv: 5,000 bars, 2025-05-26 22:00:00 to 2026-03-17 05:00:00, 303 KB
+  GBPUSD_M15.csv: 5,000 bars, 2026-01-02 03:30:00 to 2026-03-17 05:15:00, 302 KB
+  USDJPY_D1.csv: 5,000 bars, 2006-12-06 to 2026-03-17, 231 KB
+  USDJPY_H1.csv: 5,000 bars, 2025-05-26 22:00:00 to 2026-03-17 05:00:00, 276 KB
+  USDJPY_M15.csv: 5,000 bars, 2026-01-02 03:30:00 to 2026-03-17 05:15:00, 275 KB
+  USOUSD_D1.csv: 3,317 bars, 2013-10-01 to 2026-03-17, 145 KB
+  USOUSD_H1.csv: 5,000 bars, 2025-05-12 13:00:00 to 2026-03-17 05:00:00, 254 KB
+  USOUSD_M15.csv: 5,000 bars, 2025-12-29 15:30:00 to 2026-03-17 05:15:00, 252 KB
+  XAGUSD_D1.csv: 5,000 bars, 2007-04-19 to 2026-03-17, 205 KB
+  XAGUSD_H1.csv: 5,000 bars, 2025-05-12 21:00:00 to 2026-03-17 05:00:00, 257 KB
+  XAGUSD_M15.csv: 5,000 bars, 2025-12-29 15:30:00 to 2026-03-17 05:15:00, 258 KB
+  XAUUSD_D1.csv: 4,952 bars, 2007-06-22 to 2026-03-17, 232 KB
+  XAUUSD_H1.csv: 5,000 bars, 2025-05-12 20:00:00 to 2026-03-17 05:00:00, 280 KB
+  XAUUSD_M15.csv: 5,000 bars, 2025-12-29 15:30:00 to 2026-03-17 05:15:00, 277 KB
+
+--- yfinance/ ---
+  AUDUSD_D1.csv: 5,158 bars, 2006-05-16 to 2026-03-17, 446 KB
+  AUDUSD_H1.csv: 1,400 bars, 2025-12-24 00:00:00 to 2026-03-17 02:00:00, 133 KB
+  AUDUSD_M15.csv: 5,570 bars, 2025-12-24 00:00:00 to 2026-03-17 02:15:00, 530 KB
+  EURUSD_D1.csv: 5,782 bars, 2003-12-01 to 2026-03-17, 497 KB
+  EURUSD_H1.csv: 1,374 bars, 2025-12-24 00:00:00 to 2026-03-17 02:00:00, 130 KB
+  EURUSD_M15.csv: 5,451 bars, 2025-12-24 00:00:00 to 2026-03-17 02:15:00, 517 KB
+  GBPUSD_D1.csv: 5,794 bars, 2003-12-01 to 2026-03-17, 498 KB
+  GBPUSD_H1.csv: 1,375 bars, 2025-12-24 00:00:00 to 2026-03-17 02:00:00, 130 KB
+  GBPUSD_M15.csv: 5,454 bars, 2025-12-24 00:00:00 to 2026-03-17 02:15:00, 516 KB
+  USDJPY_D1.csv: 7,616 bars, 1996-10-30 to 2026-03-17, 640 KB
+  USDJPY_H1.csv: 1,351 bars, 2025-12-24 00:00:00 to 2026-03-17 02:00:00, 127 KB
+  USDJPY_M15.csv: 5,359 bars, 2025-12-24 00:00:00 to 2026-03-17 02:15:00, 502 KB
+  USOUSD_D1.csv: 6,417 bars, 2000-08-23 to 2026-03-16, 547 KB
+  USOUSD_H1.csv: 1,115 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00, 104 KB
+  USOUSD_M15.csv: 4,445 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00, 414 KB
+  XAGUSD_D1.csv: 6,410 bars, 2000-08-30 to 2026-03-16, 541 KB
+  XAGUSD_H1.csv: 1,127 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00, 103 KB
+  XAGUSD_M15.csv: 4,496 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00, 411 KB
+  XAUUSD_D1.csv: 6,408 bars, 2000-08-30 to 2026-03-16, 467 KB
+  XAUUSD_H1.csv: 1,127 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00, 90 KB
+  XAUUSD_M15.csv: 4,496 bars, 2026-01-04 23:00:00 to 2026-03-17 02:00:00, 358 KB
+
+TOTAL: 42 files, 190,994 bars

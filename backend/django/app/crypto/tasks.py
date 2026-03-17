@@ -15,6 +15,11 @@ def sync_crypto_prices():
     try:
         from app.quant.algorithms.crypto.entry import sync_prices
         sync_prices()
+        try:
+            from app.ws.publish import publish_prices
+            publish_prices({'source': 'sync', 'timestamp': __import__('time').time()})
+        except Exception:
+            pass
     except SoftTimeLimitExceeded:
         logger.error("sync_crypto_prices timed out.")
     except Exception as e:
@@ -100,7 +105,7 @@ def run_lighter_entry():
         logger.error(f"run_lighter_entry error: {e}")
 
 
-@shared_task(name='crypto.tasks.run_lighter_mean_reversion', max_retries=2, soft_time_limit=30)
+@shared_task(name='crypto.tasks.run_lighter_mean_reversion', max_retries=2, soft_time_limit=60)
 def run_lighter_mean_reversion():
     if is_crypto_bot_paused():
         return
@@ -126,7 +131,7 @@ def run_lighter_grid():
         logger.error(f"run_lighter_grid error: {e}")
 
 
-@shared_task(name='crypto.tasks.run_lighter_rsi_scalper', max_retries=2, soft_time_limit=20)
+@shared_task(name='crypto.tasks.run_lighter_rsi_scalper', max_retries=2, soft_time_limit=45)
 def run_lighter_rsi_scalper():
     if is_crypto_bot_paused():
         return
@@ -137,6 +142,20 @@ def run_lighter_rsi_scalper():
         logger.error("run_lighter_rsi_scalper timed out.")
     except Exception as e:
         logger.error(f"run_lighter_rsi_scalper error: {e}")
+
+
+@shared_task(name='crypto.tasks.run_lighter_reconcile', max_retries=1, soft_time_limit=45)
+def run_lighter_reconcile():
+    """Sync DB positions with actual Lighter exchange state."""
+    if is_crypto_bot_paused():
+        return
+    try:
+        from app.quant.algorithms.lighter.reconcile import reconcile_positions
+        reconcile_positions()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_reconcile timed out.")
+    except Exception as e:
+        logger.error(f"run_lighter_reconcile error: {e}")
 
 
 @shared_task(name='crypto.tasks.run_lighter_exit', max_retries=3, soft_time_limit=60)
@@ -153,6 +172,20 @@ def run_lighter_exit():
 
 
 # ── Funding Rate Arbitrage Monitor ────────────────────────
+
+@shared_task(name='crypto.tasks.train_crypto_ml', max_retries=1, soft_time_limit=120)
+def train_crypto_ml():
+    """Train crypto ML model from Lighter trade data. Runs every 6 hours."""
+    try:
+        from app.quant.ml.crypto_trainer import train_crypto_model
+        result = train_crypto_model()
+        if result:
+            logger.info(f"Crypto ML trained: accuracy={result.get('accuracy', 0):.1%}, trades={result.get('train_size', 0)}")
+        else:
+            logger.info("Crypto ML: insufficient data for training")
+    except Exception as e:
+        logger.error(f"Crypto ML training error: {e}")
+
 
 @shared_task(name='crypto.tasks.run_funding_arb_scan', max_retries=2, soft_time_limit=120)
 def run_funding_arb_scan():

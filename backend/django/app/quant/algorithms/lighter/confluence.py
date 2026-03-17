@@ -1,8 +1,9 @@
 """
-Lighter.xyz Confluence Scorer — rates trade quality from 0-5.
+Lighter.xyz Confluence Scorer — rates trade quality from -1 to 9.
 
 Simplified version of the forex 0-11 confluence scorer, tuned for crypto
-perpetuals on Lighter.xyz. Each factor is binary (0 or 1 point).
+perpetuals on Lighter.xyz. Each factor is binary (0 or 1 point), except
+OI which can be -1, 0, or +1, and OB imbalance which is 0-2.
 
 Factors:
 1. Volume confirmation (0-1): Is current volume > 1.5x 20-period average?
@@ -10,14 +11,18 @@ Factors:
 3. Funding rate awareness (0-1): Is funding favorable for our direction?
 4. Spread check (0-1): Is bid-ask spread tight enough?
 5. RSI/momentum confirmation (0-1): Multiple indicators agree?
+6. Open Interest confirmation (-1 to +1): Does OI+price confirm direction?
+7. Order book imbalance (0-2): Does real-time OB pressure align with direction?
+8. VWAP alignment (0-1): Is trade direction aligned with VWAP bias?
 
-Minimum score to trade: 3/5
+MAX_SCORE = 9  (sum of all max factor values: 1+1+1+1+1+1+2+1)
+Minimum score to trade: 1/9
 
 Scoring bands:
-  0-1: skip — don't trade, insufficient confirmation
-  2:   half_size — weak edge, trade with 50% position
-  3-4: full_size — solid edge, trade normal
-  5:   boost — everything aligned, trade with 120% position
+  <=0: skip — don't trade, insufficient confirmation
+  1:   half_size — weak edge, trade with 50% position
+  2-5: full_size — solid edge, trade normal
+  6-9: boost — everything aligned, trade with 120% position
 """
 import logging
 from dataclasses import dataclass, field
@@ -60,13 +65,13 @@ class ConfluenceResult:
 
     @property
     def band(self) -> str:
-        if self.total_score == 0:
+        if self.total_score <= 0:
             return 'skip'
         elif self.total_score == 1:
             return 'half_size'
-        elif self.total_score <= 3:
+        elif self.total_score <= 5:
             return 'full_size'
-        else:
+        else:  # 6-9
             return 'boost'
 
     @property
@@ -88,7 +93,7 @@ def score_entry(
     candles_15m: list,
     candles_1h: Optional[list] = None,
 ) -> ConfluenceResult:
-    """Score a potential entry from 0-5 based on confluence factors.
+    """Score a potential entry from -1 to 9 based on confluence factors.
 
     Args:
         symbol: Trading pair (e.g. 'ETH', 'BTC', 'EURUSD')
@@ -128,11 +133,26 @@ def score_entry(
     factors['momentum'] = score
     details['momentum'] = detail
 
+    # Factor 6: Open Interest confirmation (can be -1, 0, or +1)
+    score, detail = _score_open_interest(symbol, direction)
+    factors['open_interest'] = score
+    details['open_interest'] = detail
+
+    # Factor 7: Order book imbalance (0-2 points, from WebSocket stream)
+    score, detail = _score_ob_imbalance(symbol, direction)
+    factors['ob_imbalance'] = score
+    details['ob_imbalance'] = detail
+
+    # Factor 8: VWAP alignment (0-1 point)
+    score, detail = _score_vwap(symbol, direction)
+    factors['vwap'] = score
+    details['vwap'] = detail
+
     total = sum(factors.values())
     result = ConfluenceResult(total_score=total, factors=factors, details=details)
 
     logger.info(
-        "Confluence %s %s: %d/5 [%s] band=%s | %s",
+        "Confluence %s %s: %d/9 [%s] band=%s | %s",
         symbol, direction, total,
         ' '.join(f'{k}={v}' for k, v in factors.items()),
         result.band,
@@ -375,6 +395,92 @@ def _score_momentum(candles_15m: list, direction: str) -> tuple:
             return 0, detail
     except Exception as e:
         logger.debug("Momentum scoring failed: %s", e)
+        return 0, f"error: {e}"
+
+
+def _score_ob_imbalance(symbol: str, direction: str) -> tuple:
+    """Factor 7: Order book imbalance (0-2 points).
+
+    Uses real-time order book data streamed via WebSocket to Redis.
+    Scores based on alignment between OB pressure and trade direction:
+
+      - OB imbalance > 0.65 AND direction is BUY  -> +2 (strong bid pressure aligns)
+      - OB imbalance < 0.35 AND direction is SELL  -> +2 (strong ask pressure aligns)
+      - OB imbalance 0.45-0.55 (balanced book)     -> +1 (no headwind)
+      - Otherwise                                   -> 0  (misaligned or no data)
+
+    Falls back gracefully to 0 if WebSocket data is stale or unavailable.
+    """
+    try:
+        from .orderbook_signal import get_ob_confluence_score, get_ob_imbalance
+        score = get_ob_confluence_score(symbol, direction)
+        imbalance = get_ob_imbalance(symbol)
+        if score == 2:
+            return score, f"OB imbalance {imbalance:.3f} strongly aligned with {direction}"
+        elif score == 1:
+            return score, f"OB imbalance {imbalance:.3f} balanced (neutral)"
+        else:
+            return score, f"OB imbalance {imbalance:.3f} not aligned with {direction}"
+    except Exception as e:
+        logger.debug("OB imbalance scoring failed: %s", e)
+        return 0, f"error: {e}"
+
+
+def _score_open_interest(symbol: str, direction: str) -> tuple:
+    """Factor 6: Open Interest confirmation.
+
+    Uses Coinalyze OI data to confirm or warn against the trade direction.
+    Unlike other factors, this can return -1 (warning), which reduces the total
+    confluence score. This is intentional: OI divergence is a strong counter-signal.
+
+    Score +1 if OI confirms direction (e.g., rising price + rising OI for longs).
+    Score -1 if OI warns against direction (e.g., rising price + falling OI for longs).
+    Score 0 if data unavailable or neutral.
+    """
+    try:
+        from .open_interest import get_oi_signal
+        oi = get_oi_signal(symbol, direction)
+        score = oi.get('confluence_score', 0)
+        detail = oi.get('interpretation', 'no data')
+        return score, detail
+    except Exception as e:
+        logger.debug("OI scoring failed: %s", e)
+        return 0, f"error: {e}"
+
+
+def _score_vwap(symbol: str, direction: str) -> tuple:
+    """Factor 8: VWAP alignment.
+
+    Score 1 if trade direction aligns with price position relative to VWAP:
+    - BUY signal + price ABOVE VWAP -> +1 (buying with intraday bullish bias)
+    - SELL signal + price BELOW VWAP -> +1 (selling with intraday bearish bias)
+    - Otherwise -> 0 (trading against intraday VWAP bias)
+
+    VWAP resets at 00:00 UTC each day (crypto is 24h).
+    """
+    try:
+        from .vwap import get_vwap_bias
+        vwap_data = get_vwap_bias(symbol)
+        vwap = vwap_data.get('vwap', 0)
+        price = vwap_data.get('price', 0)
+        bias = vwap_data.get('bias', 'AT')
+        distance_pct = vwap_data.get('distance_pct', 0)
+
+        if vwap <= 0 or price <= 0:
+            return 0, "no VWAP data"
+
+        is_buy = direction.upper() == 'BUY'
+
+        if is_buy and bias == 'ABOVE':
+            return 1, f"price ABOVE VWAP ({distance_pct:+.3%}), aligned with BUY"
+        elif not is_buy and bias == 'BELOW':
+            return 1, f"price BELOW VWAP ({distance_pct:+.3%}), aligned with SELL"
+        elif bias == 'AT':
+            return 0, f"price AT VWAP ({distance_pct:+.3%}), neutral"
+        else:
+            return 0, f"price {bias} VWAP ({distance_pct:+.3%}), misaligned with {direction}"
+    except Exception as e:
+        logger.debug("VWAP scoring failed: %s", e)
         return 0, f"error: {e}"
 
 

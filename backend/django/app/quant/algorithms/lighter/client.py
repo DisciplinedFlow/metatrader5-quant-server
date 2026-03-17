@@ -334,10 +334,11 @@ def place_take_profit(symbol: str, is_buy: bool, base_amount: float, trigger_pri
 
 
 def place_oco_sltp(symbol: str, is_long: bool, base_amount: float, stop_loss_price: float, take_profit_price: float) -> dict:
-    """Place SL + TP as an OCO (one-cancels-other) group.
+    """Place SL + TP as a poor-man's OCO via individual orders.
 
-    When one order fills, the other auto-cancels on-chain. This prevents
-    orphaned SL/TP orders that can trigger on future trades.
+    The proxy places separate SL and TP orders (native OCO is broken on
+    Lighter) and registers the pair for cleanup tracking. When one fills,
+    the reconciler cancels the other.
     """
     result = _proxy_post('/order/oco-sltp', {
         'symbol': symbol,
@@ -351,10 +352,28 @@ def place_oco_sltp(symbol: str, is_long: bool, base_amount: float, stop_loss_pri
                       symbol, 'LONG' if is_long else 'SHORT',
                       stop_loss_price, take_profit_price, result['error'])
     else:
-        logger.info("Lighter OCO SL/TP placed: %s %s SL=%.4f TP=%.4f tx=%s",
+        logger.info("Lighter OCO SL/TP placed: %s %s SL=%.4f TP=%.4f sl_tx=%s tp_tx=%s",
                      symbol, 'LONG' if is_long else 'SHORT',
-                     stop_loss_price, take_profit_price, result.get('tx_hash', '?'))
+                     stop_loss_price, take_profit_price,
+                     result.get('sl_tx_hash', '?'), result.get('tp_tx_hash', '?'))
     return result
+
+
+def get_oco_pairs() -> list:
+    """Get active OCO pairs from the signer proxy."""
+    try:
+        url = f"{LIGHTER_SIGNER_PROXY_URL}/oco/pairs"
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        return resp.json().get('pairs', [])
+    except Exception as e:
+        logger.debug("Failed to get OCO pairs: %s", e)
+        return []
+
+
+def remove_oco_pair(symbol: str) -> dict:
+    """Remove an OCO pair after one side fills (called during reconcile)."""
+    return _proxy_post('/oco/remove', {'symbol': symbol})
 
 
 def close_position(symbol: str) -> dict:

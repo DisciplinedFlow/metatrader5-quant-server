@@ -47,7 +47,13 @@ class CryptoBotControlView(views.APIView):
         if paused is None:
             return Response({'error': 'paused field required'}, status=status.HTTP_400_BAD_REQUEST)
         set_crypto_bot_paused(bool(paused))
-        return Response(get_crypto_bot_status())
+        bot_status = get_crypto_bot_status()
+        try:
+            from app.ws.publish import publish_bot_status
+            publish_bot_status(bot_status)
+        except Exception:
+            pass
+        return Response(bot_status)
 
 
 class CryptoLogsView(views.APIView):
@@ -278,6 +284,25 @@ class LighterProxyView(views.APIView):
             'enabled': bool(enabled),
             'message': f"Lighter trading {'enabled' if enabled else 'disabled'}",
         })
+
+
+class CryptoFundingRatesView(views.APIView):
+    """Return funding rates as a flat array for the dashboard."""
+
+    def get(self, request):
+        from app.quant.algorithms.crypto.funding_arb import get_latest_arb_data
+        data = get_latest_arb_data()
+        if data is None:
+            return Response([])
+        rates = data.get('rates', {})
+        result = []
+        for symbol, info in rates.items():
+            result.append({
+                'symbol': symbol,
+                'hyperliquid': info.get('hyperliquid_rate'),
+                'lighter': info.get('lighter_rate'),
+            })
+        return Response(result)
 
 
 class CryptoWalletView(views.APIView):

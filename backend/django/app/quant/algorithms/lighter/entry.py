@@ -12,6 +12,7 @@ Additional signal mode: Trend-following pullback
 Symbol performance filter prevents trading symbols with poor recent results.
 """
 import logging
+from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 
@@ -20,8 +21,56 @@ from .config import (
     LIGHTER_LEVERAGE, LIGHTER_POSITION_SIZE_PCT, LIGHTER_MARKETS,
 )
 from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
+from .session_sizing import get_combined_sizing
 
 logger = logging.getLogger('app.lighter')
+
+
+# Intelligence layers (all fail-open, never block trading)
+def _get_news_risk():
+    try:
+        from app.quant.indicators.news_sentiment import get_market_risk_level
+        return get_market_risk_level()
+    except Exception:
+        return {'risk_level': 'NORMAL', 'size_multiplier': 1.0}
+
+
+def _get_graph_advice(symbol, direction, hour_utc):
+    try:
+        from app.quant.knowledge.advisor import get_trade_advice
+        return get_trade_advice(
+            symbol=symbol,
+            direction=direction,
+            strategy='LIGHTER_EMA_ENTRY',
+            hour_utc=hour_utc,
+            setup_type='TREND_CONTINUATION',
+        )
+    except Exception:
+        return {'confidence': 0.5, 'size_modifier': 1.0, 'recommendation': 'NORMAL'}
+
+
+def _record_reasoning(trade_id, symbol, direction, signal_type, graph_advice, news_risk, position_usd):
+    try:
+        from app.quant.tasks import record_to_graph
+        record_to_graph.delay({
+            'type': 'trade_reasoning',
+            'reasoning': {
+                'trade_id': trade_id,
+                'symbol': symbol,
+                'direction': direction,
+                'setup_type': 'TREND_CONTINUATION',
+                'entry_source': 'LIGHTER_EMA',
+                'entry_zone': signal_type,
+                'news_risk': news_risk.get('risk_level', 'NORMAL'),
+                'news_size_mult': news_risk.get('size_multiplier', 1.0),
+                'graph_confidence': graph_advice.get('confidence', 0.5),
+                'graph_recommendation': graph_advice.get('recommendation', 'NORMAL'),
+                'reasoning_text': f'EMA {signal_type}, size=${position_usd:.2f}',
+            }
+        })
+    except Exception:
+        pass
+
 
 PLATFORM_PREFIX = 'lighter:'
 EMA_FAST = 8
@@ -106,15 +155,15 @@ def _generate_signal_multitf(candles_1h: list, candles_15m: list) -> tuple:
                 return 0, ''
         return -1, 'crossover_1h_only'
 
-    # --- Signal Mode 2: Trend-following pullback (new) ---
-    # EMAs aligned on 1h + RSI pullback on 15m = enter with the trend
-    if ema_trending_up and current_rsi_15m is not None:
-        if current_rsi_15m < RSI_PULLBACK_BUY:
-            return 1, 'trend_pullback_15m'
-
-    if ema_trending_down and current_rsi_15m is not None:
-        if current_rsi_15m > RSI_PULLBACK_SELL:
-            return -1, 'trend_pullback_15m'
+    # --- Signal Mode 2: Trend-following pullback ---
+    # trend_pullback_15m disabled — 36% WR losing strategy (2026-03-17 review)
+    # if ema_trending_up and current_rsi_15m is not None:
+    #     if current_rsi_15m < RSI_PULLBACK_BUY:
+    #         return 1, 'trend_pullback_15m'
+    #
+    # if ema_trending_down and current_rsi_15m is not None:
+    #     if current_rsi_15m > RSI_PULLBACK_SELL:
+    #         return -1, 'trend_pullback_15m'
 
     # --- Signal Mode 3: Original extreme pullback (1h only, fallback) ---
     if ema_trending_up and current_rsi_1h < RSI_OVERSOLD:
@@ -176,43 +225,8 @@ def _get_open_positions():
     )
 
 
-def _check_lighter_circuit_breaker():
-    """Circuit breaker: pause after 3 consecutive losses on Lighter."""
-    from django.core.cache import cache
-    if cache.get('lighter:circuit_breaker'):
-        return False, "Lighter circuit breaker active"
-
-    from app.crypto.models import CryptoPosition
-    recent = CryptoPosition.objects.filter(
-        status='CLOSED',
-        entry_signal__startswith=PLATFORM_PREFIX,
-        pnl_usd__isnull=False,
-    ).order_by('-closed_at')[:3]
-
-    losses = sum(1 for p in recent if p.pnl_usd < 0)
-    if len(recent) >= 3 and losses >= 3:
-        cache.set('lighter:circuit_breaker', True, timeout=1800)  # 30 min cooldown
-        return False, f"Lighter: 3 consecutive losses, pausing 30 min"
-    return True, "OK"
-
-
-def _check_lighter_daily_loss():
-    """Daily loss limit: pause if total day loss exceeds threshold."""
-    from django.core.cache import cache
-    from django.utils import timezone
-    from app.crypto.models import CryptoPosition
-
-    today = timezone.now().date()
-    day_trades = CryptoPosition.objects.filter(
-        status='CLOSED',
-        entry_signal__startswith=PLATFORM_PREFIX,
-        closed_at__date=today,
-        pnl_usd__isnull=False,
-    )
-    day_pnl = sum(t.pnl_usd for t in day_trades)
-    if day_pnl < -5.0:  # $5 daily loss limit
-        cache.set('lighter:daily_halt', True, timeout=3600)
-        return False, f"Lighter: daily loss ${day_pnl:.2f} exceeds -$5 limit"
+def _check_lighter_losing_streak():
+    """Losing streak cooldown disabled — brain collects data through all conditions."""
     return True, "OK"
 
 
@@ -222,27 +236,20 @@ def entry_algorithm():
     Uses multi-timeframe analysis (1h trend + 15m timing) and
     per-symbol performance filtering for adaptive risk management.
 
-    Quality gates (adapted from forex):
+    Quality gates (lightweight — let the bot trade freely):
     1. Dashboard toggle
-    2. Circuit breaker (3 consecutive losses → 30min pause)
-    3. Daily loss limit ($5)
-    4. Per-symbol performance filter
+    2. Losing streak cooldown (5 consecutive losses → 5 min pause, then back to trading)
+    3. Per-symbol performance filter
     """
     from django.core.cache import cache
     if cache.get('lighter:disabled'):
         logger.debug("Lighter: trading disabled via dashboard toggle")
         return
 
-    # Circuit breaker
-    cb_ok, cb_reason = _check_lighter_circuit_breaker()
-    if not cb_ok:
-        logger.info(cb_reason)
-        return
-
-    # Daily loss limit
-    dl_ok, dl_reason = _check_lighter_daily_loss()
-    if not dl_ok:
-        logger.info(dl_reason)
+    # Losing streak cooldown (not a hard block — just a brief pause)
+    streak_ok, streak_reason = _check_lighter_losing_streak()
+    if not streak_ok:
+        logger.debug(streak_reason)
         return
 
     from app.crypto.models import CryptoPosition, CryptoTrade
@@ -286,6 +293,19 @@ def entry_algorithm():
                 logger.debug("Lighter: no signal for %s", symbol)
                 continue
 
+            # Intelligence layers (fail-open)
+            news_risk = _get_news_risk()
+            news_mult = news_risk.get('size_multiplier', 1.0)
+
+            direction_str = 'BUY' if signal > 0 else 'SELL'
+            hour_utc = datetime.now(timezone.utc).hour
+            graph_advice = _get_graph_advice(symbol, direction_str, hour_utc)
+            graph_mult = graph_advice.get('size_modifier', 1.0)
+
+            if graph_advice.get('recommendation') == 'AVOID':
+                logger.info("Lighter EMA %s: Graph AVOID — skipping", symbol)
+                continue
+
             # Symbol performance filter
             sym_ok, sym_mult = _check_symbol_performance(symbol)
             if not sym_ok:
@@ -298,8 +318,9 @@ def entry_algorithm():
                 logger.warning("Lighter: no price data for %s", symbol)
                 continue
 
-            # Calculate position size in USD (with performance-based scaling)
-            position_usd = LIGHTER_CAPITAL_USD * LIGHTER_POSITION_SIZE_PCT * LIGHTER_LEVERAGE * sym_mult
+            # Calculate position size in USD (with performance-based + intelligence scaling)
+            intel_mult = news_mult * graph_mult
+            position_usd = LIGHTER_CAPITAL_USD * LIGHTER_POSITION_SIZE_PCT * LIGHTER_LEVERAGE * sym_mult * get_combined_sizing(symbol) * intel_mult
             if position_usd < meta['min_quote']:
                 logger.warning("Lighter: position size $%.2f below minimum $%.2f for %s",
                                position_usd, meta['min_quote'], symbol)
@@ -308,9 +329,14 @@ def entry_algorithm():
             is_buy = signal > 0
             side = 'LONG' if is_buy else 'SHORT'
 
+            if intel_mult != 1.0:
+                logger.info("Lighter INTEL: %s news=%s(%.2f) graph=%s(%.2f) → size_mult=%.2f",
+                            symbol, news_risk.get('risk_level', 'NORMAL'), news_mult,
+                            graph_advice.get('recommendation', 'NORMAL'), graph_mult, intel_mult)
+
             logger.info("Lighter ENTRY: %s %s $%.2f (price=%.4f, leverage=%dx, signal=%s, size_mult=%.2f)",
                          symbol, side, position_usd, current_price, LIGHTER_LEVERAGE,
-                         signal_type, sym_mult)
+                         signal_type, sym_mult * intel_mult)
 
             # Set leverage first
             lev_result = update_leverage(symbol, LIGHTER_LEVERAGE)
@@ -359,6 +385,17 @@ def entry_algorithm():
                 size=base_size,
                 fee=0.0,  # Lighter has zero fees
                 status='FILLED',
+            )
+
+            # Record reasoning to knowledge graph
+            _record_reasoning(
+                trade_id=position.id,
+                symbol=symbol,
+                direction=direction_str,
+                signal_type=signal_type,
+                graph_advice=graph_advice,
+                news_risk=news_risk,
+                position_usd=position_usd,
             )
 
             # Place native on-chain SL/TP as OCO group (one-cancels-other)

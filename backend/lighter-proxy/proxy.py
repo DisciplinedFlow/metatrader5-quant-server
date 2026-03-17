@@ -13,10 +13,12 @@ Usage:
 
 Reads config from ../../.env (project root).
 """
+import json
 import os
 import sys
 import asyncio
 import logging
+import time as _time
 from pathlib import Path
 from flask import Flask, request, jsonify
 
@@ -26,7 +28,6 @@ env_path = Path(__file__).resolve().parent.parent.parent / '.env'
 load_dotenv(env_path)
 
 import lighter
-from lighter.signer_client import CreateOrderTxReq
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger('lighter-proxy')
@@ -440,7 +441,13 @@ def take_profit_order():
 
 @app.route('/order/oco-sltp', methods=['POST'])
 def oco_sltp_order():
-    """Place SL + TP as an OCO group. When one fills, the other auto-cancels."""
+    """Place SL + TP as a "poor man's OCO".
+
+    The native create_grouped_orders OCO returns "ReduceOnly is invalid" on
+    Lighter.xyz. Workaround: place individual SL and TP orders (which both
+    work), store their tx hashes in a Redis-backed in-memory registry, and
+    let the cleanup task cancel the orphaned counterpart when one fills.
+    """
     data = request.json
     symbol = data['symbol']
     is_long = data['is_long']
@@ -457,17 +464,15 @@ def oco_sltp_order():
     # SL/TP exit direction: if long, exit is sell (is_ask=True); if short, exit is buy (is_ask=False)
     is_ask = is_long
 
-    # Stop-loss price conversion
+    # Stop-loss price with slippage
     sdk_sl_trigger = int(round(stop_loss_price * (10 ** meta['price_dec'])))
     slippage = 0.02
     if is_ask:
-        # Selling to close long — accept lower price
         sdk_sl_price = int(round(stop_loss_price * (1 - slippage) * (10 ** meta['price_dec'])))
     else:
-        # Buying to close short — accept higher price
         sdk_sl_price = int(round(stop_loss_price * (1 + slippage) * (10 ** meta['price_dec'])))
 
-    # Take-profit price conversion
+    # Take-profit price
     sdk_tp_trigger = int(round(take_profit_price * (10 ** meta['price_dec'])))
     sdk_tp_price = sdk_tp_trigger
 
@@ -475,42 +480,39 @@ def oco_sltp_order():
         async def _execute():
             signer = await _create_signer()
             try:
-                # Build SL order struct
-                sl_order = CreateOrderTxReq(
-                    MarketIndex=meta['id'],
-                    ClientOrderIndex=0,
-                    BaseAmount=sdk_amount,
-                    Price=sdk_sl_price,
-                    IsAsk=int(is_ask),
-                    Type=signer.ORDER_TYPE_STOP_LOSS,
-                    TimeInForce=signer.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
-                    ReduceOnly=0,
-                    TriggerPrice=sdk_sl_trigger,
-                    OrderExpiry=signer.DEFAULT_28_DAY_ORDER_EXPIRY,
+                # Place SL order individually (this works)
+                _, sl_resp, sl_err = await signer.create_sl_order(
+                    market_index=meta['id'],
+                    client_order_index=0,
+                    base_amount=sdk_amount,
+                    price=sdk_sl_price,
+                    is_ask=is_ask,
+                    trigger_price=sdk_sl_trigger,
                 )
-                # Build TP order struct
-                tp_order = CreateOrderTxReq(
-                    MarketIndex=meta['id'],
-                    ClientOrderIndex=0,
-                    BaseAmount=sdk_amount,
-                    Price=sdk_tp_price,
-                    IsAsk=int(is_ask),
-                    Type=signer.ORDER_TYPE_TAKE_PROFIT,
-                    TimeInForce=signer.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
-                    ReduceOnly=0,
-                    TriggerPrice=sdk_tp_trigger,
-                    OrderExpiry=signer.DEFAULT_28_DAY_ORDER_EXPIRY,
-                )
+                if sl_err:
+                    return {'error': f'SL failed: {sl_err}'}
+                sl_tx = sl_resp.tx_hash if hasattr(sl_resp, 'tx_hash') else str(sl_resp)
 
-                tx, resp, err = await signer.create_grouped_orders(
-                    grouping_type=signer.GROUPING_TYPE_ONE_CANCELS_THE_OTHER,
-                    orders=[sl_order, tp_order],
+                # Place TP order individually (this works)
+                _, tp_resp, tp_err = await signer.create_tp_order(
+                    market_index=meta['id'],
+                    client_order_index=0,
+                    base_amount=sdk_amount,
+                    price=sdk_tp_price,
+                    is_ask=is_ask,
+                    trigger_price=sdk_tp_trigger,
                 )
-                if err:
-                    return {'error': err}
-                tx_hash = resp.tx_hash if hasattr(resp, 'tx_hash') else str(resp)
+                if tp_err:
+                    return {'error': f'TP failed (SL placed as {sl_tx}): {tp_err}'}
+                tp_tx = tp_resp.tx_hash if hasattr(tp_resp, 'tx_hash') else str(tp_resp)
+
+                # Register the OCO pair for cleanup tracking
+                _register_oco_pair(symbol, sl_tx, tp_tx)
+
                 return {
-                    'tx_hash': tx_hash,
+                    'tx_hash': f'{sl_tx},{tp_tx}',
+                    'sl_tx_hash': sl_tx,
+                    'tp_tx_hash': tp_tx,
                     'symbol': symbol,
                     'type': 'oco_sltp',
                     'stop_loss': stop_loss_price,
@@ -520,7 +522,7 @@ def oco_sltp_order():
                 await signer.close()
 
         result = _run(_execute())
-        logger.info("OCO SL/TP: %s %s SL=%.4f TP=%.4f -> %s",
+        logger.info("OCO SL/TP (poor-man): %s %s SL=%.4f TP=%.4f -> %s",
                      symbol, 'LONG' if is_long else 'SHORT',
                      stop_loss_price, take_profit_price,
                      result.get('error') or result.get('tx_hash'))
@@ -529,6 +531,59 @@ def oco_sltp_order():
     except Exception as e:
         logger.error("OCO SL/TP error: %s", e)
         return jsonify({'error': str(e)}), 500
+
+
+# ── Poor-man's OCO tracking ─────────────────────────────
+
+# In-memory OCO registry: list of {symbol, sl_tx, tp_tx, created_at}
+# Persisted to a JSON file so it survives proxy restarts.
+_OCO_FILE = Path(__file__).resolve().parent / '.oco_pairs.json'
+_oco_pairs = []
+
+
+def _load_oco_pairs():
+    global _oco_pairs
+    try:
+        if _OCO_FILE.exists():
+            _oco_pairs = json.loads(_OCO_FILE.read_text())
+    except Exception:
+        _oco_pairs = []
+
+
+def _save_oco_pairs():
+    try:
+        _OCO_FILE.write_text(json.dumps(_oco_pairs, indent=2))
+    except Exception as e:
+        logger.warning("Failed to save OCO pairs file: %s", e)
+
+
+def _register_oco_pair(symbol, sl_tx, tp_tx):
+    """Register a pair of SL/TP orders for cleanup tracking."""
+    _oco_pairs.append({
+        'symbol': symbol,
+        'sl_tx': sl_tx,
+        'tp_tx': tp_tx,
+        'created_at': _time.time(),
+    })
+    _save_oco_pairs()
+    logger.info("OCO pair registered: %s SL=%s TP=%s", symbol, sl_tx, tp_tx)
+
+
+@app.route('/oco/pairs', methods=['GET'])
+def get_oco_pairs():
+    """Return active OCO pairs for monitoring."""
+    return jsonify({'pairs': _oco_pairs})
+
+
+@app.route('/oco/remove', methods=['POST'])
+def remove_oco_pair():
+    """Remove an OCO pair after cleanup (called by Django reconcile)."""
+    data = request.json
+    symbol = data.get('symbol')
+    global _oco_pairs
+    _oco_pairs = [p for p in _oco_pairs if p['symbol'] != symbol]
+    _save_oco_pairs()
+    return jsonify({'status': 'ok'})
 
 
 @app.route('/position/close', methods=['POST'])
@@ -664,9 +719,11 @@ def cancel_all():
 
 
 if __name__ == '__main__':
+    _load_oco_pairs()
     logger.info("Starting Lighter Signer Proxy on port %d...", PORT)
     logger.info("API URL: %s", API_URL)
     logger.info("Account: %s, Key Index: %s", ACCOUNT_INDEX, API_KEY_INDEX)
+    logger.info("OCO pairs loaded: %d active", len(_oco_pairs))
 
     # Validate signer on startup
     try:

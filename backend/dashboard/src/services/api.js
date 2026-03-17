@@ -420,6 +420,12 @@ const api = {
   getKnowledgeGraphHealth() {
     return this.django('v1/knowledge-graph/health/')
   },
+
+  // --- Crypto News API ---
+
+  getCryptoNews() {
+    return this.django('v1/finnhub/news/?category=crypto')
+  },
 }
 
 export default api

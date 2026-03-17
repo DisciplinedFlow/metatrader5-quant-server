@@ -7,6 +7,7 @@ const status = ref(null)
 const predictions = ref([])
 const loading = ref(true)
 const activeTab = ref('overview')
+const activeMLTab = ref('forex')
 
 async function refresh() {
   try {
@@ -293,6 +294,14 @@ function modelTypeClassFor(type) {
       </div>
     </div>
 
+    <!-- Forex / Crypto ML Tabs -->
+    <div class="ml-tab-group">
+      <button class="ml-tab" :class="{ active: activeMLTab === 'forex' }" @click="activeMLTab = 'forex'">Forex ML</button>
+      <button class="ml-tab" :class="{ active: activeMLTab === 'crypto' }" @click="activeMLTab = 'crypto'">Crypto ML</button>
+    </div>
+
+    <!-- ===== FOREX ML TAB ===== -->
+    <template v-if="activeMLTab === 'forex'">
     <div v-if="loading" class="ml-loading">Loading ML data...</div>
 
     <template v-else>
@@ -856,6 +865,29 @@ function modelTypeClassFor(type) {
         </div>
       </div>
     </template>
+    </template>
+
+    <!-- ===== CRYPTO ML TAB ===== -->
+    <div v-if="activeMLTab === 'crypto'" class="crypto-ml-placeholder">
+      <div class="tp-card">
+        <div class="card-inner" style="text-align: center; padding: 3rem;">
+          <span class="material-symbols-outlined" style="font-size: 48px; color: var(--tp-text-muted);">model_training</span>
+          <h3>Crypto ML Pipeline</h3>
+          <p style="color: var(--tp-text-dim);">Training data: 99+ Lighter.xyz trades in Neo4j</p>
+          <div style="display: flex; gap: 1rem; justify-content: center; margin-top: 1rem;">
+            <div class="stat-mini"><span class="stat-val">99+</span><span class="stat-lbl">Training Trades</span></div>
+            <div class="stat-mini"><span class="stat-val">58%</span><span class="stat-lbl">Current Win Rate</span></div>
+            <div class="stat-mini"><span class="stat-val">ETH</span><span class="stat-lbl">Best Symbol</span></div>
+            <div class="stat-mini"><span class="stat-val">RSI(2)</span><span class="stat-lbl">Top Strategy</span></div>
+          </div>
+          <p style="color: var(--tp-text-dim); margin-top: 1.5rem; font-size: 0.8rem;">
+            Model training will begin when sufficient labeled data is collected.<br/>
+            Features: RSI, BB, ADX, session, confluence score, time-of-day, funding rate.
+          </p>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -1345,4 +1377,37 @@ function modelTypeClassFor(type) {
 .progress-bar { height: 100%; background: var(--tp-primary); border-radius: 3px; transition: width 0.5s; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .spinning { animation: spin 1s linear infinite; }
+
+/* Forex / Crypto ML Tabs */
+.ml-tab-group {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--tp-border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0 1.15rem 1.25rem;
+  width: fit-content;
+}
+.ml-tab {
+  font-family: var(--tp-font);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.3rem 0.75rem;
+  background: transparent;
+  border: none;
+  color: var(--tp-text-dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-right: 1px solid var(--tp-border);
+}
+.ml-tab:last-child { border-right: none; }
+.ml-tab:hover { background: var(--tp-bg-hover); color: var(--tp-text); }
+.ml-tab.active { background: var(--tp-primary); color: white; }
+
+/* Crypto ML placeholder */
+.crypto-ml-placeholder { padding: 0 1.15rem; }
+.stat-mini { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
+.stat-val { font-size: 1.2rem; font-weight: 800; color: var(--tp-text); }
+.stat-lbl { font-size: 0.6rem; color: var(--tp-text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }
 </style>

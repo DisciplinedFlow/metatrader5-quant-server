@@ -115,13 +115,19 @@ def close_algorithm():
                     try:
                         from app.quant.tasks import record_to_graph
                         from app.nexus.models import TradeFeature
+                        from django.core.cache import cache as _cache
                         tf = TradeFeature.objects.filter(trade=closed_trade).first()
                         features = tf.features_json if tf and isinstance(tf.features_json, dict) else {}
+                        # Retrieve entry context cached at trade open time
+                        entry_ctx = _cache.get(f'entry_context:{ticket}') or {}
                         record_to_graph.delay({
                             'type': 'trade',
                             'trade_id': closed_trade.id,
                             'features': features,
+                            'brain_meta': entry_ctx,
                         })
+                        if entry_ctx:
+                            _cache.delete(f'entry_context:{ticket}')
                     except Exception:
                         pass  # Graph recording is optional
                 else:

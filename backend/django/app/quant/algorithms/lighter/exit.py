@@ -142,7 +142,7 @@ def exit_algorithm():
             try:
                 from app.quant.tasks import record_to_graph
                 record_to_graph.delay({
-                    'type': 'trade',
+                    'type': 'lighter_trade',
                     'trade_id': f'lighter_{position.id}',
                     'django_id': position.id,
                     'symbol': position.symbol,
@@ -155,6 +155,8 @@ def exit_algorithm():
                     'entry_time': position.opened_at,
                     'close_time': position.closed_at,
                     'venue': 'LIGHTER',
+                    'hour_utc': position.opened_at.hour if position.opened_at else 0,
+                    'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
                 })
             except Exception:
                 pass

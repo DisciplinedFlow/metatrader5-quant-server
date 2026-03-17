@@ -27,8 +27,57 @@ from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
 from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
 from .confluence import score_entry
 from .liquidation_detector import check_liquidation_signal
+from .session_sizing import get_combined_sizing
 
 logger = logging.getLogger('app.lighter')
+
+
+# ── Intelligence layers (all fail-open, never block trading) ──
+
+def _get_news_risk():
+    try:
+        from app.quant.indicators.news_sentiment import get_market_risk_level
+        return get_market_risk_level()
+    except Exception:
+        return {'risk_level': 'NORMAL', 'size_multiplier': 1.0}
+
+
+def _get_graph_advice(symbol, direction, hour_utc):
+    try:
+        from app.quant.knowledge.advisor import get_trade_advice
+        return get_trade_advice(
+            symbol=symbol,
+            direction=direction,
+            strategy='LIGHTER_MEAN_REVERSION',
+            hour_utc=hour_utc,
+            setup_type='MEAN_REVERSION',
+        )
+    except Exception:
+        return {'confidence': 0.5, 'size_modifier': 1.0, 'recommendation': 'NORMAL'}
+
+
+def _record_reasoning(trade_id, symbol, direction, rsi_val, bb_position, adx_val, liq_signal, graph_advice, news_risk, position_usd):
+    try:
+        from app.quant.tasks import record_to_graph
+        record_to_graph.delay({
+            'type': 'trade_reasoning',
+            'reasoning': {
+                'trade_id': trade_id,
+                'symbol': symbol,
+                'direction': direction,
+                'setup_type': 'MEAN_REVERSION',
+                'entry_source': 'LIGHTER_MR',
+                'entry_zone': bb_position,
+                'news_risk': news_risk.get('risk_level', 'NORMAL'),
+                'news_size_mult': news_risk.get('size_multiplier', 1.0),
+                'graph_confidence': graph_advice.get('confidence', 0.5),
+                'graph_recommendation': graph_advice.get('recommendation', 'NORMAL'),
+                'reasoning_text': f'BB {bb_position}, RSI={rsi_val:.0f}, ADX={adx_val:.0f}, liq={liq_signal}, size=${position_usd:.2f}',
+            }
+        })
+    except Exception:
+        pass
+
 
 PLATFORM_PREFIX = 'lighter:'
 
@@ -62,7 +111,7 @@ MR_CONFIG = {
 }
 
 # Symbols to scan
-MR_SYMBOLS = ['ETH', 'BTC', 'SOL', 'XAU', 'EURUSD', 'GBPUSD']
+MR_SYMBOLS = ['ETH', 'SOL', 'XAU', 'BTC', 'EURUSD']
 
 # Cooldown between trades on same symbol (seconds)
 MR_COOLDOWN_SECONDS = 60  # 1 minute — aggressive, zero fees make rapid trades viable
@@ -145,10 +194,10 @@ def mean_reversion_algorithm(symbols=None):
     if cache.get('lighter:disabled'):
         return
 
-    # Circuit breaker check
-    if cache.get('lighter:circuit_breaker'):
-        logger.debug("MR: circuit breaker active, skipping")
-        return
+    # Losing streak cooldown disabled — brain collects data through all conditions
+    # if cache.get('lighter:streak_cooldown'):
+    #     logger.debug("MR: losing streak cooldown, skipping")
+    #     return
 
     if symbols is None:
         symbols = MR_SYMBOLS
@@ -281,6 +330,28 @@ def _scan_symbol(symbol):
     else:
         return
 
+    # ML filter disabled — collecting training data, brain learns from trades
+    # Re-enable once model has 200+ crypto trades to train on
+
+    # ── Neo4j feedback loop (NEVER blocks — adjusts size or skips) ──
+    neo4j_mult = 1.0
+    neo4j_info = 'neo4j_neutral'
+    try:
+        from .neo4j_feedback import get_neo4j_sizing
+        mr_direction = 'LONG' if signal > 0 else 'SHORT'
+        mr_hour = __import__('datetime').datetime.utcnow().hour
+        neo4j_mult = get_neo4j_sizing(symbol, mr_direction, 'mr', mr_hour)
+        if neo4j_mult == 0.0:
+            logger.info("MR %s: Neo4j feedback SKIP — historical WR too low", symbol)
+            return
+        elif neo4j_mult != 1.0:
+            neo4j_info = f"neo4j_{neo4j_mult:.2f}x"
+        else:
+            neo4j_info = "neo4j_neutral"
+    except Exception as e:
+        logger.debug("MR %s: Neo4j feedback failed: %s", symbol, e)
+        neo4j_info = "neo4j_error"
+
     # ── Confluence scoring (NEVER blocks — only adjusts size) ──
     confluence = None
     try:
@@ -289,10 +360,78 @@ def _scan_symbol(symbol):
     except Exception:
         pass
 
+    # ── Funding rate contrarian signal (NEVER blocks — adjusts size) ──
+    funding_mult = 1.0
+    funding_info = ''
+    try:
+        from .funding_signal import get_funding_rate_signal
+        funding = get_funding_rate_signal(symbol)
+        funding_signal = funding.get('signal', 0)
+        if funding_signal != 0:
+            # Funding contrarian agrees with our trade direction?
+            if funding_signal == signal:
+                funding_mult = 1.2  # Boost 20% — crowd is wrong, we agree with contrarian
+                funding_info = f"funding_boost(z={funding.get('z_score', 0):.1f})"
+            else:
+                funding_mult = 0.7  # Reduce 30% — contrarian signal disagrees
+                funding_info = f"funding_reduce(z={funding.get('z_score', 0):.1f})"
+        else:
+            funding_info = "funding_neutral"
+    except Exception as e:
+        logger.debug("MR %s: funding signal check failed: %s", symbol, e)
+        funding_info = "funding_error"
+
+    # ── Trade flow analysis (NEVER blocks — adjusts size + warns) ──
+    flow_mult = 1.0
+    flow_info = ''
+    try:
+        from .trade_flow import analyze_trade_flow
+        flow = analyze_trade_flow(symbol)
+        flow_signal = flow.get('signal', 0)
+        whale = flow.get('whale_detected', False)
+        whale_dir = flow.get('whale_direction')
+
+        if whale:
+            if (whale_dir == 'BUY' and signal > 0) or (whale_dir == 'SELL' and signal < 0):
+                flow_mult = 1.2  # Whale in our direction — boost 20%
+                flow_info = f"whale_{whale_dir}_boost(cvd=${flow.get('cvd', 0):.0f})"
+            elif (whale_dir == 'SELL' and signal > 0) or (whale_dir == 'BUY' and signal < 0):
+                flow_mult = 0.7  # Whale against us — reduce 30%
+                flow_info = f"whale_{whale_dir}_warn(cvd=${flow.get('cvd', 0):.0f})"
+                logger.warning("MR %s: WHALE AGAINST trade direction! whale=%s our=%s cvd=$%.0f",
+                               symbol, whale_dir, 'BUY' if signal > 0 else 'SELL', flow.get('cvd', 0))
+            else:
+                flow_info = f"whale_mixed(cvd=${flow.get('cvd', 0):.0f})"
+        elif flow_signal != 0:
+            if flow_signal == signal:
+                flow_mult = 1.1  # Flow agrees — slight boost
+                flow_info = f"flow_agree(ratio={flow.get('aggressor_ratio', 0.5):.2f})"
+            else:
+                flow_mult = 0.9  # Flow disagrees — slight reduction
+                flow_info = f"flow_disagree(ratio={flow.get('aggressor_ratio', 0.5):.2f})"
+        else:
+            flow_info = "flow_balanced"
+    except Exception as e:
+        logger.debug("MR %s: trade flow check failed: %s", symbol, e)
+        flow_info = "flow_error"
+
+    # ── News risk + Graph advisor (fail-open, never block) ──
+    news_risk = _get_news_risk()
+    news_mult = news_risk.get('size_multiplier', 1.0)
+
+    current_hour_utc = __import__('datetime').datetime.utcnow().hour
+    direction_str = 'BUY' if signal > 0 else 'SELL'
+    graph_advice = _get_graph_advice(symbol, direction_str, current_hour_utc)
+    graph_mult = graph_advice.get('size_modifier', 1.0)
+
+    if graph_advice.get('recommendation') == 'AVOID':
+        logger.info("MR %s: Graph AVOID — skipping", symbol)
+        return
+
     # ── Execute entry ──
     is_buy = signal > 0
     side = 'LONG' if is_buy else 'SHORT'
-    base_position_usd = config['size_usd'] * LIGHTER_LEVERAGE
+    base_position_usd = config['size_usd'] * LIGHTER_LEVERAGE * get_combined_sizing(symbol)
 
     # Size adjustment: confluence boosts size, never blocks
     conf_mult = confluence.size_multiplier if confluence else 1.0
@@ -306,6 +445,14 @@ def _scan_symbol(symbol):
     else:
         position_usd = base_position_usd * conf_mult
 
+    # Apply neo4j feedback + funding + trade flow + news + graph multipliers
+    position_usd = position_usd * neo4j_mult * funding_mult * flow_mult * news_mult * graph_mult
+
+    if news_mult != 1.0 or graph_mult != 1.0:
+        logger.info("MR %s: intel sizing news=%s(%.2fx) graph=%s(%.2fx)",
+                     symbol, news_risk['risk_level'], news_mult,
+                     graph_advice['recommendation'], graph_mult)
+
     # Get live price
     prices = get_best_bid_ask(symbol)
     live_price = prices.get('mid')
@@ -313,10 +460,10 @@ def _scan_symbol(symbol):
         return
 
     confluence_str = f"confluence={confluence.total_score}/5 {confluence.band} {confluence.size_multiplier * 100:.0f}%" if confluence else "liq_only"
-    logger.info("MR ENTRY: %s %s $%.2f mode=%s (price=%.4f, RSI=%.1f, ADX=%.1f, BB=[%.4f, %.4f, %.4f], %s, liq=%.1fx)",
+    logger.info("MR ENTRY: %s %s $%.2f mode=%s (price=%.4f, RSI=%.1f, ADX=%.1f, BB=[%.4f, %.4f, %.4f], %s, liq=%.1fx, %s, %s, %s)",
                 symbol, side, position_usd, size_mode, live_price, current_rsi, current_adx,
                 current_bb_lower, current_bb_mid, current_bb_upper,
-                confluence_str, liq_ratio)
+                confluence_str, liq_ratio, neo4j_info, funding_info, flow_info)
 
     # Set leverage
     try:
@@ -362,6 +509,21 @@ def _scan_symbol(symbol):
         size=base_size,
         fee=0.0,
         status='FILLED',
+    )
+
+    # Record reasoning to knowledge graph
+    bb_position = 'lower' if is_buy else 'upper'
+    _record_reasoning(
+        trade_id=position.id,
+        symbol=symbol,
+        direction=side,
+        rsi_val=current_rsi,
+        bb_position=bb_position,
+        adx_val=current_adx,
+        liq_signal=liq_signal,
+        graph_advice=graph_advice,
+        news_risk=news_risk,
+        position_usd=position_usd,
     )
 
     # Place native on-chain SL/TP as OCO group (one-cancels-other)

@@ -1,0 +1,14 @@
+[
+  {
+    "symbol": "ETH",
+    "sl_tx": "13ab96607bdaaa8d5240af41ec4c9ef89bdb561b36b5833b178ca185f56bcd655b8c334b5eda242b",
+    "tp_tx": "865471f1e71fd63ae5baeb495e0677e89c8e648e855c73477c3c6f275bb9fb64894e04e416a3d1cf",
+    "created_at": 1773784230.023372
+  },
+  {
+    "symbol": "BTC",
+    "sl_tx": "d9e7ec4ddf0c0f3584e6f68a0651964746ede15983183de5925ee1af8072408e708be483735857a2",
+    "tp_tx": "6f8e635b8acdf45c607a97102977867a2256bc0ac953cbbef26e59793e8c05c391a60aef11b80d38",
+    "created_at": 1773784240.033643
+  }
+]

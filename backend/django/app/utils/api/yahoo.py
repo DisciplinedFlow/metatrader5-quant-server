@@ -45,8 +45,10 @@ def fetch_yahoo_data(symbol, period='30d', interval='5m'):
     """
     ticker = MT5_TO_YAHOO.get(symbol)
     if ticker is None:
-        logger.warning(f"Yahoo Finance: unknown symbol '{symbol}', no mapping found")
-        return None
+        # Symbol not in map — try using it directly as a Yahoo ticker
+        # (e.g., 'BTC-USD' is already a valid Yahoo ticker)
+        ticker = symbol
+        logger.info(f"Yahoo Finance: no mapping for '{symbol}', using as-is")
 
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False)
