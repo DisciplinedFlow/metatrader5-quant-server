@@ -56,8 +56,8 @@ logger = logging.getLogger(__name__)
 # --- Adaptive Trading Thresholds ---
 CIRCUIT_BREAKER_SYMBOL_LOSSES = 3    # Consecutive losses on same symbol → pause
 CIRCUIT_BREAKER_GLOBAL_LOSSES = 5    # Consecutive losses across all symbols → pause
-CIRCUIT_BREAKER_GLOBAL_COOLDOWN_MINUTES = 10   # Global cooldown (was 15m → 10m, with vol override)
-CIRCUIT_BREAKER_SYMBOL_COOLDOWN_MINUTES = 30   # Per-symbol cooldown (pair may be unfavorable)
+CIRCUIT_BREAKER_GLOBAL_COOLDOWN_MINUTES = 5    # Global cooldown — brain self-corrects, short pause only
+CIRCUIT_BREAKER_SYMBOL_COOLDOWN_MINUTES = 15   # Per-symbol cooldown — brain reads structure per-symbol
 SYMBOL_FILTER_LOOKBACK = 10          # Trades to check for symbol performance
 SYMBOL_FILTER_MIN_WR = 0.35          # Minimum win rate to continue trading a symbol
 SYMBOL_FILTER_COOLDOWN_HOURS = 8     # How long to skip a poorly-performing symbol
@@ -72,7 +72,7 @@ SIGNAL_LOOKBACK = 3                  # Check last N completed bars (balance fres
 # market context gate, ML meta-filter, confluence gates.
 # Only hard guards remain: market closed, no tick data, insufficient bars.
 # Set to False to re-enable all protection gates for live trading.
-TRAINING_MODE = False
+TRAINING_MODE = True  # BRAIN_V1 training run — brain components active, gates bypassed
 REGIME_MISMATCH_SIZE_PENALTY = 0.50  # Halve position when regime doesn't match strategy
 GROUP_TENDENCY_SIZE_PENALTY = 0.50   # Halve position when peer pairs disagree with direction
 GROUP_TENDENCY_CACHE_TTL = 300       # Cache correlation check for 5 minutes
@@ -1371,7 +1371,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             # Router validity was already enforced above (pre-signal gate).
             # Here we just read the regime-based parameters for sizing/SL/confluence.
             router_mult = 1.0
-            router_min_confluence = 4
+            router_min_confluence = 3  # Brain mode: MTF + structure + advisor are the real filters
             router_sl_adj = 1.0
             try:
                 from app.quant.algorithms.strategy_router import route_symbol
@@ -1582,6 +1582,21 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 except Exception:
                     vwap_bias = None
 
+                # Orderbook (DOM) imbalance for confluence confirmation
+                ob_bias = None
+                try:
+                    from app.utils.api.orderbook import get_orderbook_bias
+                    ob_info = get_orderbook_bias(pair)
+                    ob_bias = ob_info.get('bias', 'NEUTRAL')
+                    if ob_bias != 'NEUTRAL':
+                        logger.info(
+                            f"CVD: Orderbook {pair}: {ob_bias} "
+                            f"(imbalance={ob_info['imbalance']:.2f}, "
+                            f"bid={ob_info['bid_depth']} ask={ob_info['ask_depth']})"
+                        )
+                except Exception:
+                    ob_bias = None
+
                 # Session level sweep detection for confluence scoring
                 try:
                     from app.quant.indicators.session_levels import get_session_levels
@@ -1630,12 +1645,13 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         continue
 
                     # Raise minimum confluence outside kill zones (Livermore: patience)
-                    try:
-                        from app.quant.indicators.kill_zones import is_in_kill_zone
-                        if not is_in_kill_zone():
-                            router_min_confluence = max(router_min_confluence, 6)
-                    except Exception:
-                        pass
+                    # Kill zone raise disabled in brain mode — MTF context handles timing
+                    # try:
+                    #     from app.quant.indicators.kill_zones import is_in_kill_zone
+                    #     if not is_in_kill_zone():
+                    #         router_min_confluence = max(router_min_confluence, 6)
+                    # except Exception:
+                    #     pass
 
                     # Strategy-level min confluence override (e.g. London Open requires 5)
                     if strategy_min_confluence is not None:
@@ -1650,6 +1666,15 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         if mtf and mtf.get('alignment') == 'ALIGNED' and mtf.get('alignment_score', 0) >= 7:
                             router_min_confluence = max(router_min_confluence - 1, 3)
                             logger.info(f"CVD: MTF aligned (score={mtf['alignment_score']}) — confluence threshold reduced to {router_min_confluence}")
+                    except Exception:
+                        pass
+
+                    # Orderbook confirmation boosts MTF confidence when DOM agrees with direction
+                    try:
+                        if ob_bias and mtf:
+                            if (ob_bias == 'BULLISH' and order_type == 'BUY') or (ob_bias == 'BEARISH' and order_type == 'SELL'):
+                                mtf['confidence'] = min(1.0, mtf.get('confidence', 0.5) + 0.1)
+                                logger.info(f"CVD: Orderbook confirms {order_type} on {pair} — MTF confidence boosted to {mtf['confidence']:.2f}")
                     except Exception:
                         pass
 
