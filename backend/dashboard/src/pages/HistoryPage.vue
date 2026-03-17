@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import SectionNav from '@/components/SectionNav.vue'
+import { useWebSocket } from '@/composables/useWebSocket'
 import api from '@/services/api'
 
 const forexLinks = [
@@ -65,6 +66,10 @@ function duration(entry, close) {
   return `${Math.floor(hrs / 24)}d ${hrs % 24}h`
 }
 
+// WebSocket: auto-refresh on trade close events
+const { connected: wsConnected, on: wsOn } = useWebSocket()
+wsOn('trade_closed', () => fetchTrades())
+
 onMounted(fetchTrades)
 </script>
 
@@ -76,10 +81,16 @@ onMounted(fetchTrades)
         <h1>Trade History</h1>
         <p>All forex trades tracked by the bot — updated automatically.</p>
       </div>
-      <button class="tp-btn tp-btn-outline" @click="fetchTrades" :disabled="loading">
-        <span class="material-symbols-outlined" style="font-size:16px">refresh</span>
-        Refresh
-      </button>
+      <div class="header-right">
+        <span class="ws-indicator" :class="wsConnected ? 'ws-connected' : 'ws-disconnected'">
+          <span class="pulse-dot" v-if="wsConnected"></span>
+          {{ wsConnected ? 'Live' : 'Polling' }}
+        </span>
+        <button class="tp-btn tp-btn-outline" @click="fetchTrades" :disabled="loading">
+          <span class="material-symbols-outlined" style="font-size:16px">refresh</span>
+          Refresh
+        </button>
+      </div>
     </div>
 
     <!-- Stats Cards -->
@@ -390,4 +401,39 @@ onMounted(fetchTrades)
   to { transform: rotate(360deg); }
 }
 .spinning { animation: spin 1.5s linear infinite; }
+
+/* WebSocket indicator */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ws-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+}
+.ws-connected {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+}
+.ws-disconnected {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: ws-pulse 2s ease infinite;
+}
+@keyframes ws-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50%      { box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
+}
 </style>

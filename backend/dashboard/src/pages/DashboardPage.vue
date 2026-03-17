@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { usePositionsStore } from '@/stores/positions'
 import { usePolling } from '@/composables/usePolling'
 import { useHMMRegime } from '@/composables/useHMMRegime'
+import { useWebSocket } from '@/composables/useWebSocket'
 import PositionsTable from '@/components/PositionsTable.vue'
 import MarketSessions from '@/components/MarketSessions.vue'
 import SectionNav from '@/components/SectionNav.vue'
@@ -146,6 +147,14 @@ function formatNewsTime(unixTimestamp) {
 
 const hmmRegime = useHMMRegime()
 
+// WebSocket: auto-refresh on live trade events
+const { connected: wsConnected, on: wsOn } = useWebSocket()
+wsOn('trade_opened', () => { refresh(); fetchTrades() })
+wsOn('trade_closed', () => { refresh(); fetchTrades() })
+wsOn('position_update', () => refresh())
+wsOn('bot_status', (data) => { if (data && data.paused != null) botPaused.value = data.paused })
+wsOn('news_alert', () => fetchMarketPulse())
+
 onMounted(fetchTrades)
 usePolling(refresh, 5000)
 usePolling(fetchMarketPulse, 120000)
@@ -167,6 +176,10 @@ usePolling(() => hmmRegime.fetch(), 30000)
         <button class="cmd-toggle" @click="toggleBot" :aria-busy="botStatusLoading">
           <span class="material-symbols-outlined">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
         </button>
+        <span class="ws-indicator" :class="wsConnected ? 'ws-connected' : 'ws-disconnected'">
+          <span class="pulse-dot" v-if="wsConnected"></span>
+          {{ wsConnected ? 'Live' : 'Polling' }}
+        </span>
       </div>
 
       <div class="cmd-metrics">
@@ -875,5 +888,36 @@ usePolling(() => hmmRegime.fetch(), 30000)
 
 @media (min-width: 769px) and (max-width: 1023px) {
   .row-perf-pos { grid-template-columns: 1fr 1fr; }
+}
+
+/* ═══ WebSocket Connection Indicator ═══ */
+.ws-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  font-family: var(--tp-font);
+}
+.ws-connected {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+}
+.ws-disconnected {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: ws-pulse 2s ease infinite;
+}
+@keyframes ws-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50%      { box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
 }
 </style>
