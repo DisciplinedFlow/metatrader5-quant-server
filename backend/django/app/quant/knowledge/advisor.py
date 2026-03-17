@@ -29,6 +29,8 @@ DECAY_HALF_LIFE_DAYS = 7  # Exponential decay half-life in days
 LN2 = 0.693147           # ln(2) for decay formula
 
 # Neutral defaults when graph is unavailable
+CAUSAL_CACHE_TTL = 600  # 10 minutes for causal sentiment cache
+
 _NEUTRAL_ADVICE = {
     'confidence': 0.5,
     'size_modifier': 1.0,
@@ -39,6 +41,8 @@ _NEUTRAL_ADVICE = {
     'news_risk_wr': 0.5,
     'setup_type_wr': 0.5,
     'time_of_day_wr': 0.5,
+    'causal_sentiment': 'NEUTRAL',
+    'causal_chains_count': 0,
     'effective_sample_size': 0.0,
     'warnings': [],
     'recommendation': 'NORMAL',
@@ -151,6 +155,7 @@ class GraphAdvisor:
             tod_perf = self._query_time_of_day_performance(
                 symbol, direction, hour_utc
             )
+            causal = self._query_causal_sentiment(symbol, direction)
 
             # Extract win rates (use 0.5 neutral if sample too small)
             similar_eff_size = similar.get('effective_sample_size', 0) if similar else 0
@@ -197,11 +202,19 @@ class GraphAdvisor:
             # Total effective sample size across all queries
             total_eff = similar_eff_size + sym_regime_eff + news_eff + setup_eff + tod_eff
 
+            # Extract causal sentiment signal
+            causal_sentiment = causal.get('sentiment', 'NEUTRAL') if causal else 'NEUTRAL'
+            causal_chains_count = causal.get('count', 0) if causal else 0
+            causal_adj = causal.get('confidence_adj', 0.0) if causal else 0.0
+
             # Calculate overall confidence and sizing
             confidence = self._calculate_confidence(
                 similar_wr, symbol_regime_wr, news_risk_wr,
                 setup_type_wr, time_of_day_wr, warnings, total_eff,
             )
+            # Apply causal chain adjustment (capped at +/-0.10)
+            confidence = max(0.0, min(1.0, confidence + causal_adj))
+
             size_modifier = self._calculate_size_modifier(confidence)
             recommendation, reasoning = self._build_recommendation(
                 confidence, similar_trades, similar_wr, similar_avg_r,
@@ -209,6 +222,8 @@ class GraphAdvisor:
                 time_of_day_wr, warnings, symbol, direction,
                 regime, news_risk, setup_type, hour_utc,
                 similar_eff_size,
+                causal_sentiment=causal_sentiment,
+                causal_chains_count=causal_chains_count,
             )
 
             result = {
@@ -221,6 +236,8 @@ class GraphAdvisor:
                 'news_risk_wr': round(news_risk_wr, 3),
                 'setup_type_wr': round(setup_type_wr, 3),
                 'time_of_day_wr': round(time_of_day_wr, 3),
+                'causal_sentiment': causal_sentiment,
+                'causal_chains_count': causal_chains_count,
                 'effective_sample_size': round(total_eff, 1),
                 'warnings': warnings,
                 'recommendation': recommendation,
@@ -229,9 +246,10 @@ class GraphAdvisor:
 
             logger.info(
                 "Graph advice %s %s %s: conf=%.2f size=%.2fx rec=%s "
-                "(%d similar, eff=%.1f, %d warnings)",
+                "(%d similar, eff=%.1f, %d warnings, causal=%s)",
                 symbol, direction, regime, confidence, size_modifier,
                 recommendation, similar_trades, total_eff, len(warnings),
+                causal_sentiment,
             )
             return result
 
@@ -615,6 +633,124 @@ class GraphAdvisor:
             return dict(record)
         return None
 
+    def _query_causal_sentiment(
+        self,
+        symbol: str,
+        direction: str,
+        lookback_days: int = 7,
+    ) -> Optional[Dict]:
+        """Check if recent causal chains support or oppose the trade direction.
+
+        Queries CausalChain nodes linked to this symbol via PREDICTS_IMPACT
+        and computes a net sentiment signal plus confidence adjustment.
+
+        Returns:
+            {
+                'sentiment': 'SUPPORTS' | 'OPPOSES' | 'NEUTRAL',
+                'count': int,
+                'confidence_adj': float,  # -0.10 to +0.05
+                'chains': list of chain summaries
+            }
+        """
+        cache_key = f"gadv:causal:{symbol}:{direction}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            with self.graph.driver.session(database=self.graph.database) as sess:
+                result = sess.execute_read(
+                    self._causal_sentiment_tx, symbol, direction, lookback_days,
+                )
+                cache.set(cache_key, result, timeout=CAUSAL_CACHE_TTL)
+                return result
+        except Exception as e:
+            logger.debug("Causal sentiment query failed for %s: %s", symbol, e)
+            return None
+
+    @staticmethod
+    def _causal_sentiment_tx(
+        tx, symbol: str, direction: str, lookback_days: int,
+    ) -> Dict:
+        result = tx.run("""
+            MATCH (cc:CausalChain)-[p:PREDICTS_IMPACT]->(s:Symbol {id: $symbol})
+            WHERE cc.created_at > datetime() - duration({days: $lookback_days})
+            RETURN p.direction AS predicted_direction,
+                   p.confidence AS confidence,
+                   cc.chain_text AS chain_text,
+                   cc.risk_level AS risk_level
+            ORDER BY cc.created_at DESC
+            LIMIT 5
+        """,
+            symbol=symbol,
+            lookback_days=lookback_days,
+        )
+
+        chains = []
+        supporting = 0.0
+        opposing = 0.0
+        total_count = 0
+
+        for record in result:
+            predicted = record['predicted_direction']
+            conf = float(record['confidence'] or 0.5)
+            chain_text = record['chain_text'] or ''
+            risk = record['risk_level'] or 'NORMAL'
+
+            total_count += 1
+            chains.append({
+                'chain_text': chain_text,
+                'direction': predicted,
+                'confidence': conf,
+                'risk_level': risk,
+            })
+
+            # Check if the predicted direction aligns with the trade direction
+            # BUY aligns with BULLISH, SELL aligns with BEARISH
+            dir_map = {'BUY': 'BULLISH', 'SELL': 'BEARISH'}
+            trade_bias = dir_map.get(direction, '')
+
+            if predicted == trade_bias:
+                supporting += conf
+            elif predicted in ('BULLISH', 'BEARISH') and predicted != trade_bias:
+                opposing += conf
+            # NEUTRAL predictions don't count either way
+
+        if total_count == 0:
+            return {
+                'sentiment': 'NEUTRAL',
+                'count': 0,
+                'confidence_adj': 0.0,
+                'chains': [],
+            }
+
+        # Net sentiment and confidence adjustment
+        net = supporting - opposing
+
+        if net > 0.3:
+            sentiment = 'SUPPORTS'
+            # Causal chains agree with trade: modest boost (+0.03 to +0.05)
+            adj = min(0.05, net * 0.05)
+        elif net < -0.3:
+            sentiment = 'OPPOSES'
+            # Causal chains disagree: meaningful penalty (-0.05 to -0.10)
+            adj = max(-0.10, net * 0.08)
+        else:
+            sentiment = 'NEUTRAL'
+            adj = 0.0
+
+        # Extreme risk level amplifies the opposing penalty
+        extreme_count = sum(1 for c in chains if c['risk_level'] == 'EXTREME')
+        if extreme_count > 0 and sentiment == 'OPPOSES':
+            adj = max(-0.10, adj - 0.03 * extreme_count)
+
+        return {
+            'sentiment': sentiment,
+            'count': total_count,
+            'confidence_adj': round(adj, 3),
+            'chains': chains,
+        }
+
     def _detect_warning_patterns(
         self,
         symbol: str,
@@ -751,6 +887,164 @@ class GraphAdvisor:
         return None
 
     # ------------------------------------------------------------------
+    # Reasoning queries (agent memory)
+    # ------------------------------------------------------------------
+
+    def query_winning_reasoning(
+        self,
+        symbol: str,
+        direction: str,
+        lookback_days: int = 30,
+        limit: int = 10,
+    ) -> List[Dict]:
+        """Get reasoning from recent winning trades for this symbol+direction.
+
+        Returns the reasoning patterns that led to wins, ordered by PnL desc.
+        Useful for the advisor to understand what thought process produces winners.
+
+        Args:
+            symbol: Trading instrument (e.g. 'XAGUSD')
+            direction: 'BUY' or 'SELL'
+            lookback_days: How far back to search
+            limit: Max results to return
+
+        Returns:
+            List of dicts with reasoning fields + trade PnL.
+        """
+        if self.graph is None or not self.graph.connected:
+            return []
+
+        cache_key = f"gadv:win_reasoning:{symbol}:{direction}:{lookback_days}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            with self.graph.driver.session(database=self.graph.database) as sess:
+                result = sess.execute_read(
+                    self._winning_reasoning_tx,
+                    symbol, direction, lookback_days, limit,
+                )
+                cache.set(cache_key, result, timeout=ADVISOR_CACHE_TTL)
+                return result
+        except Exception as e:
+            logger.debug("Winning reasoning query failed: %s", e)
+            return []
+
+    @staticmethod
+    def _winning_reasoning_tx(tx, symbol, direction, lookback, limit):
+        result = tx.run("""
+            MATCH (tr:TradeReasoning)-[:REASONING_FOR]->(t:Trade)
+            WHERE t.symbol = $symbol AND t.direction = $direction
+                AND t.pnl > 0
+                AND t.entry_time > datetime() - duration({days: $lookback})
+            RETURN tr.setup_type AS setup_type,
+                   tr.entry_zone AS entry_zone,
+                   tr.htf_trend AS htf_trend,
+                   tr.ltf_phase AS ltf_phase,
+                   tr.mtf_alignment AS mtf_alignment,
+                   tr.mtf_alignment_score AS mtf_alignment_score,
+                   tr.vwap_bias AS vwap_bias,
+                   tr.orderbook_bias AS orderbook_bias,
+                   tr.news_risk AS news_risk,
+                   tr.graph_confidence AS graph_confidence,
+                   tr.graph_recommendation AS graph_recommendation,
+                   tr.rr_ratio AS rr_ratio,
+                   tr.confluence_score AS confluence_score,
+                   tr.sl_source AS sl_source,
+                   tr.tp_source AS tp_source,
+                   tr.reasoning_text AS reasoning_text,
+                   t.pnl AS pnl,
+                   t.return_r AS return_r,
+                   t.strategy AS strategy
+            ORDER BY t.pnl DESC
+            LIMIT $limit
+        """,
+            symbol=symbol,
+            direction=direction,
+            lookback=lookback,
+            limit=limit,
+        )
+        return [dict(record) for record in result]
+
+    def query_losing_reasoning(
+        self,
+        symbol: str,
+        direction: str,
+        lookback_days: int = 30,
+        limit: int = 10,
+    ) -> List[Dict]:
+        """Get reasoning from recent losing trades for this symbol+direction.
+
+        Returns the reasoning patterns that led to losses, ordered by PnL asc.
+        Useful for understanding what thought process produces losers (anti-patterns).
+
+        Args:
+            symbol: Trading instrument
+            direction: 'BUY' or 'SELL'
+            lookback_days: How far back to search
+            limit: Max results to return
+
+        Returns:
+            List of dicts with reasoning fields + trade PnL.
+        """
+        if self.graph is None or not self.graph.connected:
+            return []
+
+        cache_key = f"gadv:lose_reasoning:{symbol}:{direction}:{lookback_days}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            with self.graph.driver.session(database=self.graph.database) as sess:
+                result = sess.execute_read(
+                    self._losing_reasoning_tx,
+                    symbol, direction, lookback_days, limit,
+                )
+                cache.set(cache_key, result, timeout=ADVISOR_CACHE_TTL)
+                return result
+        except Exception as e:
+            logger.debug("Losing reasoning query failed: %s", e)
+            return []
+
+    @staticmethod
+    def _losing_reasoning_tx(tx, symbol, direction, lookback, limit):
+        result = tx.run("""
+            MATCH (tr:TradeReasoning)-[:REASONING_FOR]->(t:Trade)
+            WHERE t.symbol = $symbol AND t.direction = $direction
+                AND t.pnl < 0
+                AND t.entry_time > datetime() - duration({days: $lookback})
+            RETURN tr.setup_type AS setup_type,
+                   tr.entry_zone AS entry_zone,
+                   tr.htf_trend AS htf_trend,
+                   tr.ltf_phase AS ltf_phase,
+                   tr.mtf_alignment AS mtf_alignment,
+                   tr.mtf_alignment_score AS mtf_alignment_score,
+                   tr.vwap_bias AS vwap_bias,
+                   tr.orderbook_bias AS orderbook_bias,
+                   tr.news_risk AS news_risk,
+                   tr.graph_confidence AS graph_confidence,
+                   tr.graph_recommendation AS graph_recommendation,
+                   tr.rr_ratio AS rr_ratio,
+                   tr.confluence_score AS confluence_score,
+                   tr.sl_source AS sl_source,
+                   tr.tp_source AS tp_source,
+                   tr.reasoning_text AS reasoning_text,
+                   t.pnl AS pnl,
+                   t.return_r AS return_r,
+                   t.strategy AS strategy
+            ORDER BY t.pnl ASC
+            LIMIT $limit
+        """,
+            symbol=symbol,
+            direction=direction,
+            lookback=lookback,
+            limit=limit,
+        )
+        return [dict(record) for record in result]
+
+    # ------------------------------------------------------------------
     # Scoring logic
     # ------------------------------------------------------------------
 
@@ -837,6 +1131,8 @@ class GraphAdvisor:
         setup_type: str,
         hour_utc: int,
         effective_sample_size: float,
+        causal_sentiment: str = 'NEUTRAL',
+        causal_chains_count: int = 0,
     ) -> Tuple[str, str]:
         """Build a human-readable recommendation and reasoning string.
 
@@ -880,6 +1176,12 @@ class GraphAdvisor:
         window_end = window_start + 3
         parts.append(f"Hour {window_start}-{window_end} UTC: {time_of_day_wr:.0%} WR")
 
+        # Causal chain sentiment
+        if causal_chains_count > 0 and causal_sentiment != 'NEUTRAL':
+            parts.append(
+                f"Causal chains ({causal_chains_count}): {causal_sentiment} for {direction}"
+            )
+
         for w in warnings:
             parts.append(f"WARNING: {w}")
 
@@ -914,3 +1216,37 @@ def get_trade_advice(symbol: str, direction: str, strategy: str, **kwargs) -> Di
     except Exception as e:
         logger.debug("Graph advisor unavailable: %s", e)
         return dict(_NEUTRAL_ADVICE)
+
+
+def get_trade_reasoning(
+    symbol: str,
+    direction: str,
+    outcome: str = 'win',
+    lookback_days: int = 30,
+    limit: int = 10,
+) -> List[Dict]:
+    """Convenience function — query reasoning from past trades.
+
+    Args:
+        symbol: Trading instrument (e.g. 'XAGUSD')
+        direction: 'BUY' or 'SELL'
+        outcome: 'win' for profitable trades, 'lose' for losing trades
+        lookback_days: How far back to search
+        limit: Max results
+
+    Returns:
+        List of reasoning dicts with trade PnL, or empty list.
+    """
+    try:
+        advisor = GraphAdvisor()
+        if outcome == 'win':
+            return advisor.query_winning_reasoning(
+                symbol, direction, lookback_days, limit,
+            )
+        else:
+            return advisor.query_losing_reasoning(
+                symbol, direction, lookback_days, limit,
+            )
+    except Exception as e:
+        logger.debug("Trade reasoning query unavailable: %s", e)
+        return []

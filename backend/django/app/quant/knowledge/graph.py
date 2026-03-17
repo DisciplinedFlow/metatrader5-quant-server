@@ -8,6 +8,7 @@ if Neo4j is unavailable. Trading continues normally without the graph.
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -102,6 +103,8 @@ class ForexKnowledgeGraph:
                 "CREATE CONSTRAINT strategy_name IF NOT EXISTS FOR (s:Strategy) REQUIRE s.name IS UNIQUE",
                 "CREATE CONSTRAINT news_id IF NOT EXISTS FOR (n:NewsEvent) REQUIRE n.id IS UNIQUE",
                 "CREATE CONSTRAINT regime_id IF NOT EXISTS FOR (r:Regime) REQUIRE r.id IS UNIQUE",
+                "CREATE CONSTRAINT causal_chain_id IF NOT EXISTS FOR (cc:CausalChain) REQUIRE cc.id IS UNIQUE",
+                "CREATE CONSTRAINT trade_reasoning_id IF NOT EXISTS FOR (tr:TradeReasoning) REQUIRE tr.id IS UNIQUE",
             ]
             indexes = [
                 "CREATE INDEX trade_entry_time IF NOT EXISTS FOR (t:Trade) ON (t.entry_time)",
@@ -117,6 +120,9 @@ class ForexKnowledgeGraph:
                 "CREATE INDEX regime_symbol IF NOT EXISTS FOR (r:Regime) ON (r.symbol)",
                 "CREATE INDEX news_timestamp IF NOT EXISTS FOR (n:NewsEvent) ON (n.timestamp)",
                 "CREATE INDEX condition_symbol IF NOT EXISTS FOR (mc:MarketCondition) ON (mc.symbol)",
+                "CREATE INDEX causal_chain_created IF NOT EXISTS FOR (cc:CausalChain) ON (cc.created_at)",
+                "CREATE INDEX trade_reasoning_symbol IF NOT EXISTS FOR (tr:TradeReasoning) ON (tr.symbol)",
+                "CREATE INDEX trade_reasoning_setup IF NOT EXISTS FOR (tr:TradeReasoning) ON (tr.setup_type)",
             ]
             for stmt in constraints + indexes:
                 try:
@@ -280,6 +286,146 @@ class ForexKnowledgeGraph:
         )
         record = result.single()
         return record['trade_id'] if record else trade_id
+
+    def record_trade_reasoning(self, data: Dict[str, Any]) -> Optional[str]:
+        """
+        Record WHY a trade was taken as a separate TradeReasoning node.
+
+        Stores the multi-timeframe context, entry logic, confirmations,
+        graph advisor state, SL/TP reasoning, and a human-readable summary.
+        Linked to the Trade node via REASONING_FOR relationship.
+
+        Args:
+            data: Dict with reasoning fields collected at trade entry time.
+        """
+        if not self.connected:
+            return None
+
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.execute_write(self._create_trade_reasoning_tx, data)
+                logger.info("Recorded trade reasoning %s for trade %s",
+                            result, data.get('trade_id'))
+                return result
+        except Exception as e:
+            logger.error("Failed to record trade reasoning: %s", e)
+            return None
+
+    @staticmethod
+    def _create_trade_reasoning_tx(tx, d: Dict[str, Any]) -> str:
+        reasoning_id = f"reasoning_{d.get('trade_id', uuid.uuid4())}"
+        trade_id = d.get('trade_id', '')
+
+        # Build the trade_id reference used to link to Trade node.
+        # CVD entry stores Trade.id (int), graph stores "trade_{id}".
+        trade_node_id = f"trade_{trade_id}" if not str(trade_id).startswith('trade_') else trade_id
+
+        tx.run("""
+            CREATE (tr:TradeReasoning {
+                id: $reasoning_id,
+                trade_id: $trade_id,
+                symbol: $symbol,
+                direction: $direction,
+
+                htf_trend: $htf_trend,
+                htf_phase: $htf_phase,
+                ltf_trend: $ltf_trend,
+                ltf_phase: $ltf_phase,
+                mtf_alignment: $mtf_alignment,
+                mtf_alignment_score: $mtf_alignment_score,
+                mtf_bias: $mtf_bias,
+                mtf_confidence: $mtf_confidence,
+
+                setup_type: $setup_type,
+                entry_zone: $entry_zone,
+                entry_zone_price: $entry_zone_price,
+                entry_source: $entry_source,
+
+                vwap_bias: $vwap_bias,
+                orderbook_bias: $orderbook_bias,
+                news_risk: $news_risk,
+                news_size_mult: $news_size_mult,
+                llm_decision: $llm_decision,
+                llm_confidence: $llm_confidence,
+
+                graph_confidence: $graph_confidence,
+                graph_recommendation: $graph_recommendation,
+                similar_setups_wr: $similar_setups_wr,
+                similar_setups_count: $similar_setups_count,
+
+                sl_source: $sl_source,
+                tp_source: $tp_source,
+                sl_reasoning: $sl_reasoning,
+                tp_reasoning: $tp_reasoning,
+                rr_ratio: $rr_ratio,
+
+                confluence_score: $confluence_score,
+                confluence_band: $confluence_band,
+                regime_at_entry: $regime_at_entry,
+                regime_confidence: $regime_confidence,
+
+                size_multiplier: $size_multiplier,
+                strategy: $strategy,
+
+                reasoning_text: $reasoning_text,
+                created_at: datetime()
+            })
+            WITH tr
+            OPTIONAL MATCH (t:Trade {id: $trade_node_id})
+            FOREACH (_ IN CASE WHEN t IS NOT NULL THEN [1] ELSE [] END |
+                CREATE (tr)-[:REASONING_FOR]->(t)
+            )
+        """,
+            reasoning_id=reasoning_id,
+            trade_id=str(trade_id),
+            trade_node_id=trade_node_id,
+            symbol=d.get('symbol', 'UNKNOWN'),
+            direction=d.get('direction', 'UNKNOWN'),
+
+            htf_trend=d.get('htf_trend', 'UNKNOWN'),
+            htf_phase=d.get('htf_phase', 'UNKNOWN'),
+            ltf_trend=d.get('ltf_trend', 'UNKNOWN'),
+            ltf_phase=d.get('ltf_phase', 'UNKNOWN'),
+            mtf_alignment=d.get('mtf_alignment', 'UNKNOWN'),
+            mtf_alignment_score=float(d.get('mtf_alignment_score', 0) or 0),
+            mtf_bias=d.get('mtf_bias', 'UNKNOWN'),
+            mtf_confidence=float(d.get('mtf_confidence', 0) or 0),
+
+            setup_type=d.get('setup_type', 'UNKNOWN'),
+            entry_zone=d.get('entry_zone', 'UNKNOWN'),
+            entry_zone_price=float(d.get('entry_zone_price', 0) or 0),
+            entry_source=d.get('entry_source', 'UNKNOWN'),
+
+            vwap_bias=d.get('vwap_bias', 'NEUTRAL'),
+            orderbook_bias=d.get('orderbook_bias', 'NEUTRAL'),
+            news_risk=d.get('news_risk', 'NORMAL'),
+            news_size_mult=float(d.get('news_size_mult', 1.0) or 1.0),
+            llm_decision=d.get('llm_decision', ''),
+            llm_confidence=float(d.get('llm_confidence', 0) or 0),
+
+            graph_confidence=float(d.get('graph_confidence', 0.5) or 0.5),
+            graph_recommendation=d.get('graph_recommendation', 'NORMAL'),
+            similar_setups_wr=float(d.get('similar_setups_wr', 0) or 0),
+            similar_setups_count=int(d.get('similar_setups_count', 0) or 0),
+
+            sl_source=d.get('sl_source', 'ATR'),
+            tp_source=d.get('tp_source', 'ATR'),
+            sl_reasoning=d.get('sl_reasoning', ''),
+            tp_reasoning=d.get('tp_reasoning', ''),
+            rr_ratio=float(d.get('rr_ratio', 0) or 0),
+
+            confluence_score=int(d.get('confluence_score', 0) or 0),
+            confluence_band=d.get('confluence_band', ''),
+            regime_at_entry=d.get('regime_at_entry', 'UNKNOWN'),
+            regime_confidence=float(d.get('regime_confidence', 0) or 0),
+
+            size_multiplier=float(d.get('size_multiplier', 1.0) or 1.0),
+            strategy=d.get('strategy', 'unknown'),
+
+            reasoning_text=d.get('reasoning_text', ''),
+        )
+
+        return reasoning_id
 
     def record_market_condition(self, symbol: str, condition: Dict[str, Any]) -> Optional[str]:
         """Record current market condition snapshot for a symbol."""
@@ -748,6 +894,188 @@ class ForexKnowledgeGraph:
         )
 
         return ps_id
+
+    # ========================================================================
+    # CAUSAL CHAINS — Claude-analyzed event→price patterns
+    # ========================================================================
+
+    def record_causal_chain(self, data: Dict[str, Any]) -> int:
+        """Record causal chains from Claude's news analysis into the graph.
+
+        Each chain becomes a CausalChain node linked to affected Symbol nodes
+        via PREDICTS_IMPACT relationships. Chains are also linked to any
+        matching NewsEvent nodes present in the graph.
+
+        Args:
+            data: Dict with keys:
+                - chains: list of chain strings ("event → effect → price impact")
+                - impacts: dict mapping symbol -> {direction, confidence, reason}
+                - risk_level: 'NORMAL', 'ELEVATED', 'EXTREME'
+                - overall_sentiment: 'RISK_ON', 'RISK_OFF', 'MIXED'
+
+        Returns:
+            Number of chains recorded.
+        """
+        if not self.connected:
+            return 0
+
+        chains = data.get('chains', [])
+        if not chains:
+            return 0
+
+        try:
+            with self.driver.session(database=self.database) as session:
+                count = session.execute_write(
+                    self._create_causal_chains_tx, data
+                )
+                logger.info("Recorded %d causal chains (risk=%s, sentiment=%s)",
+                            count, data.get('risk_level'), data.get('overall_sentiment'))
+                return count
+        except Exception as e:
+            logger.error("Failed to record causal chains: %s", e)
+            return 0
+
+    @staticmethod
+    def _create_causal_chains_tx(tx, data: Dict[str, Any]) -> int:
+        chains = data.get('chains', [])
+        impacts = data.get('impacts', {})
+        risk_level = data.get('risk_level', 'NORMAL')
+        overall_sentiment = data.get('overall_sentiment', 'MIXED')
+        count = 0
+
+        for chain_text in chains[:10]:  # Cap at 10 chains per batch
+            if not chain_text or not isinstance(chain_text, str):
+                continue
+
+            chain_id = f"cc_{uuid.uuid4().hex[:12]}"
+
+            # Parse chain into individual events by splitting on arrow variants
+            events = [
+                e.strip() for e in re.split(r'\s*(?:→|->|=>)\s*', chain_text)
+                if e.strip()
+            ]
+
+            # Create the CausalChain node
+            tx.run("""
+                CREATE (cc:CausalChain {
+                    id: $chain_id,
+                    chain_text: $chain_text,
+                    events: $events,
+                    source: $source,
+                    created_at: datetime(),
+                    risk_level: $risk_level,
+                    overall_sentiment: $overall_sentiment
+                })
+            """,
+                chain_id=chain_id,
+                chain_text=chain_text,
+                events=events,
+                source='CLAUDE_HAIKU',
+                risk_level=risk_level,
+                overall_sentiment=overall_sentiment,
+            )
+
+            # Link to affected symbols via PREDICTS_IMPACT
+            for symbol, impact in impacts.items():
+                if not isinstance(impact, dict):
+                    continue
+                direction = impact.get('direction', 'NEUTRAL')
+                confidence = float(impact.get('confidence', 0.5) or 0.5)
+                reason = impact.get('reason', '')
+
+                tx.run("""
+                    MATCH (cc:CausalChain {id: $chain_id})
+                    MERGE (s:Symbol {id: $symbol})
+                    CREATE (cc)-[:PREDICTS_IMPACT {
+                        direction: $direction,
+                        confidence: $confidence,
+                        reason: $reason
+                    }]->(s)
+                """,
+                    chain_id=chain_id,
+                    symbol=symbol,
+                    direction=direction,
+                    confidence=confidence,
+                    reason=reason,
+                )
+
+            count += 1
+
+        return count
+
+    def query_causal_history(
+        self,
+        symbol: str,
+        lookback_days: int = 7,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Query recent causal chains that predict impact on a symbol.
+
+        Args:
+            symbol: Trading instrument (e.g. 'XAUUSD')
+            lookback_days: How far back to look (default 7 days)
+            limit: Max chains to return (default 5)
+
+        Returns:
+            List of dicts with keys: chain_text, direction, confidence,
+            risk_level, overall_sentiment, created_at
+        """
+        if not self.connected:
+            return []
+
+        cache_key = f"causal_history:{symbol}:{lookback_days}"
+        from django.core.cache import cache
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.execute_read(
+                    self._query_causal_history_tx,
+                    symbol, lookback_days, limit,
+                )
+                cache.set(cache_key, result, timeout=600)  # 10 minute cache
+                return result
+        except Exception as e:
+            logger.debug("Causal history query failed for %s: %s", symbol, e)
+            return []
+
+    @staticmethod
+    def _query_causal_history_tx(
+        tx, symbol: str, lookback_days: int, limit: int,
+    ) -> List[Dict[str, Any]]:
+        result = tx.run("""
+            MATCH (cc:CausalChain)-[p:PREDICTS_IMPACT]->(s:Symbol {id: $symbol})
+            WHERE cc.created_at > datetime() - duration({days: $lookback_days})
+            RETURN cc.chain_text AS chain_text,
+                   p.direction AS direction,
+                   p.confidence AS confidence,
+                   cc.risk_level AS risk_level,
+                   cc.overall_sentiment AS overall_sentiment,
+                   cc.created_at AS created_at
+            ORDER BY cc.created_at DESC
+            LIMIT $limit
+        """,
+            symbol=symbol,
+            lookback_days=lookback_days,
+            limit=limit,
+        )
+
+        chains = []
+        for record in result:
+            created_at = record['created_at']
+            if hasattr(created_at, 'isoformat'):
+                created_at = created_at.isoformat()
+            chains.append({
+                'chain_text': record['chain_text'],
+                'direction': record['direction'],
+                'confidence': record['confidence'],
+                'risk_level': record['risk_level'],
+                'overall_sentiment': record['overall_sentiment'],
+                'created_at': str(created_at),
+            })
+        return chains
 
     # ========================================================================
     # ERA TRACKING — Brain vs Rule-Based trade classification

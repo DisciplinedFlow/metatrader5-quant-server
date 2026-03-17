@@ -1227,11 +1227,7 @@ def record_to_graph(payload):
             trade = Trade.objects.get(id=payload['trade_id'])
             features = payload.get('features', {})
 
-            # Get regime from cache
-            from django.core.cache import cache
-            regime_detail = cache.get(f':1:hmm_regime_detail:{trade.symbol}') or {}
-
-            # Brain-era metadata (passed from entry pipeline via payload)
+            # Entry context cached at trade open time (regime, MTF, confluence, etc.)
             brain_meta = payload.get('brain_meta', {})
 
             trade_data = {
@@ -1247,25 +1243,23 @@ def record_to_graph(payload):
                 'entry_atr': trade.entry_atr,
                 'strategy': trade.strategy or (trade.strategy_config.name if trade.strategy_config else 'unknown'),
                 'closing_reason': trade.closing_reason or '',
-                'confluence_score': features.get('confluence_score', 0),
-                'regime_at_entry': regime_detail.get('label', 'UNKNOWN'),
-                'regime_confidence': regime_detail.get('confidence', 0),
+                'confluence_score': brain_meta.get('confluence_score') or features.get('confluence_score', 0),
+                'regime_at_entry': brain_meta.get('regime_at_entry', 'UNKNOWN'),
+                'regime_confidence': brain_meta.get('regime_confidence', 0),
                 'hour_utc': trade.entry_time.hour if trade.entry_time else 0,
                 'day_of_week': trade.entry_time.weekday() if trade.entry_time else 0,
-                # Brain-era fields
-                'trading_era': brain_meta.get('trading_era', 'BRAIN_V1'),
-                'mtf_bias': brain_meta.get('mtf_bias', 'UNKNOWN'),
-                'mtf_confidence': brain_meta.get('mtf_confidence', 0),
-                'mtf_alignment': brain_meta.get('mtf_alignment', 'UNKNOWN'),
-                'mtf_alignment_score': brain_meta.get('mtf_alignment_score', 0),
-                'sl_source': brain_meta.get('sl_source', 'ATR'),
-                'tp_source': brain_meta.get('tp_source', 'ATR'),
-                'sl_tp_rr': brain_meta.get('sl_tp_rr', 0),
-                'graph_confidence': brain_meta.get('graph_confidence', 0.5),
-                'graph_recommendation': brain_meta.get('graph_recommendation', 'NORMAL'),
-                'graph_size_modifier': brain_meta.get('graph_size_modifier', 1.0),
-                'news_risk': brain_meta.get('news_risk', 'NORMAL'),
             }
+            # Only include brain-era fields if we have real data (not defaults)
+            if brain_meta:
+                trade_data.update({
+                    'mtf_bias': brain_meta.get('mtf_bias', 'UNKNOWN'),
+                    'mtf_confidence': brain_meta.get('mtf_confidence', 0),
+                    'mtf_alignment': brain_meta.get('mtf_alignment', 'UNKNOWN'),
+                    'graph_confidence': brain_meta.get('graph_confidence', 0.5),
+                    'graph_recommendation': brain_meta.get('graph_recommendation', 'NORMAL'),
+                    'sl_source': brain_meta.get('sl_source', 'ATR'),
+                    'tp_source': brain_meta.get('tp_source', 'ATR'),
+                })
             graph.record_trade(trade_data)
 
         elif record_type == 'lighter_trade':
@@ -1303,8 +1297,14 @@ def record_to_graph(payload):
         elif record_type == 'htf_bias':
             graph.record_htf_bias(payload)
 
+        elif record_type == 'causal_chains':
+            graph.record_causal_chain(payload)
+
         elif record_type == 'performance_snapshot':
             graph.record_performance_snapshot(payload)
+
+        elif record_type == 'trade_reasoning':
+            graph.record_trade_reasoning(payload.get('reasoning', payload))
 
         elif record_type == 'era_transition':
             graph.record_era_transition(payload)

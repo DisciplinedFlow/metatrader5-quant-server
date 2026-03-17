@@ -2121,6 +2121,88 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                             except Exception as e:
                                 logger.warning(f"CVD: Could not save ML features: {e}")
 
+                            # Cache entry context for knowledge graph (read back at close time)
+                            try:
+                                from django.core.cache import cache as _cache
+                                _cache.set(f'entry_context:{order_ticket}', {
+                                    'confluence_score': confluence_score.total_score if confluence_score else 0,
+                                    'regime_at_entry': routing.regime if 'routing' in dir() and routing else 'UNKNOWN',
+                                    'regime_confidence': routing.confidence if 'routing' in dir() and routing else 0,
+                                    'mtf_bias': mtf.get('bias') if mtf else 'UNKNOWN',
+                                    'mtf_confidence': mtf.get('confidence', 0) if mtf else 0,
+                                    'mtf_alignment': mtf.get('alignment', 'UNKNOWN') if mtf else 'UNKNOWN',
+                                    'graph_confidence': advice.get('confidence', 0.5) if advice else 0.5,
+                                    'graph_recommendation': advice.get('recommendation', 'NORMAL') if advice else 'NORMAL',
+                                    'sl_source': sl_tp_source.split('/')[0] if sl_tp_source else 'ATR',
+                                    'tp_source': sl_tp_source.split('/')[-1] if sl_tp_source else 'ATR',
+                                }, timeout=172800)  # 48h TTL
+                            except Exception:
+                                pass
+
+                            # Record WHY this trade was taken (agent memory)
+                            try:
+                                from app.quant.tasks import record_to_graph as _rtg
+                                _sl_dist = abs(last_tick_price - sl_price)
+                                _tp_dist = abs(tp_price - last_tick_price)
+                                _rr = round(_tp_dist / _sl_dist, 2) if _sl_dist > 0 else 0
+                                _reasoning_text = (
+                                    f"CVD {signal_desc} on {pair} {order_type}. "
+                                    f"Confluence {confluence_score.total_score if confluence_score else 'N/A'}"
+                                    f"/{confluence_score.max_possible if confluence_score else 'N/A'} "
+                                    f"({confluence_score.band if confluence_score else 'N/A'}). "
+                                    f"MTF bias={mtf.get('bias') if mtf else 'N/A'} "
+                                    f"(conf={mtf.get('confidence', 0) if mtf else 0:.2f}). "
+                                    f"SL/TP: {sl_tp_source}, R:R={_rr}. "
+                                    f"Graph: {advice.get('recommendation', 'N/A') if advice else 'N/A'} "
+                                    f"(conf={advice.get('confidence', 0.5) if advice else 0.5:.2f}). "
+                                    f"News={news_risk.get('risk_level', 'NORMAL') if isinstance(news_risk, dict) else 'NORMAL'}. "
+                                    f"Router regime={routing.regime if 'routing' in dir() and routing else 'N/A'}."
+                                )
+                                _rtg.delay({
+                                    'type': 'trade_reasoning',
+                                    'reasoning': {
+                                        'trade_id': trade_obj.id,
+                                        'symbol': pair,
+                                        'direction': order_type,
+                                        'htf_trend': mtf.get('htf_trend', 'UNKNOWN') if mtf else 'UNKNOWN',
+                                        'htf_phase': mtf.get('htf_phase', 'UNKNOWN') if mtf else 'UNKNOWN',
+                                        'ltf_trend': mtf.get('ltf_trend', 'UNKNOWN') if mtf else 'UNKNOWN',
+                                        'ltf_phase': mtf.get('ltf_phase', 'UNKNOWN') if mtf else 'UNKNOWN',
+                                        'mtf_alignment': mtf.get('alignment', 'UNKNOWN') if mtf else 'UNKNOWN',
+                                        'mtf_alignment_score': mtf.get('alignment_score', 0) if mtf else 0,
+                                        'mtf_bias': mtf.get('bias', 'UNKNOWN') if mtf else 'UNKNOWN',
+                                        'mtf_confidence': mtf.get('confidence', 0) if mtf else 0,
+                                        'setup_type': 'CVD_SIGNAL',
+                                        'entry_zone': 'CVD_DIVERGENCE',
+                                        'entry_zone_price': float(last_tick_price),
+                                        'entry_source': 'CVD',
+                                        'vwap_bias': vwap_bias or 'NEUTRAL',
+                                        'orderbook_bias': ob_bias or 'NEUTRAL',
+                                        'news_risk': news_risk.get('risk_level', 'NORMAL') if isinstance(news_risk, dict) else 'NORMAL',
+                                        'news_size_mult': news_mult if 'news_mult' in dir() else 1.0,
+                                        'llm_decision': llm_result.decision if llm_result else '',
+                                        'llm_confidence': llm_result.confidence if llm_result else 0,
+                                        'graph_confidence': advice.get('confidence', 0.5) if advice else 0.5,
+                                        'graph_recommendation': advice.get('recommendation', 'NORMAL') if advice else 'NORMAL',
+                                        'similar_setups_wr': advice.get('similar_wr', 0) if advice else 0,
+                                        'similar_setups_count': advice.get('similar_trades', 0) if advice else 0,
+                                        'sl_source': sl_tp_source.split('(')[0].strip() if sl_tp_source else 'ATR',
+                                        'tp_source': sl_tp_source.split('/')[-1].split(',')[0].strip() if sl_tp_source else 'ATR',
+                                        'sl_reasoning': f"SL at {sl_price:.{price_decimals}f} via {sl_tp_source}",
+                                        'tp_reasoning': f"TP at {tp_price:.{price_decimals}f} via {sl_tp_source}",
+                                        'rr_ratio': _rr,
+                                        'confluence_score': confluence_score.total_score if confluence_score else 0,
+                                        'confluence_band': confluence_score.band if confluence_score else '',
+                                        'regime_at_entry': routing.regime if 'routing' in dir() and routing else 'UNKNOWN',
+                                        'regime_confidence': routing.confidence if 'routing' in dir() and routing else 0,
+                                        'size_multiplier': size_multiplier,
+                                        'strategy': custom.name,
+                                        'reasoning_text': _reasoning_text,
+                                    },
+                                })
+                            except Exception:
+                                pass  # Reasoning recording is fire-and-forget
+
                             # Broadcast via WebSocket (fire-and-forget)
                             try:
                                 from app.ws.publisher import publish_trade_opened

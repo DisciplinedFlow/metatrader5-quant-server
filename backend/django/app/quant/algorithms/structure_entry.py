@@ -1227,6 +1227,63 @@ def run_structure_scanner():
                         except Exception as e:
                             logger.warning("Structure scanner: could not save TradeFeature: %s", e)
 
+                        # Record WHY this trade was taken (agent memory)
+                        try:
+                            from app.quant.tasks import record_to_graph as _rtg
+                            _reasoning_text = (
+                                f"{signal['setup_type']} on {symbol} {direction}. "
+                                f"{signal.get('reasoning', '')} "
+                                f"SL: {signal['sl_source']} at {signal['sl_price']:.5f}, "
+                                f"TP: {signal['tp_source']} at {signal['tp_price']:.5f}, "
+                                f"R:R={signal['rr_ratio']:.2f}. "
+                                f"Graph conf={signal.get('graph_confidence', 0.5):.2f}. "
+                                f"News size mult={signal.get('news_size_mult', 1.0):.2f}."
+                            )
+                            _rtg.delay({
+                                'type': 'trade_reasoning',
+                                'reasoning': {
+                                    'trade_id': trade_obj.id,
+                                    'symbol': symbol,
+                                    'direction': direction,
+                                    'htf_trend': signal.get('htf_trend', 'UNKNOWN'),
+                                    'htf_phase': 'UNKNOWN',
+                                    'ltf_trend': 'UNKNOWN',
+                                    'ltf_phase': signal.get('ltf_phase', 'UNKNOWN'),
+                                    'mtf_alignment': 'ALIGNED' if signal.get('mtf_alignment_score', 0) >= 7 else 'DIVERGING',
+                                    'mtf_alignment_score': signal.get('mtf_alignment_score', 0),
+                                    'mtf_bias': signal.get('htf_trend', 'UNKNOWN'),
+                                    'mtf_confidence': signal.get('confidence', 0),
+                                    'setup_type': signal.get('setup_type', 'UNKNOWN'),
+                                    'entry_zone': signal.get('entry_zone', 'UNKNOWN'),
+                                    'entry_zone_price': signal.get('entry_price', 0),
+                                    'entry_source': 'STRUCTURE',
+                                    'vwap_bias': 'BULLISH' if signal.get('vwap_aligned') else 'NEUTRAL',
+                                    'orderbook_bias': 'BULLISH' if signal.get('ob_aligned') else 'NEUTRAL',
+                                    'news_risk': 'ELEVATED' if signal.get('news_size_mult', 1.0) < 1.0 else 'NORMAL',
+                                    'news_size_mult': signal.get('news_size_mult', 1.0),
+                                    'llm_decision': '',
+                                    'llm_confidence': 0,
+                                    'graph_confidence': signal.get('graph_confidence', 0.5),
+                                    'graph_recommendation': 'NORMAL',
+                                    'similar_setups_wr': 0,
+                                    'similar_setups_count': 0,
+                                    'sl_source': signal.get('sl_source', 'ATR'),
+                                    'tp_source': signal.get('tp_source', 'ATR'),
+                                    'sl_reasoning': f"SL at {signal['sl_price']:.5f} via {signal.get('sl_source', 'ATR')}",
+                                    'tp_reasoning': f"TP at {signal['tp_price']:.5f} via {signal.get('tp_source', 'ATR')}",
+                                    'rr_ratio': signal.get('rr_ratio', 0),
+                                    'confluence_score': signal.get('mtf_alignment_score', 0),
+                                    'confluence_band': '',
+                                    'regime_at_entry': signal.get('htf_trend', 'UNKNOWN'),
+                                    'regime_confidence': signal.get('confidence', 0),
+                                    'size_multiplier': signal.get('news_size_mult', 1.0) * signal.get('graph_size_mult', 1.0),
+                                    'strategy': f"STRUCT_{signal.get('setup_type', 'UNKNOWN')}",
+                                    'reasoning_text': _reasoning_text,
+                                },
+                            })
+                        except Exception:
+                            pass  # Reasoning recording is fire-and-forget
+
                 except Exception as e:
                     logger.error("Structure scanner: trade record creation failed for %s: %s", symbol, e)
                     summary['errors'] += 1
