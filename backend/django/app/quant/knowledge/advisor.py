@@ -1,13 +1,19 @@
 """Neo4j Pattern Advisor — consults the knowledge graph before each trade.
 
 Before entering a trade, asks the graph:
-1. What happened in similar setups? (win rate, avg R:R)
+1. What happened in similar setups? (time-weighted win rate, avg R:R)
 2. How does this symbol perform in the current regime?
 3. What's the news-adjusted historical performance?
 4. Are there any warning patterns? (losing streaks on this setup type)
+5. How does this setup type perform recently?
+6. How does this symbol+direction perform at this hour of day?
 
 Returns a confidence score (0-1) and sizing recommendation.
 The advisor is CONSULTATIVE — it informs, not blocks.
+
+Temporal decay: recent trades weighted exponentially more than old ones.
+Half-life = 7 days  =>  7d ago = 0.5x, 14d = 0.25x, 30d = 0.02x.
+Brain era awareness: BRAIN_V1 trades get 2x weight over RULE_BASED.
 """
 
 import logging
@@ -19,6 +25,8 @@ logger = logging.getLogger('quant')
 
 ADVISOR_CACHE_TTL = 300  # 5 minutes
 MIN_SAMPLE_SIZE = 3      # Need at least 3 similar trades to make a recommendation
+DECAY_HALF_LIFE_DAYS = 7  # Exponential decay half-life in days
+LN2 = 0.693147           # ln(2) for decay formula
 
 # Neutral defaults when graph is unavailable
 _NEUTRAL_ADVICE = {
@@ -29,10 +37,46 @@ _NEUTRAL_ADVICE = {
     'similar_avg_r': 0.0,
     'symbol_regime_wr': 0.5,
     'news_risk_wr': 0.5,
+    'setup_type_wr': 0.5,
+    'time_of_day_wr': 0.5,
+    'effective_sample_size': 0.0,
     'warnings': [],
     'recommendation': 'NORMAL',
     'reasoning': 'Graph advisor unavailable — using neutral defaults',
 }
+
+# Cypher snippet for temporal decay with brain era awareness.
+# Neo4j 5.x supports exp() and duration.between().
+# Produces columns: weight (combined temporal + era weight)
+#
+# NOTE: If exp() is unavailable on your Neo4j build, replace with the
+# polynomial approximation in _DECAY_WEIGHT_POLY below.
+_DECAY_WEIGHT_CYPHER = """
+    duration.between(t.entry_time, datetime()).days AS age_days,
+    exp(-{ln2} * toFloat(duration.between(t.entry_time, datetime()).days) / {half_life}) AS time_weight,
+    CASE WHEN t.trading_era = 'BRAIN_V1' THEN 2.0 ELSE 1.0 END AS era_weight
+WITH t, age_days, time_weight, era_weight,
+     time_weight * era_weight AS weight
+""".format(ln2=LN2, half_life=DECAY_HALF_LIFE_DAYS)
+
+# Polynomial approximation of exp(-0.099x) for x in [0, 90],
+# used if Neo4j lacks exp(). Accuracy ~5% for 0-90 day range.
+_DECAY_WEIGHT_POLY = """
+    duration.between(t.entry_time, datetime()).days AS age_days,
+    CASE
+        WHEN duration.between(t.entry_time, datetime()).days <= 0 THEN 1.0
+        WHEN duration.between(t.entry_time, datetime()).days > 90 THEN 0.001
+        ELSE 1.0 - 0.08 * toFloat(duration.between(t.entry_time, datetime()).days)
+             + 0.002 * toFloat(duration.between(t.entry_time, datetime()).days)
+               * toFloat(duration.between(t.entry_time, datetime()).days)
+             - 0.00002 * toFloat(duration.between(t.entry_time, datetime()).days)
+               * toFloat(duration.between(t.entry_time, datetime()).days)
+               * toFloat(duration.between(t.entry_time, datetime()).days)
+    END AS time_weight,
+    CASE WHEN t.trading_era = 'BRAIN_V1' THEN 2.0 ELSE 1.0 END AS era_weight
+WITH t, age_days, time_weight, era_weight,
+     CASE WHEN time_weight < 0.001 THEN 0.001 ELSE time_weight END * era_weight AS weight
+"""
 
 
 class GraphAdvisor:
@@ -41,6 +85,7 @@ class GraphAdvisor:
     def __init__(self):
         from app.quant.knowledge.connection import get_graph
         self.graph = get_graph()
+        self._use_exp = True  # Assume exp() available; fallback on first failure
 
     def consult(
         self,
@@ -52,8 +97,20 @@ class GraphAdvisor:
         session: str = 'unknown',
         news_risk: str = 'NORMAL',
         hour_utc: int = 0,
+        setup_type: str = '',
     ) -> Dict:
         """Get advisory recommendation for a trade.
+
+        Args:
+            symbol: Trading instrument (e.g. 'EURUSD')
+            direction: 'BUY' or 'SELL'
+            strategy: Strategy name
+            regime: HMM regime label
+            confluence_score: 0-14 confluence score
+            session: Trading session (e.g. 'london', 'new_york')
+            news_risk: 'NORMAL', 'ELEVATED', 'EXTREME'
+            hour_utc: Current hour in UTC (0-23)
+            setup_type: 'TREND_CONTINUATION', 'BREAKOUT', 'REVERSAL', 'RANGE_FADE', or ''
 
         Returns:
             {
@@ -64,6 +121,9 @@ class GraphAdvisor:
                 'similar_avg_r': float,
                 'symbol_regime_wr': float,
                 'news_risk_wr': float,
+                'setup_type_wr': float,
+                'time_of_day_wr': float,
+                'effective_sample_size': float,
                 'warnings': [],
                 'recommendation': str,   # 'STRONG', 'NORMAL', 'CAUTION', 'AVOID'
                 'reasoning': str,
@@ -73,7 +133,7 @@ class GraphAdvisor:
             return dict(_NEUTRAL_ADVICE)
 
         try:
-            # Run all four queries
+            # Run all six queries
             similar = self._query_similar_setups(
                 symbol, direction, regime, confluence_score, session
             )
@@ -83,40 +143,72 @@ class GraphAdvisor:
             )
             warnings = self._detect_warning_patterns(symbol, direction)
 
+            # New queries
+            setup_perf = (
+                self._query_setup_type_performance(setup_type, symbol)
+                if setup_type else None
+            )
+            tod_perf = self._query_time_of_day_performance(
+                symbol, direction, hour_utc
+            )
+
             # Extract win rates (use 0.5 neutral if sample too small)
+            similar_eff_size = similar.get('effective_sample_size', 0) if similar else 0
             similar_trades = similar.get('total', 0) if similar else 0
             similar_wr = (
-                similar['win_rate'] if similar and similar_trades >= MIN_SAMPLE_SIZE
+                similar['weighted_wr']
+                if similar and similar_eff_size >= MIN_SAMPLE_SIZE
                 else 0.5
             )
             similar_avg_r = (
-                similar['avg_r'] if similar and similar_trades >= MIN_SAMPLE_SIZE
+                similar['weighted_avg_r']
+                if similar and similar_eff_size >= MIN_SAMPLE_SIZE
                 else 0.0
             )
 
-            sym_regime_total = sym_regime.get('total', 0) if sym_regime else 0
+            sym_regime_eff = sym_regime.get('effective_sample_size', 0) if sym_regime else 0
             symbol_regime_wr = (
-                sym_regime['win_rate']
-                if sym_regime and sym_regime_total >= MIN_SAMPLE_SIZE
+                sym_regime['weighted_wr']
+                if sym_regime and sym_regime_eff >= MIN_SAMPLE_SIZE
                 else 0.5
             )
 
-            news_total = news_perf.get('total', 0) if news_perf else 0
+            news_eff = news_perf.get('effective_sample_size', 0) if news_perf else 0
             news_risk_wr = (
-                news_perf['win_rate']
-                if news_perf and news_total >= MIN_SAMPLE_SIZE
+                news_perf['weighted_wr']
+                if news_perf and news_eff >= MIN_SAMPLE_SIZE
                 else 0.5
             )
+
+            setup_eff = setup_perf.get('effective_sample_size', 0) if setup_perf else 0
+            setup_type_wr = (
+                setup_perf['weighted_wr']
+                if setup_perf and setup_eff >= MIN_SAMPLE_SIZE
+                else 0.5
+            )
+
+            tod_eff = tod_perf.get('effective_sample_size', 0) if tod_perf else 0
+            time_of_day_wr = (
+                tod_perf['weighted_wr']
+                if tod_perf and tod_eff >= MIN_SAMPLE_SIZE
+                else 0.5
+            )
+
+            # Total effective sample size across all queries
+            total_eff = similar_eff_size + sym_regime_eff + news_eff + setup_eff + tod_eff
 
             # Calculate overall confidence and sizing
             confidence = self._calculate_confidence(
-                similar_wr, symbol_regime_wr, news_risk_wr, warnings
+                similar_wr, symbol_regime_wr, news_risk_wr,
+                setup_type_wr, time_of_day_wr, warnings, total_eff,
             )
             size_modifier = self._calculate_size_modifier(confidence)
             recommendation, reasoning = self._build_recommendation(
                 confidence, similar_trades, similar_wr, similar_avg_r,
-                symbol_regime_wr, news_risk_wr, warnings, symbol, direction,
-                regime, news_risk,
+                symbol_regime_wr, news_risk_wr, setup_type_wr,
+                time_of_day_wr, warnings, symbol, direction,
+                regime, news_risk, setup_type, hour_utc,
+                similar_eff_size,
             )
 
             result = {
@@ -127,15 +219,19 @@ class GraphAdvisor:
                 'similar_avg_r': round(similar_avg_r or 0, 3),
                 'symbol_regime_wr': round(symbol_regime_wr, 3),
                 'news_risk_wr': round(news_risk_wr, 3),
+                'setup_type_wr': round(setup_type_wr, 3),
+                'time_of_day_wr': round(time_of_day_wr, 3),
+                'effective_sample_size': round(total_eff, 1),
                 'warnings': warnings,
                 'recommendation': recommendation,
                 'reasoning': reasoning,
             }
 
             logger.info(
-                "Graph advice %s %s %s: conf=%.2f size=%.2fx rec=%s (%d similar, %d warnings)",
+                "Graph advice %s %s %s: conf=%.2f size=%.2fx rec=%s "
+                "(%d similar, eff=%.1f, %d warnings)",
                 symbol, direction, regime, confidence, size_modifier,
-                recommendation, similar_trades, len(warnings),
+                recommendation, similar_trades, total_eff, len(warnings),
             )
             return result
 
@@ -144,7 +240,28 @@ class GraphAdvisor:
             return dict(_NEUTRAL_ADVICE)
 
     # ------------------------------------------------------------------
-    # Query methods
+    # Decay weight Cypher helper
+    # ------------------------------------------------------------------
+
+    @property
+    def _decay_cypher(self) -> str:
+        """Return the appropriate decay weight Cypher snippet."""
+        return _DECAY_WEIGHT_CYPHER if self._use_exp else _DECAY_WEIGHT_POLY
+
+    def _run_weighted_query(self, tx_func, *args):
+        """Run a weighted query, falling back to polynomial if exp() fails."""
+        try:
+            return tx_func(*args, use_exp=True)
+        except Exception as e:
+            err_str = str(e).lower()
+            if 'unknown function' in err_str and 'exp' in err_str:
+                logger.warning("Neo4j exp() unavailable, falling back to polynomial decay")
+                self._use_exp = False
+                return tx_func(*args, use_exp=False)
+            raise
+
+    # ------------------------------------------------------------------
+    # Query methods (all with temporal decay + era awareness)
     # ------------------------------------------------------------------
 
     def _query_similar_setups(
@@ -156,25 +273,35 @@ class GraphAdvisor:
         session: str,
         lookback_days: int = 90,
     ) -> Optional[Dict]:
-        """Find trades with similar parameters in the last N days.
+        """Find trades with similar parameters, weighted by recency + era.
 
         Match on: same symbol, same direction, similar regime,
         confluence score within +/-2, same session.
+        Returns weighted_wr instead of flat win_rate.
         """
+        cache_key = f"gadv:similar:{symbol}:{direction}:{regime}:{confluence_score}:{session}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             with self.graph.driver.session(database=self.graph.database) as sess:
                 result = sess.execute_read(
-                    self._similar_setups_tx,
-                    symbol, direction, regime, confluence_score,
-                    session, lookback_days,
+                    lambda tx: self._run_weighted_query(
+                        self._similar_setups_tx, tx,
+                        symbol, direction, regime, confluence_score,
+                        session, lookback_days,
+                    )
                 )
+                cache.set(cache_key, result, timeout=ADVISOR_CACHE_TTL)
                 return result
         except Exception as e:
             logger.debug("Similar setups query failed: %s", e)
             return None
 
     @staticmethod
-    def _similar_setups_tx(tx, symbol, direction, regime, conf, session, lookback):
+    def _similar_setups_tx(tx, symbol, direction, regime, conf, session, lookback, use_exp=True):
+        decay = _DECAY_WEIGHT_CYPHER if use_exp else _DECAY_WEIGHT_POLY
         result = tx.run("""
             MATCH (t:Trade)
             WHERE t.symbol = $symbol
@@ -182,16 +309,19 @@ class GraphAdvisor:
               AND t.regime_at_entry = $regime
               AND abs(t.confluence_score - $conf) <= 2
               AND t.session = $session
-              AND t.entry_time > datetime() - duration({days: $lookback})
+              AND t.entry_time > datetime() - duration({{days: $lookback}})
+            WITH t,
+                 {decay}
             RETURN
                 count(t) AS total,
-                sum(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS wins,
-                CASE WHEN count(t) > 0
-                     THEN sum(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) * 1.0 / count(t)
-                     ELSE 0.0 END AS win_rate,
-                avg(t.pnl) AS avg_pnl,
-                avg(t.return_r) AS avg_r
-        """,
+                sum(CASE WHEN t.pnl > 0 THEN weight ELSE 0 END) / sum(weight) AS weighted_wr,
+                sum(weight) AS effective_sample_size,
+                sum(CASE WHEN t.pnl > 0 THEN weight ELSE 0 END) AS weighted_wins,
+                CASE WHEN sum(weight) > 0
+                     THEN sum(t.return_r * weight) / sum(weight)
+                     ELSE 0.0 END AS weighted_avg_r,
+                avg(t.pnl) AS avg_pnl
+        """.format(decay=decay),
             symbol=symbol,
             direction=direction,
             regime=regime,
@@ -210,32 +340,47 @@ class GraphAdvisor:
         regime: str,
         lookback_days: int = 90,
     ) -> Optional[Dict]:
-        """How does this symbol perform in this regime?"""
+        """How does this symbol perform in this regime? (time-weighted)"""
+        cache_key = f"gadv:symregime:{symbol}:{regime}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             with self.graph.driver.session(database=self.graph.database) as sess:
                 result = sess.execute_read(
-                    self._symbol_regime_tx, symbol, regime, lookback_days,
+                    lambda tx: self._run_weighted_query(
+                        self._symbol_regime_tx, tx,
+                        symbol, regime, lookback_days,
+                    )
                 )
+                cache.set(cache_key, result, timeout=ADVISOR_CACHE_TTL)
                 return result
         except Exception as e:
             logger.debug("Symbol-regime query failed: %s", e)
             return None
 
     @staticmethod
-    def _symbol_regime_tx(tx, symbol, regime, lookback):
+    def _symbol_regime_tx(tx, symbol, regime, lookback, use_exp=True):
+        decay = _DECAY_WEIGHT_CYPHER if use_exp else _DECAY_WEIGHT_POLY
         result = tx.run("""
             MATCH (t:Trade)
             WHERE t.symbol = $symbol
               AND t.regime_at_entry = $regime
-              AND t.entry_time > datetime() - duration({days: $lookback})
+              AND t.entry_time > datetime() - duration({{days: $lookback}})
+            WITH t,
+                 {decay}
             RETURN
                 count(t) AS total,
-                CASE WHEN count(t) > 0
-                     THEN sum(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) * 1.0 / count(t)
-                     ELSE 0.0 END AS win_rate,
-                avg(t.return_r) AS avg_r,
+                CASE WHEN sum(weight) > 0
+                     THEN sum(CASE WHEN t.pnl > 0 THEN weight ELSE 0 END) / sum(weight)
+                     ELSE 0.0 END AS weighted_wr,
+                sum(weight) AS effective_sample_size,
+                CASE WHEN sum(weight) > 0
+                     THEN sum(t.return_r * weight) / sum(weight)
+                     ELSE 0.0 END AS weighted_avg_r,
                 avg(t.pnl) AS avg_pnl
-        """,
+        """.format(decay=decay),
             symbol=symbol,
             regime=regime,
             lookback=lookback,
@@ -252,45 +397,58 @@ class GraphAdvisor:
         news_risk: str,
         lookback_days: int = 90,
     ) -> Optional[Dict]:
-        """How do trades perform under this news risk level?
+        """How do trades perform under this news risk level? (time-weighted)
 
         News risk is not stored on Trade nodes directly, so we approximate:
         - NORMAL: all trades (baseline)
-        - ELEVATED: trades where return_r < 0 are weighted more (proxy for
-          volatile conditions). We use regime=VOLATILE as a proxy.
+        - ELEVATED: trades where regime is volatile (proxy for volatile conditions)
         - EXTREME: same as ELEVATED but stricter filter.
 
         If the graph eventually stores news_risk on Trade nodes, this query
         should be updated to match directly.
         """
+        cache_key = f"gadv:news:{symbol}:{direction}:{news_risk}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             with self.graph.driver.session(database=self.graph.database) as sess:
                 result = sess.execute_read(
-                    self._news_risk_tx, symbol, direction, news_risk, lookback_days,
+                    lambda tx: self._run_weighted_query(
+                        self._news_risk_tx, tx,
+                        symbol, direction, news_risk, lookback_days,
+                    )
                 )
+                cache.set(cache_key, result, timeout=ADVISOR_CACHE_TTL)
                 return result
         except Exception as e:
             logger.debug("News-risk query failed: %s", e)
             return None
 
     @staticmethod
-    def _news_risk_tx(tx, symbol, direction, news_risk, lookback):
-        # For NORMAL risk, look at all trades for this symbol+direction.
-        # For ELEVATED/EXTREME, filter to volatile regimes as a proxy.
+    def _news_risk_tx(tx, symbol, direction, news_risk, lookback, use_exp=True):
+        decay = _DECAY_WEIGHT_CYPHER if use_exp else _DECAY_WEIGHT_POLY
+        # For ELEVATED/EXTREME risk, filter to volatile regimes as a proxy.
         if news_risk in ('ELEVATED', 'EXTREME'):
             result = tx.run("""
                 MATCH (t:Trade)
                 WHERE t.symbol = $symbol
                   AND t.direction = $direction
                   AND t.regime_at_entry IN ['VOLATILE', 'HIGH_VOL', 'CHOPPY']
-                  AND t.entry_time > datetime() - duration({days: $lookback})
+                  AND t.entry_time > datetime() - duration({{days: $lookback}})
+                WITH t,
+                     {decay}
                 RETURN
                     count(t) AS total,
-                    CASE WHEN count(t) > 0
-                         THEN sum(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) * 1.0 / count(t)
-                         ELSE 0.0 END AS win_rate,
-                    avg(t.return_r) AS avg_r
-            """,
+                    CASE WHEN sum(weight) > 0
+                         THEN sum(CASE WHEN t.pnl > 0 THEN weight ELSE 0 END) / sum(weight)
+                         ELSE 0.0 END AS weighted_wr,
+                    sum(weight) AS effective_sample_size,
+                    CASE WHEN sum(weight) > 0
+                         THEN sum(t.return_r * weight) / sum(weight)
+                         ELSE 0.0 END AS weighted_avg_r
+            """.format(decay=decay),
                 symbol=symbol,
                 direction=direction,
                 lookback=lookback,
@@ -300,19 +458,158 @@ class GraphAdvisor:
                 MATCH (t:Trade)
                 WHERE t.symbol = $symbol
                   AND t.direction = $direction
-                  AND t.entry_time > datetime() - duration({days: $lookback})
+                  AND t.entry_time > datetime() - duration({{days: $lookback}})
+                WITH t,
+                     {decay}
                 RETURN
                     count(t) AS total,
-                    CASE WHEN count(t) > 0
-                         THEN sum(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) * 1.0 / count(t)
-                         ELSE 0.0 END AS win_rate,
-                    avg(t.return_r) AS avg_r
-            """,
+                    CASE WHEN sum(weight) > 0
+                         THEN sum(CASE WHEN t.pnl > 0 THEN weight ELSE 0 END) / sum(weight)
+                         ELSE 0.0 END AS weighted_wr,
+                    sum(weight) AS effective_sample_size,
+                    CASE WHEN sum(weight) > 0
+                         THEN sum(t.return_r * weight) / sum(weight)
+                         ELSE 0.0 END AS weighted_avg_r
+            """.format(decay=decay),
                 symbol=symbol,
                 direction=direction,
                 lookback=lookback,
             )
 
+        record = result.single()
+        if record and record['total'] > 0:
+            return dict(record)
+        return None
+
+    def _query_setup_type_performance(
+        self,
+        setup_type: str,
+        symbol: str = None,
+        lookback_days: int = 30,
+    ) -> Optional[Dict]:
+        """How does this setup type perform recently? (time-weighted)
+
+        setup_type: 'TREND_CONTINUATION', 'BREAKOUT', 'REVERSAL', 'RANGE_FADE'
+        Matches trades where the strategy name contains the setup_type keyword.
+        """
+        if not setup_type:
+            return None
+
+        cache_key = f"gadv:setup:{setup_type}:{symbol or 'ALL'}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            with self.graph.driver.session(database=self.graph.database) as sess:
+                result = sess.execute_read(
+                    lambda tx: self._run_weighted_query(
+                        self._setup_type_tx, tx,
+                        setup_type, symbol, lookback_days,
+                    )
+                )
+                cache.set(cache_key, result, timeout=ADVISOR_CACHE_TTL)
+                return result
+        except Exception as e:
+            logger.debug("Setup type query failed: %s", e)
+            return None
+
+    @staticmethod
+    def _setup_type_tx(tx, setup_type, symbol, lookback, use_exp=True):
+        decay = _DECAY_WEIGHT_CYPHER if use_exp else _DECAY_WEIGHT_POLY
+        # Build WHERE clause: always match setup_type in strategy, optionally filter by symbol
+        where_symbol = "AND t.symbol = $symbol" if symbol else ""
+        result = tx.run("""
+            MATCH (t:Trade)
+            WHERE toLower(t.strategy) CONTAINS toLower($setup_type)
+              {where_symbol}
+              AND t.entry_time > datetime() - duration({{days: $lookback}})
+            WITH t,
+                 {decay}
+            RETURN
+                count(t) AS total,
+                CASE WHEN sum(weight) > 0
+                     THEN sum(CASE WHEN t.pnl > 0 THEN weight ELSE 0 END) / sum(weight)
+                     ELSE 0.0 END AS weighted_wr,
+                sum(weight) AS effective_sample_size,
+                CASE WHEN sum(weight) > 0
+                     THEN sum(t.return_r * weight) / sum(weight)
+                     ELSE 0.0 END AS weighted_avg_r,
+                avg(t.pnl) AS avg_pnl
+        """.format(decay=decay, where_symbol=where_symbol),
+            setup_type=setup_type,
+            symbol=symbol or '',
+            lookback=lookback,
+        )
+        record = result.single()
+        if record and record['total'] > 0:
+            return dict(record)
+        return None
+
+    def _query_time_of_day_performance(
+        self,
+        symbol: str,
+        direction: str,
+        hour_utc: int,
+        lookback_days: int = 60,
+    ) -> Optional[Dict]:
+        """How does this symbol+direction perform at this hour? (time-weighted)
+
+        Groups into 4-hour windows:
+            0-3, 4-7, 8-11, 12-15, 16-19, 20-23
+        """
+        # Map hour to 4-hour window boundaries
+        window_start = (hour_utc // 4) * 4
+        window_end = window_start + 3
+
+        cache_key = f"gadv:tod:{symbol}:{direction}:{window_start}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            with self.graph.driver.session(database=self.graph.database) as sess:
+                result = sess.execute_read(
+                    lambda tx: self._run_weighted_query(
+                        self._time_of_day_tx, tx,
+                        symbol, direction, window_start, window_end, lookback_days,
+                    )
+                )
+                cache.set(cache_key, result, timeout=ADVISOR_CACHE_TTL)
+                return result
+        except Exception as e:
+            logger.debug("Time-of-day query failed: %s", e)
+            return None
+
+    @staticmethod
+    def _time_of_day_tx(tx, symbol, direction, window_start, window_end, lookback, use_exp=True):
+        decay = _DECAY_WEIGHT_CYPHER if use_exp else _DECAY_WEIGHT_POLY
+        result = tx.run("""
+            MATCH (t:Trade)
+            WHERE t.symbol = $symbol
+              AND t.direction = $direction
+              AND t.entry_time > datetime() - duration({{days: $lookback}})
+              AND t.entry_time.hour >= $window_start
+              AND t.entry_time.hour <= $window_end
+            WITH t,
+                 {decay}
+            RETURN
+                count(t) AS total,
+                CASE WHEN sum(weight) > 0
+                     THEN sum(CASE WHEN t.pnl > 0 THEN weight ELSE 0 END) / sum(weight)
+                     ELSE 0.0 END AS weighted_wr,
+                sum(weight) AS effective_sample_size,
+                CASE WHEN sum(weight) > 0
+                     THEN sum(t.return_r * weight) / sum(weight)
+                     ELSE 0.0 END AS weighted_avg_r,
+                avg(t.pnl) AS avg_pnl
+        """.format(decay=decay),
+            symbol=symbol,
+            direction=direction,
+            window_start=window_start,
+            window_end=window_end,
+            lookback=lookback,
+        )
         record = result.single()
         if record and record['total'] > 0:
             return dict(record)
@@ -462,23 +759,41 @@ class GraphAdvisor:
         similar_wr: float,
         symbol_regime_wr: float,
         news_wr: float,
+        setup_type_wr: float,
+        time_of_day_wr: float,
         warnings: List[str],
+        effective_sample_size: float,
     ) -> float:
         """Combine all signals into a single confidence score 0-1.
 
-        Weights:
-        - Similar setup WR: 40%
-        - Symbol+regime WR: 30%
-        - News-risk WR: 20%
+        Weights (updated to include new signals):
+        - Similar setup WR: 30%  (was 40%, redistributed)
+        - Symbol+regime WR: 25%  (was 30%)
+        - News-risk WR: 15%      (was 20%)
+        - Setup type WR: 10%     (NEW)
+        - Time-of-day WR: 10%    (NEW)
+        - Baseline: 5%           (always contributes 0.05)
         - Warning penalty: -10% per warning (up to -30%)
+
+        Effective sample size bonus/penalty:
+        - If total effective samples > 20: +0.03 (good data)
+        - If total effective samples < 5: -0.05 (sparse data, less trust)
         """
         base = (
-            similar_wr * 0.40
-            + symbol_regime_wr * 0.30
-            + news_wr * 0.20
+            similar_wr * 0.30
+            + symbol_regime_wr * 0.25
+            + news_wr * 0.15
+            + setup_type_wr * 0.10
+            + time_of_day_wr * 0.10
         )
-        # Remaining 10% is baseline (always contributes 0.05)
+        # Remaining 10% split: 5% baseline + 5% sample-size adjustment
         base += 0.05
+
+        # Sample size adjustment
+        if effective_sample_size > 20:
+            base += 0.03  # Good data coverage — slight boost
+        elif effective_sample_size < 5:
+            base -= 0.05  # Very sparse data — reduce trust
 
         # Warning penalty: -0.10 per warning, max -0.30
         penalty = min(len(warnings) * 0.10, 0.30)
@@ -512,11 +827,16 @@ class GraphAdvisor:
         similar_avg_r: float,
         symbol_regime_wr: float,
         news_risk_wr: float,
+        setup_type_wr: float,
+        time_of_day_wr: float,
         warnings: List[str],
         symbol: str,
         direction: str,
         regime: str,
         news_risk: str,
+        setup_type: str,
+        hour_utc: int,
+        effective_sample_size: float,
     ) -> Tuple[str, str]:
         """Build a human-readable recommendation and reasoning string.
 
@@ -536,20 +856,29 @@ class GraphAdvisor:
         # Build reasoning
         parts = []
 
-        if similar_trades >= MIN_SAMPLE_SIZE:
+        if effective_sample_size >= MIN_SAMPLE_SIZE:
             parts.append(
-                f"{similar_trades} similar setups found: "
+                f"{similar_trades} similar setups (eff={effective_sample_size:.1f}): "
                 f"{similar_wr:.0%} WR, avg {similar_avg_r:+.2f}R"
             )
         else:
             parts.append(
-                f"Only {similar_trades} similar setups (need {MIN_SAMPLE_SIZE}+)"
+                f"Only {similar_trades} similar setups "
+                f"(eff={effective_sample_size:.1f}, need {MIN_SAMPLE_SIZE}+)"
             )
 
         parts.append(f"{symbol} in {regime}: {symbol_regime_wr:.0%} WR")
 
         if news_risk != 'NORMAL':
             parts.append(f"News risk {news_risk}: {news_risk_wr:.0%} WR in volatile regimes")
+
+        if setup_type:
+            parts.append(f"Setup {setup_type}: {setup_type_wr:.0%} WR")
+
+        # Time-of-day window
+        window_start = (hour_utc // 4) * 4
+        window_end = window_start + 3
+        parts.append(f"Hour {window_start}-{window_end} UTC: {time_of_day_wr:.0%} WR")
 
         for w in warnings:
             parts.append(f"WARNING: {w}")
@@ -565,11 +894,14 @@ class GraphAdvisor:
 def get_trade_advice(symbol: str, direction: str, strategy: str, **kwargs) -> Dict:
     """Convenience function — creates advisor and consults.
 
-    Caches result for 5 minutes per (symbol, direction, regime) combo.
+    Caches result for 5 minutes per (symbol, direction, regime, setup_type, hour) combo.
     Returns neutral advice if graph is unavailable.
     """
     regime = kwargs.get('regime', 'UNKNOWN')
-    cache_key = f"graph_advice:{symbol}:{direction}:{regime}"
+    setup_type = kwargs.get('setup_type', '')
+    hour_utc = kwargs.get('hour_utc', 0)
+    hour_window = (hour_utc // 4) * 4  # Bucket hours into 4h windows for cache key
+    cache_key = f"graph_advice:{symbol}:{direction}:{regime}:{setup_type}:{hour_window}"
     cached = cache.get(cache_key)
     if cached:
         return cached

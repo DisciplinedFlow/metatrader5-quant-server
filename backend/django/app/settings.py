@@ -287,6 +287,10 @@ NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', '')
 GRAPH_FEATURES_ACTIVE = os.getenv('GRAPH_FEATURES_ACTIVE', 'false').lower() == 'true'
 GRAPH_FEATURES_LIVE_FALLBACK = False
 GRAPH_ROUTER_SIGNAL_ACTIVE = os.getenv('GRAPH_ROUTER_SIGNAL_ACTIVE', 'false').lower() == 'true'
+
+# --- Anthropic Claude API (Haiku for trading intelligence) ---
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+
 CELERY_BEAT_SCHEDULE = {
     'run-quant-entry-algorithm': {
         'task': 'quant.tasks.run_quant_entry_algorithm',

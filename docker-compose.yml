@@ -115,7 +115,7 @@ services:
 
       traefik.http.services.api-mt5-service.loadbalancer.server.port: 5001
     logging: *default-logging
-    mem_limit: 4g
+    mem_limit: 2g
     cpus: 2
     depends_on:
       - traefik
@@ -192,7 +192,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    mem_limit: 2g
+    command: gunicorn --bind 0.0.0.0:8000 --workers 4 --worker-class=gthread --threads=2 --max-requests=1000 --max-requests-jitter=100 --timeout 120 app.wsgi:application
+    mem_limit: 1536m
     cpus: 1.5
 
   redis:
@@ -223,7 +224,7 @@ services:
       context: backend/django
       dockerfile: Dockerfile
     container_name: celery
-    command: bash -c "python -m app.ws.server & python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=8 -Q default,critical,analysis,graph"
+    command: bash -c "python -m app.ws.server & python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=6 -Q default,critical,analysis,graph"
     ports:
       - "8001:8001"
     volumes:
@@ -306,7 +307,7 @@ services:
     ports:
       - 3000:3000
     cpus: 0.5
-    mem_limit: 512m
+    mem_limit: 256m
     networks:
       - default
       - traefik-public
@@ -344,7 +345,7 @@ services:
     ports:
       - 9090:9090
     cpus: 0.5
-    mem_limit: 512m
+    mem_limit: 256m
     networks:
       - default
     labels:
@@ -367,7 +368,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       #- /dev/disk:/dev/disk:ro
     cpus: 0.5
-    mem_limit: 512m
+    mem_limit: 256m
     networks:
       - default
     labels:
@@ -390,7 +391,7 @@ services:
     depends_on:
       - traefik
     cpus: 0.5
-    mem_limit: 512m
+    mem_limit: 256m
     networks:
       - default
     labels:
@@ -410,7 +411,7 @@ services:
     ports:
       - 9093:9093
     cpus: 0.5
-    mem_limit: 512m
+    mem_limit: 256m
     networks:
       - default
     depends_on:
@@ -426,7 +427,7 @@ services:
     ports:
       - 9094:8080
     cpus: 0.5
-    mem_limit: 512m
+    mem_limit: 256m
     networks:
       - default
     depends_on:
@@ -448,7 +449,7 @@ services:
     depends_on:
       - traefik
     cpus: 0.5
-    mem_limit: 512m
+    mem_limit: 256m
     networks:
       - default
     labels:
@@ -467,7 +468,7 @@ services:
       - loki
       - traefik
     cpus: 0.5
-    mem_limit: 512m
+    mem_limit: 256m
     networks:
       - default
     labels:
@@ -501,8 +502,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
-    mem_limit: 1g
-    cpus: 0.5
+    mem_limit: 1280m
+    cpus: 0.75
 
 volumes:
   traefik-public-certificates: # Persistent volume for certificates
