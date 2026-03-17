@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # --- Adaptive Trading Thresholds ---
 CIRCUIT_BREAKER_SYMBOL_LOSSES = 3    # Consecutive losses on same symbol → pause
 CIRCUIT_BREAKER_GLOBAL_LOSSES = 5    # Consecutive losses across all symbols → pause
-CIRCUIT_BREAKER_GLOBAL_COOLDOWN_MINUTES = 15   # Global cooldown (was 1h — too long for algo bot)
+CIRCUIT_BREAKER_GLOBAL_COOLDOWN_MINUTES = 10   # Global cooldown (was 15m → 10m, with vol override)
 CIRCUIT_BREAKER_SYMBOL_COOLDOWN_MINUTES = 30   # Per-symbol cooldown (pair may be unfavorable)
 SYMBOL_FILTER_LOOKBACK = 10          # Trades to check for symbol performance
 SYMBOL_FILTER_MIN_WR = 0.35          # Minimum win rate to continue trading a symbol
@@ -517,6 +517,29 @@ def _check_circuit_breaker(strategy_config, symbol=None):
 
         global_key = 'circuit_breaker:global'
         if cache.get(global_key):
+            # Volatility override: in high-vol conditions, halve the remaining cooldown
+            # Big moves = opportunity, not just danger
+            try:
+                from app.utils.api.data import fetch_data_pos
+                from app.utils.constants import MT5Timeframe
+                # Check XAUUSD as volatility proxy (most liquid metal)
+                df = fetch_data_pos('XAUUSD', MT5Timeframe.M15, 50)
+                if df is not None and len(df) > 20:
+                    import pandas as pd
+                    atr = (df['high'] - df['low']).rolling(14).mean()
+                    current_atr = atr.iloc[-1]
+                    avg_atr = atr.iloc[-20:].mean()
+                    if current_atr > avg_atr * 1.5:
+                        # High vol — reduce cooldown to 5 minutes
+                        import redis
+                        r = redis.Redis(host='redis', port=6379, db=1)
+                        ttl = r.ttl(':1:circuit_breaker:global')
+                        if ttl > 300:  # More than 5 min remaining
+                            r.expire(':1:circuit_breaker:global', 300)
+                            logger.info(f"Circuit breaker: HIGH VOLATILITY detected (ATR {current_atr:.2f} vs avg {avg_atr:.2f}), reducing cooldown to 5m")
+                            return False, "Circuit breaker: global cooldown active (reduced for high vol)"
+            except Exception:
+                pass
             return False, "Circuit breaker: global cooldown active"
 
         # Respect the daily halt reset timestamp — old trades from parameter
@@ -1715,7 +1738,16 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 except Exception:
                     pass
                 conf_mult = confluence_score.size_multiplier if confluence_score else 1.0
-                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult * kz_mult * router_mult * energy_mult * loss_streak_mult * conf_mult
+                # News/macro risk adjustment (free RSS-based, replaces disabled Claude macro task)
+                try:
+                    from app.quant.indicators.news_sentiment import get_market_risk_level
+                    news_risk = get_market_risk_level()
+                    news_mult = news_risk.get('size_multiplier', 1.0)
+                    if news_risk['risk_level'] != 'NORMAL':
+                        logger.info(f"CVD: News risk {news_risk['risk_level']} for {pair} — size x{news_mult} ({news_risk['reason']})")
+                except Exception:
+                    news_mult = 1.0
+                size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult * kz_mult * router_mult * energy_mult * loss_streak_mult * conf_mult * news_mult
                 size_multiplier = max(0.1, min(2.0, size_multiplier))
                 base_capital = energy_overrides['capital_per_trade'] if energy_overrides else CAPITAL_PER_TRADE
                 order_capital = base_capital * size_multiplier
@@ -1728,7 +1760,8 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         f"(vol={vol_mult:.2f}, sym={sym_mult:.2f}, ctx={ctx_mult:.2f}, "
                         f"grp={group_mult:.2f}, orch={orch_mult:.2f}, pres={pres_mult:.2f}, "
                         f"kz={kz_mult:.2f} [{kz_desc}], router={router_mult:.2f}, "
-                        f"loss_streak={loss_streak_mult:.2f}, conf={conf_mult:.2f})"
+                        f"loss_streak={loss_streak_mult:.2f}, conf={conf_mult:.2f}, "
+                        f"news={news_mult:.2f})"
                     )
 
                 # --- Risk-based position sizing ---

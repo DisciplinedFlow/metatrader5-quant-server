@@ -22,7 +22,7 @@
 | DAILY_MAX_LOSS_USD | `$9,999` (disabled) | `tasks.py:26` | Was $300 |
 | DRAWDOWN_REDUCTION | `$2,000` | `tasks.py:27` | Still active — falls to $100/trade |
 | Circuit Breaker (symbol) | `3 losses → 30m` | `entry.py:57,60` | Was 1h — reduced for algo bot |
-| Circuit Breaker (global) | `5 losses → 15m` | `entry.py:58,59` | Was 1h — reduced for algo bot |
+| Circuit Breaker (global) | `5 losses → 10m` | `entry.py:58,59` | Was 15m → 10m, with high-vol override (→5m when XAUUSD ATR > 1.5× avg) |
 | Time Filter | `24/7 (Mon-Fri)` | `entry.py:425` | Only blocks Sat + Sun before 22:00 UTC |
 | Active Strategies | `15` | DB | Including CVD Lack of Participants + Absorption |
 | Account Currency | `EUR` | Broker setting | VantageInternational-Demo; tick_value returns EUR values |
@@ -47,7 +47,7 @@ The `size_multiplier` (10 factors: vol, symbol WR, regime, group, orchestrator, 
 
 ## Protection Still Active
 - **Risk-based position sizing** (loss at SL = $50 max, scaled by multiplier)
-- Circuit breakers (3 symbol consecutive losses → 30m pause, 5 global → 15m pause)
+- Circuit breakers (3 symbol consecutive losses → 30m pause, 5 global → 10m pause, high-vol override → 5m)
 - Max loss per trade ($50 — now enforced by sizing, not SL clamping)
 - Drawdown reduction ($2,000 cumulative → $100/trade fallback)
 - Anti-churn (30s cooldown same symbol)
@@ -77,6 +77,11 @@ The `size_multiplier` (10 factors: vol, symbol WR, regime, group, orchestrator, 
 | 6 | **Session quality 9th confluence factor** | +1 point in kill zones, max score now 12 | confluence_scorer.py |
 
 ## Change Log
+
+### Mar 17, 2026 — Circuit Breaker: Reduced Global Cooldown + Volatility Override
+- **Circuit Breaker (global):** 15m → **10m** cooldown after 5 consecutive global losses
+- **Volatility override:** When XAUUSD M15 ATR > 1.5× its 20-bar average, remaining cooldown reduced to 5m
+- **Reason:** Losing streaks in high-vol conditions are normal — big moves = opportunity. Algo should re-engage faster when volatility spikes
 
 ### Mar 16, 2026 — 07:45 UTC (Risk-Based Position Sizing)
 - **CRITICAL FIX:** Replaced `capital × leverage` sizing with **risk-based sizing** (`lots = target_risk / loss_per_lot_at_SL`)

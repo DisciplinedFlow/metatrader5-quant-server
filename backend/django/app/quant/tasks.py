@@ -1368,3 +1368,30 @@ def record_daily_performance():
 
     except Exception as e:
         logger.error(f"Daily performance snapshot error: {e}")
+
+
+@shared_task(name='quant.tasks.check_news_sentiment', soft_time_limit=30, time_limit=45)
+def check_news_sentiment():
+    """Refresh news sentiment cache every 5 minutes.
+
+    Uses free RSS feeds (Yahoo Finance, ForexFactory, Reuters) to detect
+    major market-moving events. Adjusts position sizing via size_multiplier
+    in the CVD entry algorithm. Replaces the disabled Claude API macro task.
+    """
+    try:
+        from app.quant.indicators.news_sentiment import get_market_risk_level
+        result = get_market_risk_level()
+        if result['risk_level'] != 'NORMAL':
+            logger.info(
+                f"NEWS SENTIMENT: {result['risk_level']} — "
+                f"{result['reason']} ({result['headlines_checked']} headlines)"
+            )
+        else:
+            logger.debug(
+                f"News sentiment: NORMAL ({result['headlines_checked']} headlines, "
+                f"{len(result.get('matched_keywords', []))} keyword matches)"
+            )
+    except SoftTimeLimitExceeded:
+        logger.warning("News sentiment check timed out — feeds may be slow")
+    except Exception as e:
+        logger.debug(f"News sentiment check failed: {e}")

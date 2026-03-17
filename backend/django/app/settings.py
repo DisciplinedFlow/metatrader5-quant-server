@@ -276,6 +276,7 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.record_to_graph': {'queue': 'graph'},
     'quant.tasks.run_graph_enrichment': {'queue': 'analysis'},
     'quant.tasks.check_graph_health': {'queue': 'default'},
+    'quant.tasks.check_news_sentiment': {'queue': 'default'},
 }
 
 # --- Neo4j Knowledge Graph ---
@@ -320,26 +321,29 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 30.0,
     },
     # --- Lighter.xyz DEX (zero-fee venue) ---
-    # EMA entry disabled — grid-only mode for faster captures
-    # 'run-lighter-entry': {
-    #     'task': 'crypto.tasks.run_lighter_entry',
-    #     'schedule': 60.0,
-    # },
+    'run-lighter-entry': {
+        'task': 'crypto.tasks.run_lighter_entry',
+        'schedule': 60.0,  # EMA trend-following — 1min (signals on 15m/1h candles, no rush)
+    },
+    'run-lighter-reconcile': {
+        'task': 'crypto.tasks.run_lighter_reconcile',
+        'schedule': 60.0,  # Sync DB — 1min
+    },
     'run-lighter-exit': {
         'task': 'crypto.tasks.run_lighter_exit',
-        'schedule': 10.0,  # Every 10s — balanced: fast enough for crypto, avoids rate limits
+        'schedule': 30.0,  # Exit checks — 30s (most time-sensitive, but on-chain SL/TP covers gaps)
     },
     'run-lighter-grid': {
         'task': 'crypto.tasks.run_lighter_grid',
-        'schedule': 30.0,  # Every 30s — grid doesn't need ultra-fast refresh
+        'schedule': 60.0,  # Grid refresh — 1min
     },
     'run-lighter-mean-reversion': {
         'task': 'crypto.tasks.run_lighter_mean_reversion',
-        'schedule': 20.0,  # Every 20s — staggered from RSI to spread API load
+        'schedule': 45.0,  # MR scan — 45s (15m candle signals, 45s is fine)
     },
     'run-lighter-rsi-scalper': {
         'task': 'crypto.tasks.run_lighter_rsi_scalper',
-        'schedule': 15.0,  # Every 15s — fast enough for 5m candle signals
+        'schedule': 30.0,  # RSI(2) scalper — 30s (5m candle signals)
     },
     # --- Funding Rate Arbitrage Monitor (Hyperliquid vs Lighter) ---
     'run-funding-arb-scan': {
@@ -394,6 +398,10 @@ CELERY_BEAT_SCHEDULE = {
     'check-graph-health': {
         'task': 'quant.tasks.check_graph_health',
         'schedule': 300.0,  # every 5 minutes
+    },
+    'check-news-sentiment': {
+        'task': 'quant.tasks.check_news_sentiment',
+        'schedule': 300.0,  # every 5 minutes — free RSS feeds, no API key needed
     },
     'run-strategy-orchestrator': {
         'task': 'quant.tasks.run_strategy_orchestrator',
