@@ -1348,6 +1348,25 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
             logger.info(f"CVD SIGNAL: {pair} {order_type} — {signal_desc}")
 
+            # --- Multi-Timeframe Context (the brain reads the market) ---
+            mtf = None
+            try:
+                from app.quant.indicators.mtf_context import build_mtf_context
+                mtf = build_mtf_context(pair)
+                if mtf and mtf.get('confidence', 0) > 0:
+                    # Skip trades that go AGAINST the higher timeframe trend
+                    if mtf['bias'] == 'LONG' and order_type == 'SELL':
+                        if mtf['confidence'] >= 0.6:
+                            logger.info(f"CVD: MTF bias LONG (conf={mtf['confidence']:.1f}) conflicts with SELL on {pair} — skipping")
+                            continue
+                    elif mtf['bias'] == 'SHORT' and order_type == 'BUY':
+                        if mtf['confidence'] >= 0.6:
+                            logger.info(f"CVD: MTF bias SHORT (conf={mtf['confidence']:.1f}) conflicts with BUY on {pair} — skipping")
+                            continue
+            except Exception as e:
+                logger.debug(f"MTF context unavailable for {pair}: {e}")
+                mtf = None
+
             # --- Strategy Router parameters (sizing, SL, confluence thresholds) ---
             # Router validity was already enforced above (pre-signal gate).
             # Here we just read the regime-based parameters for sizing/SL/confluence.
@@ -1626,6 +1645,14 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     if pair == 'XAGUSD':
                         router_min_confluence = min(router_min_confluence, 3)
 
+                    # MTF alignment lowers the bar (aligned setups need less confluence)
+                    try:
+                        if mtf and mtf.get('alignment') == 'ALIGNED' and mtf.get('alignment_score', 0) >= 7:
+                            router_min_confluence = max(router_min_confluence - 1, 3)
+                            logger.info(f"CVD: MTF aligned (score={mtf['alignment_score']}) — confluence threshold reduced to {router_min_confluence}")
+                    except Exception:
+                        pass
+
                     if confluence_score.total_score < router_min_confluence:
                         logger.info(
                             f"CVD: Router requires min confluence {router_min_confluence} "
@@ -1686,9 +1713,35 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     )
                 # router_sl_adj widens SL in volatile regimes (1.5x) for breathing room
                 effective_sl_mult = pair_sl_mult * router_sl_adj
-                sl_price, tp_price, sl_tp_source = _compute_sl_tp(
-                    pair, last_tick_price, order_type, atr_val, effective_sl_mult, pair_tp_mult,
-                )
+
+                # Try structure-based SL/TP first, fall back to ATR
+                try:
+                    from app.quant.algorithms.structure_levels import get_structure_levels
+                    struct_levels = get_structure_levels(
+                        symbol=pair,
+                        direction=order_type,
+                        entry_price=last_tick_price,
+                        df=df,
+                        atr_value=atr_val,
+                        atr_sl_mult=effective_sl_mult,
+                        atr_tp_mult=pair_tp_mult,
+                        min_rr=2.0,
+                    )
+                    if struct_levels and struct_levels['rr_ratio'] >= 2.0:
+                        sl_price = struct_levels['sl_price']
+                        tp_price = struct_levels['tp_price']
+                        sl_tp_source = f"STRUCTURE ({struct_levels['sl_source']}/{struct_levels['tp_source']}, R:R={struct_levels['rr_ratio']:.1f})"
+                        logger.info(f"CVD: Structure SL/TP for {pair}: {struct_levels['structural_context']}")
+                    else:
+                        # Fall back to ATR
+                        sl_price, tp_price, sl_tp_source = _compute_sl_tp(
+                            pair, last_tick_price, order_type, atr_val, effective_sl_mult, pair_tp_mult,
+                        )
+                except Exception as e:
+                    logger.debug(f"Structure levels failed for {pair}: {e}")
+                    sl_price, tp_price, sl_tp_source = _compute_sl_tp(
+                        pair, last_tick_price, order_type, atr_val, effective_sl_mult, pair_tp_mult,
+                    )
 
                 # --- Dynamic Position Sizing (vol + streak + symbol + context + group) ---
                 vol_mult = _get_dynamic_size_multiplier(
@@ -1764,12 +1817,40 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         f"news={news_mult:.2f})"
                     )
 
+                # --- Consult the Neo4j brain ---
+                advice = None
+                graph_size_mod = 1.0
+                try:
+                    from app.quant.knowledge.advisor import get_trade_advice
+                    from datetime import datetime, timezone
+                    advice = get_trade_advice(
+                        symbol=pair,
+                        direction=order_type,
+                        strategy=strategy_config.name,
+                        regime=routing.regime if 'routing' in dir() and routing else 'UNKNOWN',
+                        confluence_score=confluence_score.total_score if confluence_score else 0,
+                        session=kz_name or 'unknown',
+                        news_risk=news_risk.get('risk_level', 'NORMAL') if 'news_risk' in dir() else 'NORMAL',
+                        hour_utc=datetime.now(timezone.utc).hour,
+                    )
+                    if advice['recommendation'] == 'AVOID' and advice['confidence'] < 0.2:
+                        logger.warning(f"CVD: Neo4j AVOID for {pair} {order_type}: {advice['reasoning']}")
+                        PairLock.objects.filter(symbol=pair).delete()
+                        continue
+                    # Apply graph-based size modifier
+                    graph_size_mod = advice.get('size_modifier', 1.0)
+                    logger.info(f"CVD: Neo4j advice for {pair}: {advice['recommendation']} (conf={advice['confidence']:.2f}, size={graph_size_mod:.1f}x) — {advice['reasoning']}")
+                except Exception as e:
+                    logger.debug(f"Graph advisor unavailable: {e}")
+                    graph_size_mod = 1.0
+                    advice = None
+
                 # --- Risk-based position sizing ---
                 # Size so that loss at SL = target_risk. This replaces the old
                 # capital * leverage approach which created insane notionals for
                 # large-contract instruments (XAGUSD 5000oz, oils 1000bbl).
                 sl_distance = abs(last_tick_price - sl_price)
-                target_risk = MAX_LOSS_PER_TRADE * size_multiplier
+                target_risk = MAX_LOSS_PER_TRADE * size_multiplier * graph_size_mod
                 target_risk = max(5.0, min(target_risk, MAX_LOSS_PER_TRADE))
 
                 from app.utils.arithmetics import calculate_risk_based_lots
@@ -1960,6 +2041,10 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         'router_regime': routing.regime if 'routing' in dir() else None,
                         'router_mult': f"{router_mult:.2f}",
                         'router_sl_adj': f"{router_sl_adj:.2f}",
+                        'mtf_bias': mtf.get('bias') if mtf else 'UNKNOWN',
+                        'mtf_confidence': mtf.get('confidence', 0) if mtf else 0,
+                        'graph_confidence': advice.get('confidence', 0.5) if advice else 0.5,
+                        'graph_recommendation': advice.get('recommendation', 'NORMAL') if advice else 'NORMAL',
                     })
 
                     try:

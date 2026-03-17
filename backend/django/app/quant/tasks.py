@@ -1217,6 +1217,9 @@ def record_to_graph(payload):
             from django.core.cache import cache
             regime_detail = cache.get(f':1:hmm_regime_detail:{trade.symbol}') or {}
 
+            # Brain-era metadata (passed from entry pipeline via payload)
+            brain_meta = payload.get('brain_meta', {})
+
             trade_data = {
                 'trade_id': f"trade_{trade.id}",
                 'django_id': trade.id,
@@ -1235,6 +1238,19 @@ def record_to_graph(payload):
                 'regime_confidence': regime_detail.get('confidence', 0),
                 'hour_utc': trade.entry_time.hour if trade.entry_time else 0,
                 'day_of_week': trade.entry_time.weekday() if trade.entry_time else 0,
+                # Brain-era fields
+                'trading_era': brain_meta.get('trading_era', 'BRAIN_V1'),
+                'mtf_bias': brain_meta.get('mtf_bias', 'UNKNOWN'),
+                'mtf_confidence': brain_meta.get('mtf_confidence', 0),
+                'mtf_alignment': brain_meta.get('mtf_alignment', 'UNKNOWN'),
+                'mtf_alignment_score': brain_meta.get('mtf_alignment_score', 0),
+                'sl_source': brain_meta.get('sl_source', 'ATR'),
+                'tp_source': brain_meta.get('tp_source', 'ATR'),
+                'sl_tp_rr': brain_meta.get('sl_tp_rr', 0),
+                'graph_confidence': brain_meta.get('graph_confidence', 0.5),
+                'graph_recommendation': brain_meta.get('graph_recommendation', 'NORMAL'),
+                'graph_size_modifier': brain_meta.get('graph_size_modifier', 1.0),
+                'news_risk': brain_meta.get('news_risk', 'NORMAL'),
             }
             graph.record_trade(trade_data)
 
@@ -1271,6 +1287,13 @@ def record_to_graph(payload):
 
         elif record_type == 'performance_snapshot':
             graph.record_performance_snapshot(payload)
+
+        elif record_type == 'era_transition':
+            graph.record_era_transition(payload)
+
+        elif record_type == 'era_backfill':
+            updated = graph.backfill_trading_era()
+            logger.info("Backfilled %d trades as RULE_BASED", updated)
 
     except Exception as e:
         logger.error(f"Graph recording error: {e}")

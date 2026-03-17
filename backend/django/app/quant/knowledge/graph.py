@@ -110,6 +110,10 @@ class ForexKnowledgeGraph:
                 "CREATE INDEX trade_strategy IF NOT EXISTS FOR (t:Trade) ON (t.strategy)",
                 "CREATE INDEX trade_venue IF NOT EXISTS FOR (t:Trade) ON (t.venue)",
                 "CREATE INDEX trade_domain IF NOT EXISTS FOR (t:Trade) ON (t.domain)",
+                "CREATE INDEX trade_era IF NOT EXISTS FOR (t:Trade) ON (t.trading_era)",
+                "CREATE INDEX trade_mtf_bias IF NOT EXISTS FOR (t:Trade) ON (t.mtf_bias)",
+                "CREATE INDEX trade_sl_source IF NOT EXISTS FOR (t:Trade) ON (t.sl_source)",
+                "CREATE INDEX trade_graph_rec IF NOT EXISTS FOR (t:Trade) ON (t.graph_recommendation)",
                 "CREATE INDEX regime_symbol IF NOT EXISTS FOR (r:Regime) ON (r.symbol)",
                 "CREATE INDEX news_timestamp IF NOT EXISTS FOR (n:NewsEvent) ON (n.timestamp)",
                 "CREATE INDEX condition_symbol IF NOT EXISTS FOR (mc:MarketCondition) ON (mc.symbol)",
@@ -179,7 +183,19 @@ class ForexKnowledgeGraph:
             session: $session,
             hour_utc: $hour_utc,
             day_of_week: $day_of_week,
-            duration_minutes: $duration_minutes
+            duration_minutes: $duration_minutes,
+            trading_era: $trading_era,
+            mtf_bias: $mtf_bias,
+            mtf_confidence: $mtf_confidence,
+            mtf_alignment: $mtf_alignment,
+            mtf_alignment_score: $mtf_alignment_score,
+            sl_source: $sl_source,
+            tp_source: $tp_source,
+            sl_tp_rr: $sl_tp_rr,
+            graph_confidence: $graph_confidence,
+            graph_recommendation: $graph_recommendation,
+            graph_size_modifier: $graph_size_modifier,
+            news_risk_at_entry: $news_risk_at_entry
         })
         CREATE (t)-[:TRADED_SYMBOL]->(sym)
 
@@ -249,6 +265,18 @@ class ForexKnowledgeGraph:
             hour_utc=hour_utc,
             day_of_week=d.get('day_of_week', 0),
             duration_minutes=duration_minutes,
+            trading_era=d.get('trading_era', 'BRAIN_V1'),
+            mtf_bias=d.get('mtf_bias', 'UNKNOWN'),
+            mtf_confidence=float(d.get('mtf_confidence', 0) or 0),
+            mtf_alignment=d.get('mtf_alignment', 'UNKNOWN'),
+            mtf_alignment_score=float(d.get('mtf_alignment_score', 0) or 0),
+            sl_source=d.get('sl_source', 'ATR'),
+            tp_source=d.get('tp_source', 'ATR'),
+            sl_tp_rr=float(d.get('sl_tp_rr', 0) or 0),
+            graph_confidence=float(d.get('graph_confidence', 0.5) or 0.5),
+            graph_recommendation=d.get('graph_recommendation', 'NORMAL'),
+            graph_size_modifier=float(d.get('graph_size_modifier', 1.0) or 1.0),
+            news_risk_at_entry=d.get('news_risk', 'NORMAL'),
         )
         record = result.single()
         return record['trade_id'] if record else trade_id
@@ -722,6 +750,100 @@ class ForexKnowledgeGraph:
         return ps_id
 
     # ========================================================================
+    # ERA TRACKING — Brain vs Rule-Based trade classification
+    # ========================================================================
+
+    def record_era_transition(self, era_data: Dict[str, Any]) -> Optional[str]:
+        """Record a transition between trading eras.
+
+        Creates a TradingEra node that marks when the system upgraded.
+        Old trades link to 'RULE_BASED' era, new trades to 'BRAIN_V1'.
+        """
+        if not self.connected:
+            return None
+
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.execute_write(self._create_era_transition_tx, era_data)
+                logger.info("Recorded era transition to %s", era_data.get('era_name'))
+                return result
+        except Exception as e:
+            logger.error("Failed to record era transition: %s", e)
+            return None
+
+    @staticmethod
+    def _create_era_transition_tx(tx, d: Dict[str, Any]) -> str:
+        era_name = d.get('era_name', 'UNKNOWN')
+        started_at = d.get('started_at', datetime.utcnow().isoformat())
+        if hasattr(started_at, 'isoformat'):
+            started_at = started_at.isoformat()
+
+        # Capabilities is a list of strings
+        capabilities = d.get('capabilities', [])
+        if not isinstance(capabilities, list):
+            capabilities = []
+
+        tx.run("""
+            MERGE (e:TradingEra {name: $era_name})
+            ON CREATE SET
+                e.started_at = datetime($started_at),
+                e.description = $description,
+                e.capabilities = $capabilities,
+                e.previous_era = $previous_era
+        """,
+            era_name=era_name,
+            started_at=started_at,
+            description=d.get('description', ''),
+            capabilities=capabilities,
+            previous_era=d.get('previous_era', ''),
+        )
+
+        # If there is a previous era, create a SUCCEEDED_BY relationship
+        previous_era = d.get('previous_era', '')
+        if previous_era:
+            tx.run("""
+                MATCH (prev:TradingEra {name: $previous_era})
+                MATCH (curr:TradingEra {name: $era_name})
+                MERGE (prev)-[:SUCCEEDED_BY]->(curr)
+            """,
+                previous_era=previous_era,
+                era_name=era_name,
+            )
+
+        return era_name
+
+    def backfill_trading_era(self) -> int:
+        """Tag all existing trades without a trading_era as RULE_BASED.
+
+        Returns the count of updated trades.
+        """
+        if not self.connected:
+            return 0
+
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.execute_write(self._backfill_era_tx)
+                logger.info("Backfilled %d trades as RULE_BASED", result)
+                return result
+        except Exception as e:
+            logger.error("Failed to backfill trading era: %s", e)
+            return 0
+
+    @staticmethod
+    def _backfill_era_tx(tx) -> int:
+        result = tx.run("""
+            MATCH (t:Trade) WHERE t.trading_era IS NULL
+            SET t.trading_era = 'RULE_BASED',
+                t.sl_source = 'ATR',
+                t.tp_source = 'ATR',
+                t.graph_confidence = 0.5,
+                t.graph_recommendation = 'NORMAL'
+            RETURN count(t) as updated
+        """)
+        record = result.single()
+        return record['updated'] if record else 0
+
+    # ========================================================================
     # READ METHODS (Phase 2 — activated after sufficient data)
     # ========================================================================
 
@@ -892,3 +1014,61 @@ class ForexKnowledgeGraph:
             return {'connected': True, 'status': 'healthy'}
         except Exception as e:
             return {'connected': False, 'status': 'error', 'error': str(e)}
+
+
+# ============================================================================
+# ONE-TIME ERA MIGRATION
+# Run via Django shell inside the django container:
+#
+#   docker exec -it django python manage.py shell
+#
+# Then paste:
+#
+#   from app.quant.knowledge.connection import get_graph
+#   graph = get_graph()
+#   if graph:
+#       # 1. Backfill all existing trades as RULE_BASED
+#       updated = graph.backfill_trading_era()
+#       print(f"Backfilled {updated} trades as RULE_BASED")
+#
+#       # 2. Create the RULE_BASED era node
+#       graph.record_era_transition({
+#           'era_name': 'RULE_BASED',
+#           'started_at': '2026-03-01T00:00:00',
+#           'description': 'Static rule-based trading with hardcoded ATR SL/TP, '
+#                          'fixed confluence gates, no MTF alignment, no graph advisor.',
+#           'capabilities': [
+#               'ATR-based SL/TP',
+#               'confluence_scorer (0-14)',
+#               'HMM regime detection',
+#               'circuit breakers',
+#               'news sentiment sizing',
+#           ],
+#           'previous_era': '',
+#       })
+#       print("Created RULE_BASED era node")
+#
+#       # 3. Create the BRAIN_V1 era node
+#       graph.record_era_transition({
+#           'era_name': 'BRAIN_V1',
+#           'started_at': '2026-03-17T00:00:00',
+#           'description': 'Autonomous trading brain with structure-based SL/TP, '
+#                          'MTF context alignment, Neo4j pattern advisor pre-trade '
+#                          'consultation, and news sentiment integration.',
+#           'capabilities': [
+#               'structure-based SL/TP (swing points, FVGs, OBs)',
+#               'MTF bias + alignment scoring',
+#               'Neo4j graph pre-trade advisor',
+#               'news sentiment integration',
+#               'dynamic graph-confidence sizing',
+#               'ATR-based SL/TP (fallback)',
+#               'confluence_scorer (0-14)',
+#               'HMM regime detection',
+#               'circuit breakers',
+#           ],
+#           'previous_era': 'RULE_BASED',
+#       })
+#       print("Created BRAIN_V1 era node")
+#   else:
+#       print("Could not connect to Neo4j")
+# ============================================================================
