@@ -266,6 +266,7 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.run_quant_close_algorithm': {'queue': 'critical'},
     'quant.tasks.run_position_reconciliation': {'queue': 'critical'},
     'quant.tasks.run_quant_entry_algorithm': {'queue': 'critical'},
+    'quant.tasks.run_structure_scanner': {'queue': 'critical'},
     'quant.tasks.run_ict_scanner': {'queue': 'analysis'},
     'quant.tasks.run_regime_scan': {'queue': 'analysis'},
     'quant.tasks.run_ai_brain': {'queue': 'analysis'},
@@ -288,8 +289,12 @@ GRAPH_FEATURES_LIVE_FALLBACK = False
 GRAPH_ROUTER_SIGNAL_ACTIVE = os.getenv('GRAPH_ROUTER_SIGNAL_ACTIVE', 'false').lower() == 'true'
 CELERY_BEAT_SCHEDULE = {
     'run-quant-entry-algorithm': {
-        'task': 'quant.tasks.run_quant_entry_algorithm',  # This should match the @shared_task name
+        'task': 'quant.tasks.run_quant_entry_algorithm',
         'schedule': 60.0 * 1,
+    },
+    'run-structure-scanner': {
+        'task': 'quant.tasks.run_structure_scanner',
+        'schedule': 30.0,  # Every 30s — autonomous brain scans for structure entries
     },
     'run-quant-trailing-stop-algorithm': {
         'task': 'quant.tasks.run_quant_trailing_stop_algorithm',  # This should match the @shared_task name
@@ -307,19 +312,20 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.run_backtest',
         'schedule': 60.0 * 60 * 6,  # every 6 hours
     },
-    # --- Hyperliquid: re-enabled alongside Lighter for multi-venue ---
-    'sync-crypto-prices': {
-        'task': 'crypto.tasks.sync_crypto_prices',
-        'schedule': 60.0,
-    },
-    'run-crypto-entry': {
-        'task': 'crypto.tasks.run_crypto_entry',
-        'schedule': 60.0,
-    },
-    'run-crypto-exit': {
-        'task': 'crypto.tasks.run_crypto_exit',
-        'schedule': 30.0,
-    },
+    # --- Hyperliquid: DISABLED — functoolz dependency broken + trading paused ---
+    # 'sync-crypto-prices': {
+    #     'task': 'crypto.tasks.sync_crypto_prices',
+    #     'schedule': 60.0,
+    # },
+    # Hyperliquid disabled — functoolz dependency broken + trading paused
+    # 'run-crypto-entry': {
+    #     'task': 'crypto.tasks.run_crypto_entry',
+    #     'schedule': 60.0,
+    # },
+    # 'run-crypto-exit': {
+    #     'task': 'crypto.tasks.run_crypto_exit',
+    #     'schedule': 30.0,
+    # },
     # --- Lighter.xyz DEX (zero-fee venue) ---
     'run-lighter-entry': {
         'task': 'crypto.tasks.run_lighter_entry',
@@ -344,6 +350,11 @@ CELERY_BEAT_SCHEDULE = {
     'run-lighter-rsi-scalper': {
         'task': 'crypto.tasks.run_lighter_rsi_scalper',
         'schedule': 30.0,  # RSI(2) scalper — 30s (5m candle signals)
+    },
+    # --- Crypto ML Training ---
+    'train-crypto-ml': {
+        'task': 'crypto.tasks.train_crypto_ml',
+        'schedule': 3600.0 * 6,  # Every 6 hours
     },
     # --- Funding Rate Arbitrage Monitor (Hyperliquid vs Lighter) ---
     'run-funding-arb-scan': {

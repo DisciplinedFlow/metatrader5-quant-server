@@ -358,6 +358,20 @@ def run_position_reconciliation():
         logger.error(f"Reconciliation error: {e}")
 
 
+@shared_task(name='quant.tasks.run_structure_scanner', soft_time_limit=45, time_limit=60)
+def run_structure_scanner():
+    """Autonomous structure-based entry scanner — the brain's own eyes."""
+    try:
+        from app.quant.algorithms.structure_entry import run_structure_scanner
+        result = run_structure_scanner()
+        if result and result.get('trades_opened', 0) > 0:
+            logger.info(f"Structure scanner: {result['trades_opened']} trades opened from {result.get('signals_found', 0)} signals")
+    except SoftTimeLimitExceeded:
+        logger.error("Structure scanner timed out.")
+    except Exception as e:
+        logger.error(f"Structure scanner error: {e}")
+
+
 @shared_task(name='quant.tasks.run_regime_scan', soft_time_limit=60, time_limit=90)
 def run_regime_scan():
     """Classify market regime for all pairs. Runs every 5 minutes."""
@@ -1253,6 +1267,10 @@ def record_to_graph(payload):
                 'news_risk': brain_meta.get('news_risk', 'NORMAL'),
             }
             graph.record_trade(trade_data)
+
+        elif record_type == 'lighter_trade':
+            # Lighter/crypto trades — payload already has all fields, pass through
+            graph.record_trade(payload)
 
         elif record_type == 'market_condition':
             graph.record_market_condition(
