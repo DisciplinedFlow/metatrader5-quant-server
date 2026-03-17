@@ -52,6 +52,8 @@ FEED_TIMEOUT = 10
 def get_market_risk_level() -> dict:
     """Get current market risk level from cached news analysis.
 
+    Priority: Pi FinBERT NLP → Claude API → RSS keyword matching.
+
     Returns dict with:
         risk_level: 'NORMAL', 'ELEVATED', 'EXTREME'
         size_multiplier: 0.5 for EXTREME, 0.75 for ELEVATED, 1.0 for NORMAL
@@ -63,6 +65,30 @@ def get_market_risk_level() -> dict:
     if cached:
         return cached
 
+    # Try Pi FinBERT first (actual NLP, 67ms, free)
+    try:
+        from app.quant.ml.pi_client import get_sentiment
+        headlines = _fetch_headlines()
+        if headlines:
+            pi_result = get_sentiment(headlines)
+            if pi_result and pi_result.get('risk_level'):
+                cache.set(NEWS_CACHE_KEY, pi_result, timeout=NEWS_CACHE_TTL)
+                return pi_result
+    except Exception as e:
+        logger.debug(f"Pi sentiment unavailable: {e}")
+
+    # Try Claude API second (smart but costs money)
+    try:
+        from app.quant.intelligence.claude_analyst import get_smart_news_sentiment
+        headlines = _fetch_headlines() if 'headlines' not in dir() else headlines
+        claude_result = get_smart_news_sentiment(headlines)
+        if claude_result and claude_result.get('impacts'):
+            cache.set(NEWS_CACHE_KEY, claude_result, timeout=NEWS_CACHE_TTL)
+            return claude_result
+    except Exception as e:
+        logger.debug(f"Claude sentiment unavailable: {e}")
+
+    # Fallback: keyword matching (always works)
     result = _analyze_news()
     cache.set(NEWS_CACHE_KEY, result, timeout=NEWS_CACHE_TTL)
     return result
