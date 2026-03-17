@@ -2011,6 +2011,23 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                             except Exception as e:
                                 logger.warning(f"CVD: Could not save ML features: {e}")
 
+                            # Broadcast via WebSocket (fire-and-forget)
+                            try:
+                                from app.ws.publisher import publish_trade_opened
+                                publish_trade_opened({
+                                    'trade_id': trade_obj.id,
+                                    'symbol': pair,
+                                    'type': order_type,
+                                    'strategy': custom.name,
+                                    'entry_price': float(trade_obj.entry_price) if trade_obj.entry_price else 0,
+                                    'sl': float(sl_price),
+                                    'tp': float(tp_price),
+                                    'volume': float(order_volume_lots),
+                                    'confluence_score': confluence_score.total_score if confluence_score else None,
+                                })
+                            except Exception:
+                                pass  # WebSocket broadcast is optional
+
                             # Store scale-in data in Redis for position manager
                             if remaining_volume_lots > 0:
                                 try:

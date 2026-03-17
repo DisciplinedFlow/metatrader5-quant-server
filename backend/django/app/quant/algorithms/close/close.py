@@ -90,6 +90,21 @@ def close_algorithm():
                         "symbol": closed_trade.symbol,
                     })
 
+                    # Broadcast via WebSocket (fire-and-forget)
+                    try:
+                        from app.ws.publisher import publish_trade_closed
+                        publish_trade_closed({
+                            'trade_id': closed_trade.id,
+                            'symbol': closed_trade.symbol,
+                            'type': closed_trade.type,
+                            'pnl': float(closed_trade.pnl) if closed_trade.pnl else 0,
+                            'close_price': float(close_price) if close_price else 0,
+                            'closing_reason': closing_reason,
+                            'strategy': getattr(closed_trade, 'strategy', ''),
+                        })
+                    except Exception:
+                        pass  # WebSocket broadcast is optional
+
                     # Update ML features with actual outcome
                     try:
                         _update_ml_features(closed_trade)
