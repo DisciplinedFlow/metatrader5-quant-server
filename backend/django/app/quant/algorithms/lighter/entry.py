@@ -217,12 +217,12 @@ def _check_symbol_performance(symbol):
 
 
 def _get_open_positions():
-    """Get all open Lighter positions."""
+    """Get open Lighter EMA positions (excludes RSI2 — they have their own limit)."""
     from app.crypto.models import CryptoPosition
     return CryptoPosition.objects.filter(
         status='OPEN',
         entry_signal__startswith=PLATFORM_PREFIX,
-    )
+    ).exclude(entry_signal__startswith=f'{PLATFORM_PREFIX}rsi2_')
 
 
 def _check_lighter_losing_streak():

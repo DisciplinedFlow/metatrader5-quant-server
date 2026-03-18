@@ -103,7 +103,7 @@ RSI2_CONFIG = {
         'rsi_overbought': 85,
         'ema_period': 50,
         'sl_pct': 0.010,   # 1.0% SL
-        'tp_pct': 0.0075,  # 0.75% TP (up from 0.5%, improves R:R from 0.5:1 to 0.75:1)
+        'tp_pct': 0.010,   # 1.0% TP — 1:1 R:R requires only >50% WR (was 0.75%, 57% WR needed)
         'size_usd': 12,
     },
     'metals': {
@@ -112,7 +112,7 @@ RSI2_CONFIG = {
         'rsi_overbought': 85,
         'ema_period': 50,
         'sl_pct': 0.008,   # 0.8% SL
-        'tp_pct': 0.006,   # 0.6% TP (up from 0.4%, improves R:R)
+        'tp_pct': 0.008,   # 0.8% TP — 1:1 R:R (was 0.6%)
         'size_usd': 12,
     },
     'forex': {
@@ -121,7 +121,7 @@ RSI2_CONFIG = {
         'rsi_overbought': 85,
         'ema_period': 50,
         'sl_pct': 0.003,   # 0.3% SL
-        'tp_pct': 0.0015,  # 0.15% TP
+        'tp_pct': 0.003,   # 0.3% TP — 1:1 R:R (was 0.15%)
         'size_usd': 12,
     },
 }
@@ -130,10 +130,11 @@ RSI2_CONFIG = {
 RSI2_SYMBOLS = ['ETH', 'BTC', 'SOL', 'XAU']
 
 # Cooldown between trades on same symbol (seconds)
-RSI2_COOLDOWN_SECONDS = 30  # Ultra-aggressive — zero fees make rapid trades viable
+# 600s = 10 min: prevents re-entering same downtrend on 15m bars (knife-catching)
+RSI2_COOLDOWN_SECONDS = 600
 
-# Max simultaneous RSI2 positions
-RSI2_MAX_POSITIONS = 3
+# Max simultaneous RSI2 positions (2 leaves 1+ slot for trend/mean-reversion strategies)
+RSI2_MAX_POSITIONS = 2
 
 
 def _get_config(symbol):
@@ -237,8 +238,9 @@ def _scan_symbol(symbol):
 
     config = _get_config(symbol)
 
-    # Fetch 5m candles — need 60 bars for EMA(50) + buffer
-    candles = get_candles(symbol, resolution='5m', count_back=60)
+    # Fetch 15m candles — better mean reversion properties than 5m on crypto
+    # 60 bars × 15min = 15 hours of history (sufficient for EMA(50) + buffer)
+    candles = get_candles(symbol, resolution='15m', count_back=60)
     if not candles or len(candles) < config['ema_period'] + 5:
         return False
 
