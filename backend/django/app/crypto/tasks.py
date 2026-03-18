@@ -7,6 +7,15 @@ from .bot_control import is_crypto_bot_paused
 logger = logging.getLogger('app.crypto')
 
 
+def _check_global_daily_halt():
+    """Return True if the global daily loss halt is active."""
+    try:
+        from django.core.cache import cache
+        return bool(cache.get('global_daily_halt'))
+    except Exception:
+        return False
+
+
 @shared_task(name='crypto.tasks.sync_crypto_prices', max_retries=3, soft_time_limit=120)
 def sync_crypto_prices():
     if is_crypto_bot_paused():
@@ -31,7 +40,6 @@ def run_crypto_entry():
     if is_crypto_bot_paused():
         logger.info("Crypto bot is paused, skipping entry algorithm.")
         return
-    from app.quant.tasks import _check_global_daily_halt
     if _check_global_daily_halt():
         logger.debug("Daily halt — skipping crypto entry.")
         return
@@ -92,7 +100,6 @@ def run_crypto_backtest_all(symbols=None):
 def run_lighter_entry():
     if is_crypto_bot_paused():
         return
-    from app.quant.tasks import _check_global_daily_halt
     if _check_global_daily_halt():
         logger.debug("Daily halt — skipping lighter entry.")
         return
