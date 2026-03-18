@@ -14,21 +14,28 @@ HTF bias aligned            2     ICT: Never trade against HTF structure
 Liquidity sweep detected    2     ICT: Sweep = institutional entry
 CVD divergence              2     Our own data: CVD Lack of Participants = best WR
 Kill zone active            1     Research: 30-50% larger pip range in kill zones
-Fair Value Gap present      1     ICT: FVG = institutional imbalance
-Order Block at entry        1     ICT: OB = institutional origin point
+Fair Value Gap present      1     ICT/ICC: H4/H1 FVG — price currently at HTF zone
+Order Block at entry        1     ICT/ICC: H4/H1 OB — price currently at HTF zone
+HTF POI stacked             1     ICC: FVG + OB overlap same H4/H1 level (strongest)
+Fibonacci golden pocket     1     Math: 0.618 = 1/φ — most respected retracement level
+Volume Profile POC          1     Stats: price magnetic to highest-volume price level
 Regime favorable            1     HMM regime aligns with strategy type
 Displacement detected       1     Research: 3+ strong candles = institutional move
 Session quality             1     Kill zone timing bonus
 VWAP alignment              1     Institutional benchmark: direction matches VWAP bias
 Session level sweep         1     Near prev day/Asian highs-lows = liquidity sweep zone
 -----------------------------------------------------
-Maximum:                   14
+Maximum:                   17
+
+NOTE on FVG and OB: These now require HTF (H4 or H1) detection via icc_detector.
+M15 FVGs/OBs are noise and no longer scored. fvg_present=True means price is
+currently inside or approaching an unmitigated H4/H1 FVG (much more selective).
 
 Scoring bands:
   0-2: NO TRADE -- need at least volume + one confirmation
   3:   REDUCED SIZE (50%) -- edge present but thin
-  4-7: FULL SIZE (100%) -- CVD + trend = the core edge, trade it
-  8-14: ENHANCED SIZE (150%) -- everything aligned, size up
+  4-8: FULL SIZE (100%) -- CVD + trend = the core edge, trade it
+  9-17: ENHANCED SIZE (150%) -- everything aligned, size up
 
 Paul Tudor Jones: "Risk/reward: don't take a trade unless potential reward
 is at least 3x the risk." High confluence = higher expected R:R.
@@ -102,13 +109,13 @@ class ConfluenceScore:
 # ---------------------------------------------------------------------------
 
 SCORE_BANDS = {
-    'skip':     {'min': 0, 'max': 2, 'size_mult': 0.0},
-    'reduced':  {'min': 3, 'max': 3, 'size_mult': 0.5},
-    'full':     {'min': 4, 'max': 7, 'size_mult': 1.0},
-    'enhanced': {'min': 8, 'max': 14, 'size_mult': 1.5},
+    'skip':     {'min': 0,  'max': 2,  'size_mult': 0.0},
+    'reduced':  {'min': 3,  'max': 3,  'size_mult': 0.5},
+    'full':     {'min': 4,  'max': 8,  'size_mult': 1.0},
+    'enhanced': {'min': 9,  'max': 17, 'size_mult': 1.5},
 }
 
-MAX_POSSIBLE_SCORE = 14  # 9 original factors + VWAP + session level sweep = 14
+MAX_POSSIBLE_SCORE = 17  # 11 original + stacked + fib + POC = 17
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +317,101 @@ def _evaluate_order_block(order_block_at_entry: Optional[bool]) -> ConfluenceFac
     return ConfluenceFactor(
         name='order_block', points=0, max_points=max_pts,
         present=False, detail='No Order Block at entry level',
+    )
+
+
+def _evaluate_htf_poi_stacked(htf_poi_stacked: Optional[bool]) -> ConfluenceFactor:
+    """HTF stacked POI — FVG and OB overlap at the same H4/H1 level (1 point).
+
+    ICC framework (Trades by Sci): when an FVG is nested inside an OB at the
+    same higher-timeframe level, two independent institutional decisions
+    produced the same zone. The OB marks where the move originated; the FVG is
+    the imbalance that move created. Together they form the highest-conviction
+    POI in the SMC toolkit.
+
+    This factor is separate from fvg_present and order_block_at_entry — you
+    can score all three simultaneously (FVG +1, OB +1, stacked +1 = +3).
+    It is only populated by icc_detector.detect_htf_poi(); if the detector
+    wasn't run, this scores 0 (fail-open).
+    """
+    max_pts = 1
+
+    if htf_poi_stacked is None:
+        return ConfluenceFactor(
+            name='htf_poi_stacked', points=0, max_points=max_pts,
+            present=False, detail='Stacked POI data not available (icc_detector not run)',
+        )
+
+    if htf_poi_stacked:
+        return ConfluenceFactor(
+            name='htf_poi_stacked', points=max_pts, max_points=max_pts,
+            present=True, detail='HTF stacked POI: FVG + OB overlap at H4/H1 level',
+        )
+
+    return ConfluenceFactor(
+        name='htf_poi_stacked', points=0, max_points=max_pts,
+        present=False, detail='No stacked HTF POI at this level',
+    )
+
+
+def _evaluate_fib_golden_pocket(fib_alignment: Optional[bool]) -> ConfluenceFactor:
+    """Fibonacci golden pocket alignment (1 point).
+
+    The golden pocket (0.618-0.650 retracement) is derived from the inverse of
+    the Golden Ratio φ=1.618. It is the most statistically respected Fibonacci
+    level across all markets. When a POI (FVG/OB) sits at the 0.618 level of
+    the last major H4 swing, you have two independent institutional reasons for
+    the level to hold: structural imbalance AND mathematical proportion.
+
+    Computed by icc_detector._get_golden_pocket() on H4 data.
+    """
+    max_pts = 1
+
+    if fib_alignment is None:
+        return ConfluenceFactor(
+            name='fib_golden_pocket', points=0, max_points=max_pts,
+            present=False, detail='Fibonacci data not available (icc_detector not run)',
+        )
+
+    if fib_alignment:
+        return ConfluenceFactor(
+            name='fib_golden_pocket', points=max_pts, max_points=max_pts,
+            present=True, detail='Price at 0.618 Fibonacci golden pocket (H4 swing)',
+        )
+
+    return ConfluenceFactor(
+        name='fib_golden_pocket', points=0, max_points=max_pts,
+        present=False, detail='Price not at Fibonacci golden pocket',
+    )
+
+
+def _evaluate_volume_poc(volume_poc: Optional[bool]) -> ConfluenceFactor:
+    """Volume Profile Point of Control proximity (1 point).
+
+    The POC is the price level with the highest cumulative tick_volume on H4 —
+    where the most institutional trading activity occurred. Price gravitates
+    back to POC because unfilled orders cluster there. A POI (FVG/OB) near the
+    POC has two reasons to hold: structural imbalance AND maximum liquidity.
+
+    Computed by icc_detector._compute_volume_poc() on H4 tick_volume.
+    """
+    max_pts = 1
+
+    if volume_poc is None:
+        return ConfluenceFactor(
+            name='volume_poc', points=0, max_points=max_pts,
+            present=False, detail='Volume POC data not available (icc_detector not run)',
+        )
+
+    if volume_poc:
+        return ConfluenceFactor(
+            name='volume_poc', points=max_pts, max_points=max_pts,
+            present=True, detail='Price within 1 ATR of H4 Volume Profile POC',
+        )
+
+    return ConfluenceFactor(
+        name='volume_poc', points=0, max_points=max_pts,
+        present=False, detail='Price not near Volume Profile POC',
     )
 
 
@@ -548,8 +650,11 @@ def score_confluence(
     liquidity_sweep: Optional[bool] = None,     # True if sweep detected
     cvd_divergence: Optional[bool] = None,      # True if CVD confirms direction
     kill_zone_active: Optional[bool] = None,    # True if in a kill zone
-    fvg_present: Optional[bool] = None,         # True if FVG at entry level
-    order_block_at_entry: Optional[bool] = None,  # True if OB at entry level
+    fvg_present: Optional[bool] = None,         # True if H4/H1 FVG at current price (icc_detector)
+    order_block_at_entry: Optional[bool] = None,  # True if H4/H1 OB at current price (icc_detector)
+    htf_poi_stacked: Optional[bool] = None,     # True if FVG+OB overlap at same H4/H1 level (ICC)
+    fib_golden_pocket: Optional[bool] = None,   # True if price at 0.618 fib of last H4 swing
+    volume_poc: Optional[bool] = None,          # True if price within 1 ATR of H4 Volume POC
     regime_favorable: Optional[bool] = None,    # True if HMM regime supports strategy
     displacement: Optional[bool] = None,        # True if displacement move detected
     vwap_bias: Optional[str] = None,            # 'BULLISH', 'BEARISH', 'NEUTRAL' from VWAP
@@ -600,6 +705,9 @@ def score_confluence(
         _evaluate_kill_zone(kill_zone_active),
         _evaluate_fvg(fvg_present),
         _evaluate_order_block(order_block_at_entry),
+        _evaluate_htf_poi_stacked(htf_poi_stacked),
+        _evaluate_fib_golden_pocket(fib_golden_pocket),
+        _evaluate_volume_poc(volume_poc),
         _evaluate_regime(regime_favorable, strategy_name),
         _evaluate_displacement(displacement),
         _evaluate_session_quality(),

@@ -387,6 +387,26 @@ def entry_algorithm():
                 status='FILLED',
             )
 
+            # Record trade open to knowledge graph
+            try:
+                from app.quant.tasks import record_to_graph
+                record_to_graph.delay({
+                    'type': 'lighter_trade_open',
+                    'trade_id': f'lighter_{position.id}',
+                    'django_id': position.id,
+                    'symbol': symbol,
+                    'direction': 'BUY' if is_buy else 'SELL',
+                    'entry_time': position.opened_at,
+                    'entry_price': float(current_price),
+                    'strategy': position.entry_signal or 'unknown',
+                    'venue': 'LIGHTER',
+                    'hour_utc': position.opened_at.hour if position.opened_at else 0,
+                    'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
+                    'trading_era': 'BRAIN_V1',
+                })
+            except Exception:
+                pass  # Graph recording is optional
+
             # Record reasoning to knowledge graph
             _record_reasoning(
                 trade_id=position.id,

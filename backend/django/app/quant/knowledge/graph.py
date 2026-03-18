@@ -287,6 +287,136 @@ class ForexKnowledgeGraph:
         record = result.single()
         return record['trade_id'] if record else trade_id
 
+    def record_trade_open(self, trade_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Record a trade OPEN into the graph (no close_time/pnl yet).
+        Creates a Trade node with status='OPEN'. On close, update_trade_close()
+        fills in the closing fields.
+        """
+        if not self.connected:
+            return None
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.execute_write(self._create_trade_open_tx, trade_data)
+                logger.info("Recorded trade open %s in graph", result)
+                return result
+        except Exception as e:
+            err = str(e)
+            if 'already exists' in err or 'ConstraintValidation' in err:
+                logger.debug("Trade open %s already in graph (duplicate)", trade_data.get('trade_id'))
+                return trade_data.get('trade_id')
+            logger.error("Failed to record trade open: %s", e)
+            return None
+
+    @staticmethod
+    def _create_trade_open_tx(tx, d: Dict[str, Any]) -> str:
+        trade_id = str(d.get('trade_id', uuid.uuid4()))
+        symbol = d.get('symbol', 'UNKNOWN')
+        market_type = SYMBOL_MARKET_TYPE.get(symbol, 'FOREX')
+        hour_utc = d.get('hour_utc', 0)
+        session_name = d.get('session', _get_session(hour_utc))
+        venue = d.get('venue', 'MT5')
+        domain = d.get('domain', f"{market_type}_{venue}")
+
+        entry_time = d.get('entry_time', datetime.utcnow())
+        if hasattr(entry_time, 'isoformat'):
+            entry_time = entry_time.isoformat()
+
+        query = """
+        MERGE (sym:Symbol {id: $symbol})
+          ON CREATE SET sym.market_type = $market_type, sym.created_at = datetime()
+        CREATE (t:Trade {
+            id: $trade_id,
+            django_trade_id: $django_id,
+            symbol: $symbol,
+            direction: $direction,
+            venue: $venue,
+            domain: $domain,
+            entry_time: datetime($entry_time),
+            entry_price: $entry_price,
+            strategy: $strategy,
+            session: $session,
+            hour_utc: $hour_utc,
+            day_of_week: $day_of_week,
+            trading_era: $trading_era,
+            status: 'OPEN'
+        })
+        CREATE (t)-[:TRADED_SYMBOL]->(sym)
+        MERGE (strat:Strategy {name: $strategy})
+        CREATE (t)-[:EXECUTED_BY]->(strat)
+        RETURN t.id as trade_id
+        """
+        result = tx.run(
+            query,
+            trade_id=trade_id,
+            django_id=d.get('django_id', 0),
+            symbol=symbol,
+            direction=d.get('direction', 'BUY'),
+            venue=venue,
+            domain=domain,
+            market_type=market_type,
+            entry_time=entry_time,
+            entry_price=float(d.get('entry_price', 0)),
+            strategy=d.get('strategy', 'unknown'),
+            session=session_name,
+            hour_utc=hour_utc,
+            day_of_week=d.get('day_of_week', 0),
+            trading_era=d.get('trading_era', 'BRAIN_V1'),
+        )
+        record = result.single()
+        return record['trade_id'] if record else trade_id
+
+    def update_trade_close(self, trade_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Update an existing OPEN trade node with closing data.
+        If the trade node doesn't exist, falls back to record_trade (full create).
+        """
+        if not self.connected:
+            return None
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.execute_write(self._update_trade_close_tx, trade_data)
+                if result:
+                    logger.info("Updated trade close %s in graph", result)
+                    return result
+                # Node didn't exist — fall back to full create
+                logger.debug("Trade %s not found for update, creating full record",
+                             trade_data.get('trade_id'))
+                return self.record_trade(trade_data)
+        except Exception as e:
+            logger.error("Failed to update trade close: %s", e)
+            return None
+
+    @staticmethod
+    def _update_trade_close_tx(tx, d: Dict[str, Any]) -> Optional[str]:
+        trade_id = str(d.get('trade_id', ''))
+        if not trade_id:
+            return None
+
+        close_time = d.get('close_time', datetime.utcnow())
+        if hasattr(close_time, 'isoformat'):
+            close_time = close_time.isoformat()
+
+        query = """
+        MATCH (t:Trade {id: $trade_id})
+        SET t.close_time = datetime($close_time),
+            t.close_price = $close_price,
+            t.pnl = $pnl,
+            t.closing_reason = $closing_reason,
+            t.status = 'CLOSED'
+        RETURN t.id as trade_id
+        """
+        result = tx.run(
+            query,
+            trade_id=trade_id,
+            close_time=close_time,
+            close_price=float(d.get('close_price', 0)),
+            pnl=float(d.get('pnl', 0)),
+            closing_reason=d.get('closing_reason', ''),
+        )
+        record = result.single()
+        return record['trade_id'] if record else None
+
     def record_trade_reasoning(self, data: Dict[str, Any]) -> Optional[str]:
         """
         Record WHY a trade was taken as a separate TradeReasoning node.

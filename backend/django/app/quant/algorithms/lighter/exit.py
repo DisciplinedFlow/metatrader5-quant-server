@@ -22,8 +22,17 @@ logger = logging.getLogger('app.lighter')
 
 # -- Position management thresholds --
 BREAKEVEN_PROFIT_PCT = 0.02        # Move SL to entry after 2% unrealized profit
-PROFIT_PROTECT_MIN_USD = 0.50      # Activate profit protection above $0.50
-PROFIT_PROTECT_GIVEBACK = 0.40     # Close if profit drops below 40% of peak
+
+# Tiered profit protection: (min_peak_usd, keep_fraction)
+# Higher peaks get tighter protection to lock in more profit
+PROFIT_TIERS = [
+    (3.00, 0.80),   # $3.00+ peak → close if drops below 80% of peak
+    (1.00, 0.70),   # $1.00+ peak → close if drops below 70% of peak
+    (0.30, 0.60),   # $0.30+ peak → close if drops below 60% of peak
+]
+# Fallback for legacy references
+PROFIT_PROTECT_MIN_USD = 0.30
+PROFIT_PROTECT_GIVEBACK = 0.60
 TIME_EXIT_HOURS = 48               # Close stale positions after 48 hours
 TIME_EXIT_MIN_PROFIT_PCT = 0.01    # ...unless profit exceeds 1%
 
@@ -138,19 +147,21 @@ def exit_algorithm():
             logger.info("Lighter position closed: %s pnl=$%.2f reason=%s",
                          position.symbol, pnl_usd, close_reason)
 
-            # Record to Neo4j knowledge graph
+            # Update trade close in Neo4j knowledge graph
+            # Uses update_trade_close to fill in the OPEN node created at entry.
+            # Falls back to full create if the open node doesn't exist.
             try:
                 from app.quant.tasks import record_to_graph
                 record_to_graph.delay({
-                    'type': 'lighter_trade',
+                    'type': 'lighter_trade_close',
                     'trade_id': f'lighter_{position.id}',
                     'django_id': position.id,
                     'symbol': position.symbol,
                     'direction': 'BUY' if position.side == 'LONG' else 'SELL',
-                    'entry_price': position.entry_price,
-                    'close_price': current_price,
-                    'pnl': pnl_usd,
-                    'strategy': position.entry_signal,
+                    'entry_price': float(position.entry_price),
+                    'close_price': float(current_price),
+                    'pnl': float(pnl_usd),
+                    'strategy': position.entry_signal or 'unknown',
                     'closing_reason': close_reason,
                     'entry_time': position.opened_at,
                     'close_time': position.closed_at,
@@ -367,24 +378,36 @@ def _update_peak_profit(position, current_pnl):
 
 
 def _check_profit_protection(position, current_pnl):
-    """Close if profit was above $0.50 but dropped below 40% of peak.
+    """Tiered profit protection: higher peaks get tighter floors.
+
+    PROFIT_TIERS checked top-down (highest threshold first):
+      $3.00+ peak → keep 80%
+      $1.00+ peak → keep 70%
+      $0.30+ peak → keep 60%
 
     Returns close_reason string or None.
     """
-    if position.peak_profit_usd is None:
-        return None
-    if position.peak_profit_usd < PROFIT_PROTECT_MIN_USD:
+    peak = position.peak_profit_usd
+    if peak is None or peak < PROFIT_TIERS[-1][0]:
         return None
 
-    threshold = position.peak_profit_usd * PROFIT_PROTECT_GIVEBACK
+    # Find the tightest tier that applies (list is sorted highest-first)
+    keep_fraction = PROFIT_TIERS[-1][1]  # default to loosest
+    for min_peak, fraction in PROFIT_TIERS:
+        if peak >= min_peak:
+            keep_fraction = fraction
+            break
+
+    threshold = peak * keep_fraction
     if current_pnl > threshold:
         return None
 
-    giveback_pct = (position.peak_profit_usd - current_pnl) / position.peak_profit_usd * 100
+    giveback_pct = (peak - current_pnl) / peak * 100
     logger.info(
-        "PROFIT PROTECTION: %s %s peak=$%.2f current=$%.2f (gave back %.0f%%)",
-        position.symbol, position.side,
-        position.peak_profit_usd, current_pnl, giveback_pct,
+        "PROFIT PROTECTION [tier %.0f%%]: %s %s peak=$%.2f current=$%.2f "
+        "floor=$%.2f (gave back %.0f%%)",
+        keep_fraction * 100, position.symbol, position.side,
+        peak, current_pnl, threshold, giveback_pct,
     )
     return 'PROFIT_PROTECTION'
 

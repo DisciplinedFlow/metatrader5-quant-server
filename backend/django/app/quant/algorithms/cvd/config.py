@@ -8,7 +8,7 @@ from app.utils.constants import MT5Timeframe
 DEFAULT_TIMEFRAME = MT5Timeframe.M15
 LEVERAGE = 200
 CAPITAL_PER_TRADE = 2000
-MAX_LOT_SIZE = 1.0     # Hard safety cap — never exceed this regardless of sizing math
+MAX_LOT_SIZE = 3.0     # Raised from 1.0 — needed for €250 risk on forex pairs (EURUSD ~€180/lot)
 DEVIATION = 20
 MAX_OPEN_TRADES = 20   # Opened up for data collection — circuit breakers + daily halt still protect
 ATR_PERIOD = 14

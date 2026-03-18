@@ -113,6 +113,27 @@ def reconcile_positions():
                 symbol, exch['side'], entry, exch['size'],
                 stop_loss, take_profit, position.id,
             )
+
+            # Record trade open to knowledge graph
+            try:
+                from app.quant.tasks import record_to_graph
+                record_to_graph.delay({
+                    'type': 'lighter_trade_open',
+                    'trade_id': f'lighter_{position.id}',
+                    'django_id': position.id,
+                    'symbol': symbol,
+                    'direction': 'BUY' if exch['side'] == 'LONG' else 'SELL',
+                    'entry_time': position.opened_at,
+                    'entry_price': float(entry),
+                    'strategy': position.entry_signal or 'reconciled',
+                    'venue': 'LIGHTER',
+                    'hour_utc': position.opened_at.hour if position.opened_at else 0,
+                    'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
+                    'trading_era': 'BRAIN_V1',
+                })
+            except Exception:
+                pass
+
         else:
             # Position exists in both — update size/entry/side if they drifted
             db_pos = db_symbols[symbol]

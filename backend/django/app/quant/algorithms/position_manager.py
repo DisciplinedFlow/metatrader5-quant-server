@@ -58,22 +58,21 @@ TIME_EXIT_MIN_PROFIT = 2.0     # Need $2+ to justify holding past 20min
 ATR_PERIOD = 14
 
 # -- Profit protection thresholds --
-PROFIT_PROTECT_MIN_USD = 4.0    # Activate earlier — protect any meaningful gain
-PROFIT_PROTECT_GIVEBACK = 0.25  # Tight: close if giving back 25%+ from peak (was 40%)
+PROFIT_PROTECT_MIN_USD = 30.0   # Only protect after clearly past 2R territory (~€25 at €250 risk)
+PROFIT_PROTECT_GIVEBACK = 0.35  # Allow 35% giveback from peak before closing (was 25%)
 
 # -- ATR Floor Trail (always-on, aggressive) --
 # Guarantees SL trails behind best price even when no S/R or swing levels exist.
 # At 2s tick interval, this creates a ratcheting floor that locks profits.
 ATR_FLOOR_TRAIL_MULT = 1.0     # Trail 1.0x current ATR behind best price (tightened from 1.5)
-ATR_FLOOR_MIN_PROFIT_R = 1.0   # Only activate after 1R profit (breakeven first)
+ATR_FLOOR_MIN_PROFIT_R = 2.0   # Only activate after 2R profit — let fixed TP fire first
 
-# -- TP Removal: let trailing SL handle exits for high-edge symbols --
-# Data shows XAUUSD is 95% of alpha (+$980). Fixed TP caps outlier winners.
-# Trailing SL (MFE Lock + ATR Floor + Swing) replaces TP as the exit mechanism.
-NO_TP_SYMBOLS = {'XAUUSD'}
+# -- TP Removal: disabled — fixed TP handles primary exit, trail captures beyond-TP runners --
+# Previous: XAUUSD TP removed based on early data. Restored to achieve designed 1:2 R:R.
+NO_TP_SYMBOLS = set()
 
 # -- Hard dollar loss ceiling (O'Neil: "Cut all losses at 7-8%") --
-MAX_LOSS_PER_TRADE_USD = 50.0  # Absolute ceiling — close immediately if unrealized loss hits this
+MAX_LOSS_PER_TRADE_USD = 250.0  # Matches entry.py MAX_LOSS_PER_TRADE — €250 risk stress test
 
 # -- Livermore Scale-In ("feeling-out bet") --
 SCALE_IN_ATR_THRESHOLD = 1.0   # Add remaining size after +1x ATR confirmation

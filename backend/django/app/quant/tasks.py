@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # When True, bypasses daily halt and raises position limits for max data collection.
 from app.quant.algorithms.cvd.entry import TRAINING_MODE
 
-GLOBAL_MAX = 20  # Opened up for data collection — daily halt + circuit breakers still protect
-DAILY_MAX_LOSS_USD = 9999.0  # Disabled for data collection phase (Mar 15-31)
+GLOBAL_MAX = 10  # Reduced from 20 — live-account simulation (going live checklist)
+DAILY_MAX_LOSS_USD = 1500.0  # Scaled from €300: same 6× ratio at €250/trade risk
 DRAWDOWN_REDUCTION_THRESHOLD = 2000.0   # Total cumulative loss to trigger size reduction
 DRAWDOWN_REDUCED_CAPITAL = 100  # Fall back to conservative sizing
 
@@ -228,19 +228,17 @@ def run_quant_entry_algorithm():
     if is_bot_paused():
         logger.info("Bot is paused, skipping entry algorithm.")
         return
-    if not TRAINING_MODE and _check_global_daily_halt():
+    if _check_global_daily_halt():  # Always active — stress test needs real guardrails
         logger.debug("Daily halt — skipping entry algorithms.")
         return
     try:
         from app.nexus.models import StrategyConfig, PairLock
 
-        # Fast global circuit breaker check — skip all strategy iteration
-        # when the global CB is active (prevents ~12 redundant checks + graph writes)
-        if not TRAINING_MODE:
-            from django.core.cache import cache
-            if cache.get('circuit_breaker:global'):
-                logger.debug("Global circuit breaker active — skipping all entry algorithms.")
-                return
+        # Fast global circuit breaker check — always on (even in training mode for stress test)
+        from django.core.cache import cache
+        if cache.get('circuit_breaker:global'):
+            logger.debug("Global circuit breaker active — skipping all entry algorithms.")
+            return
 
         active_strategies = StrategyConfig.objects.filter(is_active=True).order_by('priority')
         if not active_strategies.exists():
@@ -1265,6 +1263,18 @@ def record_to_graph(payload):
         elif record_type == 'lighter_trade':
             # Lighter/crypto trades — payload already has all fields, pass through
             graph.record_trade(payload)
+
+        elif record_type == 'lighter_trade_open':
+            # Record a Lighter position open (no close data yet)
+            graph.record_trade_open(payload)
+
+        elif record_type == 'lighter_trade_close':
+            # Update an existing open Lighter trade with close data
+            graph.update_trade_close(payload)
+
+        elif record_type == 'trade_open':
+            # Record an MT5 trade open (no close data yet)
+            graph.record_trade_open(payload)
 
         elif record_type == 'market_condition':
             graph.record_market_condition(

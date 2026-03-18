@@ -72,13 +72,24 @@ SIGNAL_LOOKBACK = 3                  # Check last N completed bars (balance fres
 # market context gate, ML meta-filter, confluence gates.
 # Only hard guards remain: market closed, no tick data, insufficient bars.
 # Set to False to re-enable all protection gates for live trading.
-TRAINING_MODE = True  # BRAIN_V1 training run — brain components active, gates bypassed
+TRAINING_MODE = False  # All protection gates active — sniper mode, CVD LoP only
+
+# Commodities trade 24/7 (weekdays) — no session restriction.
+# Gold/silver react to geopolitical events at any hour; WTI/Brent
+# have continuous global volume. CVD signals on these are meaningful
+# outside London hours unlike forex (where thin liquidity = noise).
+_COMMODITY_SYMBOLS = frozenset([
+    'XAUUSD', 'XAGUSD',             # COMEX metals (gold, silver)
+    'XPTUSD', 'XPDUSD', 'XCUUSD',  # Platinum, palladium, copper
+    'USOUSD', 'UKOUSDft',           # NYMEX WTI + ICE Brent crude
+    'NG-C', 'NATGAS', 'XNGUSD',     # Natural gas
+])
 REGIME_MISMATCH_SIZE_PENALTY = 0.50  # Halve position when regime doesn't match strategy
 GROUP_TENDENCY_SIZE_PENALTY = 0.50   # Halve position when peer pairs disagree with direction
 GROUP_TENDENCY_CACHE_TTL = 300       # Cache correlation check for 5 minutes
 
 # --- Hard Loss Ceiling (matches position_manager.MAX_LOSS_PER_TRADE_USD) ---
-MAX_LOSS_PER_TRADE = 50.0            # Broker SL placed here — no software timing gaps
+MAX_LOSS_PER_TRADE = 250.0           # €250 risk → €500 win at 1:2 R:R (stress test vs €2k live account)
 
 # --- Livermore Scale-In ("feeling-out bet") ---
 INITIAL_SIZE_FRACTION = 0.60  # Enter at 60%, add remaining 40% on confirmation
@@ -427,28 +438,25 @@ def _compute_sl_tp(symbol, entry_price, order_type, atr_val, sl_mult, tp_mult):
 
 
 def _is_trading_session():
-    """Check if current UTC hour is within allowed trading sessions.
+    """Allow ONLY London open and London-NY overlap.
 
-    Trading 24/7 across all sessions except:
-    - Saturday (markets closed)
-    - Sunday before 22:00 UTC (markets closed)
-    - Sunday 22:00-Monday 02:00 UTC (first 4h dead zone, thin liquidity)
+    CVD divergence signals require real institutional volume.
+    These two windows account for ~70% of daily forex volume.
+
+    Allowed:
+    - London open:       07:00–10:00 UTC
+    - London-NY overlap: 13:00–17:00 UTC
+
+    Everything else (Asian session, NY afternoon, overnight) is blocked.
+    Weekends always blocked.
     """
     from datetime import datetime, timezone as tz
     now = datetime.now(tz.utc)
-    # Saturday = markets closed
-    if now.weekday() == 5:
+    # Weekend — markets closed
+    if now.weekday() >= 5:
         return False
-    # Sunday before 22:00 UTC = markets closed
-    if now.weekday() == 6 and now.hour < 22:
-        return False
-    # Sunday 22:00-23:59 = first hours dead zone
-    if now.weekday() == 6 and now.hour >= 22:
-        return False
-    # Monday 00:00-01:59 = still dead zone (4h after Sunday open)
-    if now.weekday() == 0 and now.hour < 2:
-        return False
-    return True
+    h = now.hour
+    return (7 <= h < 10) or (13 <= h < 17)
 
 
 # ---------------------------------------------------------------------------
@@ -1065,42 +1073,27 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
         #     logger.info(f"CVD entry blocked by backtest gate for '{custom.name}'.")
         #     return
 
-        if not TRAINING_MODE:
-            if not _is_trading_session():
-                logger.info(f"CVD: Outside trading session (07:00-17:00 UTC), skipping.")
-                try:
-                    from app.quant.tasks import record_to_graph
-                    record_to_graph.delay({
-                        'type': 'rejection',
-                        'symbol': 'ALL',
-                        'direction': 'UNKNOWN',
-                        'rejection_layer': 'TIME_FILTER',
-                        'rejection_reason': 'Outside trading session',
-                        'confluence_score': 0,
-                        'regime': 'UNKNOWN',
-                    })
-                except Exception:
-                    pass
-                return
+        # Session filter moved into pair loop — commodities (metals/energy)
+        # are exempt and trade 24/7. Forex pairs still restricted to London+NY.
 
-            # --- High-impact economic event guard (fast Redis check) ---
-            event_blocked, event_name = _check_high_impact_events()
-            if event_blocked:
-                logger.warning(f"CVD: Entry blocked: high-impact event '{event_name}' within 30min window")
-                try:
-                    from app.quant.tasks import record_to_graph
-                    record_to_graph.delay({
-                        'type': 'rejection',
-                        'symbol': 'ALL',
-                        'direction': 'UNKNOWN',
-                        'rejection_layer': 'MARKET_CONTEXT',
-                        'rejection_reason': f'High-impact event: {event_name}',
-                        'confluence_score': 0,
-                        'regime': 'UNKNOWN',
-                    })
-                except Exception:
-                    pass
-                return
+        # --- High-impact economic event guard (fast Redis check) ---
+        event_blocked, event_name = _check_high_impact_events()
+        if event_blocked:
+            logger.warning(f"CVD: Entry blocked: high-impact event '{event_name}' within 30min window")
+            try:
+                from app.quant.tasks import record_to_graph
+                record_to_graph.delay({
+                    'type': 'rejection',
+                    'symbol': 'ALL',
+                    'direction': 'UNKNOWN',
+                    'rejection_layer': 'MARKET_CONTEXT',
+                    'rejection_reason': f'High-impact event: {event_name}',
+                    'confluence_score': 0,
+                    'regime': 'UNKNOWN',
+                })
+            except Exception:
+                pass
+            return
 
         # --- Global circuit breaker check ---
         if not TRAINING_MODE:
@@ -1170,6 +1163,27 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 logger.info(f"CVD: Skipping {pair} — market closed.")
                 continue
 
+            # --- Session filter (forex only — commodities trade 24/7) ---
+            # Metals and energy react to geopolitical events around the clock.
+            # Forex CVD signals outside London/NY are noise (thin liquidity).
+            if not TRAINING_MODE and pair not in _COMMODITY_SYMBOLS:
+                if not _is_trading_session():
+                    logger.debug(f"CVD: {pair} outside forex session (07:00-17:00 UTC), skipping.")
+                    try:
+                        from app.quant.tasks import record_to_graph
+                        record_to_graph.delay({
+                            'type': 'rejection',
+                            'symbol': pair,
+                            'direction': 'UNKNOWN',
+                            'rejection_layer': 'TIME_FILTER',
+                            'rejection_reason': 'Outside forex session',
+                            'confluence_score': 0,
+                            'regime': 'UNKNOWN',
+                        })
+                    except Exception:
+                        pass
+                    continue
+
             # --- Energy-specific position limits ---
             energy_ok, energy_reason = _check_energy_position_limits(pair)
             if not energy_ok:
@@ -1209,12 +1223,11 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     logger.info(f"CVD: {corr_reason}")
                     continue
 
-            # --- Per-symbol circuit breaker ---
-            if not TRAINING_MODE:
-                cb_ok, cb_reason = _check_circuit_breaker(strategy_config, symbol=pair)
-                if not cb_ok:
-                    logger.debug(f"CVD: {pair} — {cb_reason}")
-                    continue
+            # --- Per-symbol circuit breaker --- always on (stress test needs real guardrails)
+            cb_ok, cb_reason = _check_circuit_breaker(strategy_config, symbol=pair)
+            if not cb_ok:
+                logger.debug(f"CVD: {pair} — {cb_reason}")
+                continue
 
             # --- Anti-churn: post-trade cooldown ---
             if not TRAINING_MODE:
@@ -1371,7 +1384,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
             # Router validity was already enforced above (pre-signal gate).
             # Here we just read the regime-based parameters for sizing/SL/confluence.
             router_mult = 1.0
-            router_min_confluence = 3  # Brain mode: MTF + structure + advisor are the real filters
+            router_min_confluence = 5  # Sniper mode: only high-confluence setups
             router_sl_adj = 1.0
             try:
                 from app.quant.algorithms.strategy_router import route_symbol
@@ -1410,7 +1423,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
 
             # --- ML Signal Scorer ---
             ml_score, ml_accept, ml_features = 0.5, True, {}
-            llm_result = None  # LLM scorer result (populated after XGBoost gate)
+            llm_result = None  # Always None now — LLM runs async, never blocks
             try:
                 from app.quant.ml.scorer import score_signal
                 tick_info_for_ml = _get_cached_tick(pair)
@@ -1445,59 +1458,96 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 logger.debug(f"ML scoring unavailable: {e}")
 
             # --- LLM Scorer Gate (second filter after XGBoost) ---
-            # Only runs when XGBoost accepted. LLM can REJECT but never override
-            # a reject to accept. Non-blocking: if Ollama is down, trade proceeds.
-            if ml_accept:
+            # Runs in a background thread — NEVER blocks trade execution.
+            # qwen2.5:1.5b takes 12-30s on Hailo NPU; blocking on this would burn
+            # the RT signal window (30s TTL). The LLM result is logged for
+            # training data collection but does not gate entries.
+            # Once we have a fine-tuned trade-brain model (200+ CVD LoP trades),
+            # re-evaluate whether to restore blocking behaviour.
+            llm_result = None
+            if ml_accept or TRAINING_MODE:
                 try:
+                    import threading
                     from app.quant.ml.llm_scorer import score_with_llm
-                    llm_result = score_with_llm(ml_features, pair, order_type)
-                    if llm_result is not None:
-                        llm_rejected = (
-                            llm_result.decision == 'REJECT'
-                            and llm_result.confidence > 70
-                        )
-                        if llm_rejected and not TRAINING_MODE:
-                            logger.info(
-                                f"CVD: LLM REJECT {pair} {order_type} "
-                                f"confidence={llm_result.confidence}% "
-                                f"model={llm_result.model_used} "
-                                f"latency={llm_result.latency_ms:.0f}ms — "
-                                f"{llm_result.reasoning}"
-                            )
-                            _store_rejected_features(pair, ml_score, ml_features)
-                            continue
-                        elif llm_rejected:
-                            logger.info(
-                                f"CVD: TRAINING MODE — LLM would reject {pair} {order_type} "
-                                f"confidence={llm_result.confidence}%, taking anyway"
-                            )
-                        else:
-                            logger.info(
-                                f"CVD: LLM {llm_result.decision} {pair} {order_type} "
-                                f"confidence={llm_result.confidence}% "
-                                f"model={llm_result.model_used} "
-                                f"latency={llm_result.latency_ms:.0f}ms"
-                            )
-                    else:
-                        logger.debug(f"CVD: LLM scorer returned None for {pair}, proceeding with XGBoost-only")
+
+                    _llm_features_snap = dict(ml_features)  # snapshot before thread
+
+                    def _run_llm_async():
+                        try:
+                            result = score_with_llm(_llm_features_snap, pair, order_type)
+                            if result is not None:
+                                logger.info(
+                                    f"CVD: LLM[async] {result.decision} {pair} {order_type} "
+                                    f"confidence={result.confidence}% "
+                                    f"model={result.model_used} "
+                                    f"latency={result.latency_ms:.0f}ms — {result.reasoning}"
+                                )
+                        except Exception as _e:
+                            logger.debug(f"CVD: LLM async failed: {_e}")
+
+                    _llm_thread = threading.Thread(target=_run_llm_async, daemon=True)
+                    _llm_thread.start()
+                    logger.debug(f"CVD: LLM scorer dispatched async for {pair} {order_type}")
                 except Exception as e:
                     logger.debug(f"LLM scoring unavailable: {e}")
 
-            # --- Confluence Scorer (quantifies setup quality 0-11) ---
+            # --- ICC Detector: HTF POI analysis (Imbalance-Confluence-Confirmation) ---
+            # Detects H4/H1 FVGs and Order Blocks, checks if price is currently AT
+            # those zones, and scores stacked POIs (FVG+OB overlap). Replaces the
+            # M15-level fvg_present/ob_present flags which were too noisy (~80% hit rate).
+            icc_ctx = None
+            try:
+                from app.quant.algorithms.icc_detector import detect_htf_poi
+                _tick_for_icc = _get_cached_tick(pair)
+                if _tick_for_icc is not None and not _tick_for_icc.empty:
+                    _icc_price = (
+                        float(_tick_for_icc['ask'].iloc[0]) if order_type == 'BUY'
+                        else float(_tick_for_icc['bid'].iloc[0])
+                    )
+                    icc_ctx = detect_htf_poi(pair, order_type, _icc_price, atr_val)
+                    if icc_ctx.nearest_poi is not None:
+                        logger.info(
+                            f"CVD: ICC {pair} {order_type} score={icc_ctx.icc_score} "
+                            f"tf={icc_ctx.htf_poi_timeframe} stacked={icc_ctx.htf_poi_stacked} "
+                            f"struct={icc_ctx.structure_bias}/{icc_ctx.last_structure_type} "
+                            f"zone={icc_ctx.premium_discount} | {icc_ctx.icc_label}"
+                        )
+                    else:
+                        logger.debug(f"CVD: ICC {pair}: no HTF POI near price (proceeding without ICC bonus)")
+            except Exception as _icc_err:
+                logger.debug(f"CVD: ICC detector unavailable for {pair}: {_icc_err}")
+
+            # --- Confluence Scorer (quantifies setup quality 0-15, ICC-upgraded) ---
+            # FVG/OB now require price to be AT an H4/H1 zone (via icc_detector),
+            # not just any M15 imbalance. Much more selective — only fires on
+            # institutional-level confluences.
             confluence_score = None
             try:
                 from app.quant.algorithms.confluence_scorer import score_confluence, log_confluence_decision
 
-                # Reuse SMC detection results from ML features (already computed
-                # by score_signal -> extract_features on the same df) to avoid
-                # redundant ~100ms SMC detector calls per symbol.
+                # ICC provides HTF-accurate FVG/OB/stacked data. Fall back to
+                # ML feature flags (M15-level, noisier) only if ICC wasn't run.
+                if icc_ctx is not None:
+                    has_fvg = icc_ctx.price_at_htf_fvg
+                    has_ob = icc_ctx.price_at_htf_ob
+                    has_poi_stacked = icc_ctx.htf_poi_stacked
+                    has_fib = icc_ctx.fib_alignment
+                    has_poc = icc_ctx.at_poc
+                    # Augment htf_bias with H4 BOS/ChoCH structure if ICC found one
+                    icc_struct = icc_ctx.structure_bias if icc_ctx.structure_bias != 'neutral' else None
+                else:
+                    has_fvg = bool(ml_features.get('fvg_present', 0))
+                    has_ob = bool(ml_features.get('ob_present', 0))
+                    has_poi_stacked = None
+                    has_fib = None
+                    has_poc = None
+                    icc_struct = None
+
                 has_displacement = bool(ml_features.get('displacement', 0))
-                has_fvg = bool(ml_features.get('fvg_present', 0))
-                has_ob = bool(ml_features.get('ob_present', 0))
                 has_sweep = bool(ml_features.get('recent_sweep', 0))
 
-                # Fallback: if ML features are empty (scorer failed), compute fresh
-                if not ml_features:
+                # Fallback displacement from ML features if ICC wasn't run
+                if not ml_features and not icc_ctx:
                     try:
                         from app.quant.indicators.displacement import detect_displacement
                         _norm_df = df.rename(columns={
@@ -1513,57 +1563,24 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     except Exception:
                         pass
 
-                    try:
-                        from app.quant.indicators.smc_detector import detect_fair_value_gaps
-                        fvg_df = detect_fair_value_gaps(df)
-                        if fvg_df is not None and 'FVG' in fvg_df.columns and len(fvg_df) > 0:
-                            last_fvg = fvg_df['FVG'].iloc[-1]
-                            has_fvg = (
-                                (last_fvg == 1 and order_type == 'BUY') or
-                                (last_fvg == -1 and order_type == 'SELL')
-                            )
-                    except Exception:
-                        pass
-
-                    try:
-                        from app.quant.indicators.smc_detector import detect_order_blocks
-                        ob_df = detect_order_blocks(df)
-                        if ob_df is not None and 'OB' in ob_df.columns:
-                            for lookback_i in range(max(0, len(ob_df) - 5), len(ob_df)):
-                                ob_val = ob_df['OB'].iloc[lookback_i]
-                                if pd.notna(ob_val):
-                                    has_ob = (
-                                        (ob_val == 1 and order_type == 'BUY') or
-                                        (ob_val == -1 and order_type == 'SELL')
-                                    )
-                                    if has_ob:
-                                        break
-                    except Exception:
-                        pass
-
-                    try:
-                        from app.quant.indicators.smc_detector import detect_liquidity_sweeps
-                        sweep_df = detect_liquidity_sweeps(df)
-                        if sweep_df is not None and 'Liquidity' in sweep_df.columns:
-                            for lookback_i in range(max(0, len(sweep_df) - 5), len(sweep_df)):
-                                liq_val = sweep_df['Liquidity'].iloc[lookback_i]
-                                if pd.notna(liq_val):
-                                    has_sweep = (
-                                        (liq_val == -1 and order_type == 'BUY') or
-                                        (liq_val == 1 and order_type == 'SELL')
-                                    )
-                                    if has_sweep:
-                                        break
-                    except Exception:
-                        pass
-
-                # HTF bias (H4 EMA + swing structure — worth 2 confluence points)
+                # HTF bias: merge EMA-based (mtf_analyzer) with BOS/ChoCH structure (ICC).
+                # ICC structure is more precise — if ICC found a clear BOS/ChoCH, it takes
+                # precedence. If both agree, confidence is higher (logged at confluence step).
                 htf_bias = None
                 try:
                     from app.quant.algorithms.mtf_analyzer import get_htf_bias_string
-                    htf_bias = get_htf_bias_string(pair)
+                    ema_bias = get_htf_bias_string(pair)
+                    # ICC structure overrides EMA if it has a clear signal
+                    if icc_struct is not None:
+                        htf_bias = icc_struct
+                        if ema_bias and ema_bias != icc_struct:
+                            logger.debug(
+                                f"CVD: ICC struct={icc_struct} overrides EMA bias={ema_bias} for {pair} HTF"
+                            )
+                    else:
+                        htf_bias = ema_bias
                 except Exception:
-                    pass
+                    htf_bias = icc_struct  # Fallback to ICC structure alone
 
                 # Regime favorability from router (strategy fits current regime?)
                 regime_ok = None
@@ -1605,7 +1622,9 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                 except Exception:
                     session_sweep = None
 
-                # CVD divergence is True if we got this far (signal IS the CVD)
+                # CVD divergence is True if we got this far (signal IS the CVD).
+                # fvg_present and order_block_at_entry are now HTF (H4/H1) via ICC.
+                # htf_poi_stacked adds 1 extra point when both overlap at same HTF level.
                 confluence_score = score_confluence(
                     symbol=pair,
                     direction='long' if order_type == 'BUY' else 'short',
@@ -1615,6 +1634,9 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     displacement=has_displacement,
                     fvg_present=has_fvg,
                     order_block_at_entry=has_ob,
+                    htf_poi_stacked=has_poi_stacked,
+                    fib_golden_pocket=has_fib,
+                    volume_poc=has_poc,
                     regime_favorable=regime_ok,
                     strategy_name=strategy_config.name,
                     vwap_bias=vwap_bias,
@@ -1821,8 +1843,14 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                     from app.quant.indicators.news_sentiment import get_market_risk_level
                     news_risk = get_market_risk_level()
                     news_mult = news_risk.get('size_multiplier', 1.0)
-                    if news_risk['risk_level'] != 'NORMAL':
-                        logger.info(f"CVD: News risk {news_risk['risk_level']} for {pair} — size x{news_mult} ({news_risk['reason']})")
+                    # Cap: Claude causal analysis can be bullish but ELEVATED/EXTREME still means volatility risk
+                    risk_level = news_risk.get('risk_level', 'NORMAL')
+                    if risk_level == 'EXTREME':
+                        news_mult = min(news_mult, 0.5)
+                    elif risk_level == 'ELEVATED':
+                        news_mult = min(news_mult, 0.75)
+                    if risk_level != 'NORMAL':
+                        logger.info(f"CVD: News risk {risk_level} for {pair} — size x{news_mult} ({news_risk.get('reason', '')})")
                 except Exception:
                     news_mult = 1.0
                 size_multiplier = vol_mult * sym_mult * ctx_mult * group_mult * orch_mult * pres_mult * kz_mult * router_mult * energy_mult * loss_streak_mult * conf_mult * news_mult
@@ -1858,7 +1886,7 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                         news_risk=news_risk.get('risk_level', 'NORMAL') if 'news_risk' in dir() else 'NORMAL',
                         hour_utc=datetime.now(timezone.utc).hour,
                     )
-                    if advice['recommendation'] == 'AVOID' and advice['confidence'] < 0.2:
+                    if advice['recommendation'] == 'AVOID' and advice['confidence'] >= 0.5:
                         logger.warning(f"CVD: Neo4j AVOID for {pair} {order_type}: {advice['reasoning']}")
                         PairLock.objects.filter(symbol=pair).delete()
                         continue
@@ -2136,6 +2164,26 @@ def cvd_entry_algorithm(strategy_config, remaining_slots):
                                     'sl_source': sl_tp_source.split('/')[0] if sl_tp_source else 'ATR',
                                     'tp_source': sl_tp_source.split('/')[-1] if sl_tp_source else 'ATR',
                                 }, timeout=172800)  # 48h TTL
+                            except Exception:
+                                pass
+
+                            # Record trade OPEN to knowledge graph
+                            try:
+                                from app.quant.tasks import record_to_graph as _rtg_open
+                                _rtg_open.delay({
+                                    'type': 'trade_open',
+                                    'trade_id': f'trade_{trade_obj.id}',
+                                    'django_id': trade_obj.id,
+                                    'symbol': pair,
+                                    'direction': order_type,
+                                    'entry_time': trade_obj.entry_time,
+                                    'entry_price': float(last_tick_price),
+                                    'strategy': trade_obj.strategy or (trade_obj.strategy_config.name if trade_obj.strategy_config else 'unknown'),
+                                    'venue': 'MT5',
+                                    'hour_utc': trade_obj.entry_time.hour if trade_obj.entry_time else 0,
+                                    'day_of_week': trade_obj.entry_time.weekday() if trade_obj.entry_time else 0,
+                                    'trading_era': 'BRAIN_V1',
+                                })
                             except Exception:
                                 pass
 

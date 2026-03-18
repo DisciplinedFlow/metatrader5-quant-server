@@ -159,22 +159,51 @@ def _call_ollama(model, prompt, system, host, temperature, max_tokens, timeout):
         timeout=timeout,
     )
     resp.raise_for_status()
-    return resp.json().get('response', '')
+    data = resp.json()
+    if 'error' in data:
+        raise Exception(data['error'])
+    return data.get('response', '')
 
 
 def _parse_llm_response(text, model_used, latency_ms):
-    """Parse LLM response into structured LLMScore."""
+    """Parse LLM response into structured LLMScore.
+
+    Handles both structured format (DECISION:/CONFIDENCE:/REASONING:) and
+    natural language responses from small models that ignore format instructions.
+    """
     text = text.strip()
+    text_upper = text.upper()
 
-    # Extract decision
+    # --- Decision ---
     decision = 'REJECT'  # default safe
-    if 'DECISION: ACCEPT' in text.upper() or 'DECISION:ACCEPT' in text.upper():
-        decision = 'ACCEPT'
-    elif 'ACCEPT' in text.upper().split('\n')[0]:
-        decision = 'ACCEPT'
 
-    # Extract confidence
-    confidence = 50
+    # Explicit structured format
+    if 'DECISION: ACCEPT' in text_upper or 'DECISION:ACCEPT' in text_upper:
+        decision = 'ACCEPT'
+    elif 'DECISION: REJECT' in text_upper or 'DECISION:REJECT' in text_upper:
+        decision = 'REJECT'
+    # First word of response is ACCEPT/REJECT
+    elif text_upper.split()[0] in ('ACCEPT', 'ACCEPT.', 'ACCEPT,') if text_upper.split() else False:
+        decision = 'ACCEPT'
+    elif text_upper.split()[0] in ('REJECT', 'REJECT.', 'REJECT,') if text_upper.split() else False:
+        decision = 'REJECT'
+    else:
+        # Natural language signals — count accept vs reject indicators in full text
+        accept_signals = ['BUY SIGNAL', 'STRONG SETUP', 'SOLID SETUP', 'GOOD SETUP',
+                          'POSITIVE SIGNAL', 'FAVORABLE', 'RECOMMENDED', 'HIGH CONFLUENCE',
+                          'BULLISH', 'UPTREND', 'ALIGNED', 'LOOKS GOOD', 'PROCEED',
+                          'SEEMS LIKE A BUY', 'SEEMS LIKE A SELL']
+        reject_signals = ['NOT ALIGNED', 'AVOID', 'RISKY', 'WEAK SETUP', 'POOR SETUP',
+                          'NOT RECOMMENDED', 'CAUTION', 'AGAINST', 'NOT SUITABLE',
+                          'DO NOT', "DON'T", 'UNSUITABLE', 'UNFAVORABLE', 'NO SIGNAL',
+                          'LOSING STREAK', 'LOW CONFLUENCE', 'RANGING']
+        accept_count = sum(1 for s in accept_signals if s in text_upper)
+        reject_count = sum(1 for s in reject_signals if s in text_upper)
+        if accept_count > reject_count:
+            decision = 'ACCEPT'
+
+    # --- Confidence ---
+    confidence = 60 if decision == 'ACCEPT' else 40  # sensible defaults
     for line in text.split('\n'):
         line_upper = line.upper().strip()
         if line_upper.startswith('CONFIDENCE:'):
@@ -185,17 +214,18 @@ def _parse_llm_response(text, model_used, latency_ms):
             except (ValueError, IndexError):
                 pass
 
-    # Extract reasoning
+    # --- Reasoning ---
     reasoning = ''
     for line in text.split('\n'):
         if line.upper().strip().startswith('REASONING:'):
             reasoning = line.split(':', 1)[1].strip()
             break
     if not reasoning:
-        # Take the last non-empty line as reasoning
-        for line in reversed(text.split('\n')):
-            if line.strip() and not line.upper().startswith(('DECISION', 'CONFIDENCE')):
-                reasoning = line.strip()
+        # Use the first non-empty sentence from the response
+        for line in text.split('\n'):
+            stripped = line.strip()
+            if stripped and not stripped.upper().startswith(('DECISION', 'CONFIDENCE')):
+                reasoning = stripped[:200]
                 break
 
     return LLMScore(

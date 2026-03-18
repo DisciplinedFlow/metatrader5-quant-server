@@ -13,7 +13,7 @@ LIGHTER_SIGNER_PROXY_URL = os.getenv('LIGHTER_SIGNER_PROXY_URL', 'http://host.do
 # Trading parameters
 LIGHTER_CAPITAL_USD = float(os.getenv('LIGHTER_CAPITAL_USD', '10'))
 LIGHTER_MAX_POSITIONS = int(os.getenv('LIGHTER_MAX_POSITIONS', '2'))
-LIGHTER_LEVERAGE = int(os.getenv('LIGHTER_LEVERAGE', '5'))
+LIGHTER_LEVERAGE = int(os.getenv('LIGHTER_LEVERAGE', '15'))  # 3x scale-up (was 5)
 LIGHTER_MAX_SLIPPAGE = float(os.getenv('LIGHTER_MAX_SLIPPAGE', '0.005'))  # 0.5%
 LIGHTER_POSITION_SIZE_PCT = float(os.getenv('LIGHTER_POSITION_SIZE_PCT', '0.40'))  # 40% of capital per trade
 
