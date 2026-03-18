@@ -1461,6 +1461,213 @@ class ForexKnowledgeGraph:
             return d
         return {'connected': True, 'trades': 0}
 
+    def record_reference_trade(self, data: Dict[str, Any]) -> Optional[str]:
+        """
+        Seed a synthetic/backtested reference trade node into the brain.
+
+        These nodes carry weight=0.3 (vs live trades weight=1.0) so live trades
+        progressively dominate as they accumulate. The weight field lets the brain's
+        similarity queries discount synthetic evidence without discarding it entirely.
+
+        Expected keys in data:
+          symbol, direction, entry_price, sl_price, tp_price, rr_ratio,
+          outcome (WIN/LOSS/TRAILING_EXIT/EXPIRED), exit_price, pnl_r,
+          bars_held, max_favorable_excursion, max_adverse_excursion,
+          trigger_time (ISO str), exit_time (ISO str),
+          confluence_score, era_sentiment,
+          htf_bias, session, fvg_present (bool), ob_present (bool),
+          fib_present (bool), cvd_divergence (bool),
+          nearby_geo_events (list of dicts),
+          source ('BACKTEST_SEED'), weight (float, default 0.3)
+        """
+        if not self.connected:
+            return None
+        try:
+            with self.driver.session(database=self.database) as sess:
+                return sess.execute_write(self._create_reference_trade_tx, data)
+        except Exception as e:
+            logger.warning(f"record_reference_trade failed: {e}")
+            return None
+
+    @staticmethod
+    def _create_reference_trade_tx(tx, d: Dict[str, Any]) -> str:
+        import uuid
+        node_id = str(uuid.uuid4())
+        symbol = d.get('symbol', 'UNKNOWN')
+        market_type = SYMBOL_MARKET_TYPE.get(symbol, 'UNKNOWN')
+        weight = d.get('weight', 0.3)
+        source = d.get('source', 'BACKTEST_SEED')
+
+        cypher = """
+        MERGE (s:Symbol {name: $symbol})
+        ON CREATE SET s.market_type = $market_type
+
+        CREATE (t:Trade {
+            id:                     $node_id,
+            symbol:                 $symbol,
+            market_type:            $market_type,
+            direction:              $direction,
+            entry_price:            $entry_price,
+            sl_price:               $sl_price,
+            tp_price:               $tp_price,
+            rr_ratio:               $rr_ratio,
+            outcome:                $outcome,
+            exit_price:             $exit_price,
+            pnl_r:                  $pnl_r,
+            bars_held:              $bars_held,
+            mfe:                    $mfe,
+            mae:                    $mae,
+            trigger_time:           $trigger_time,
+            exit_time:              $exit_time,
+            confluence_score:       $confluence_score,
+            era_sentiment:          $era_sentiment,
+            htf_bias:               $htf_bias,
+            session:                $session,
+            fvg_present:            $fvg_present,
+            ob_present:             $ob_present,
+            fib_present:            $fib_present,
+            cvd_divergence:         $cvd_divergence,
+            source:                 $source,
+            weight:                 $weight,
+            is_winner:              $is_winner,
+            created_at:             $now
+        })
+
+        MERGE (t)-[:ON_SYMBOL]->(s)
+
+        WITH t
+        MATCH (era:TradingEra {name: 'BRAIN_V1'})
+        MERGE (t)-[:IN_ERA]->(era)
+
+        RETURN t.id AS node_id
+        """
+
+        result = tx.run(
+            cypher,
+            node_id=node_id,
+            symbol=symbol,
+            market_type=market_type,
+            direction=d.get('direction', ''),
+            entry_price=float(d.get('entry_price', 0)),
+            sl_price=float(d.get('sl_price', 0)),
+            tp_price=float(d.get('tp_price', 0)),
+            rr_ratio=float(d.get('rr_ratio', 2.0)),
+            outcome=d.get('outcome', 'UNKNOWN'),
+            exit_price=float(d.get('exit_price', 0)),
+            pnl_r=float(d.get('pnl_r', 0)),
+            bars_held=int(d.get('bars_held', 0)),
+            mfe=float(d.get('max_favorable_excursion', 0)),
+            mae=float(d.get('max_adverse_excursion', 0)),
+            trigger_time=d.get('trigger_time', ''),
+            exit_time=d.get('exit_time', ''),
+            confluence_score=float(d.get('confluence_score', 0)),
+            era_sentiment=d.get('era_sentiment', 'neutral'),
+            htf_bias=d.get('htf_bias', 'neutral'),
+            session=d.get('session', 'UNKNOWN'),
+            fvg_present=bool(d.get('fvg_present', False)),
+            ob_present=bool(d.get('ob_present', False)),
+            fib_present=bool(d.get('fib_present', False)),
+            cvd_divergence=bool(d.get('cvd_divergence', False)),
+            source=source,
+            weight=float(weight),
+            is_winner=d.get('outcome') == 'WIN',
+            now=datetime.utcnow().isoformat(),
+        )
+        row = result.single()
+        return row['node_id'] if row else node_id
+
+    def record_geopolitical_event(self, event: Dict[str, Any]) -> Optional[str]:
+        """
+        Seed a geopolitical event as a context node.
+
+        Trade nodes recorded during ±24h of an event will be linked to it via
+        NEAR_EVENT relationship, allowing queries like:
+        "Does FVG_BOUNCE on XAUUSD have higher WR during active conflict periods?"
+
+        Expected keys: date (ISO str), type, event, affected_classes, sentiment, intensity
+        """
+        if not self.connected:
+            return None
+        try:
+            with self.driver.session(database=self.database) as sess:
+                return sess.execute_write(self._create_geo_event_tx, event)
+        except Exception as e:
+            logger.warning(f"record_geopolitical_event failed: {e}")
+            return None
+
+    @staticmethod
+    def _create_geo_event_tx(tx, ev: Dict[str, Any]) -> str:
+        import uuid
+        node_id = str(uuid.uuid4())
+        cypher = """
+        MERGE (g:GeopoliticalEvent {
+            event_date: $event_date,
+            event_type: $event_type,
+            event_text: $event_text
+        })
+        ON CREATE SET
+            g.id               = $node_id,
+            g.affected_classes = $affected_classes,
+            g.sentiment        = $sentiment,
+            g.intensity        = $intensity,
+            g.created_at       = $now
+        RETURN g.id AS node_id
+        """
+        result = tx.run(
+            cypher,
+            node_id=node_id,
+            event_date=str(ev.get('date', '')),
+            event_type=str(ev.get('type', '')),
+            event_text=str(ev.get('event', '')),
+            affected_classes=ev.get('affected_classes', []),
+            sentiment=str(ev.get('sentiment', 'neutral')),
+            intensity=float(ev.get('intensity', 0.5)),
+            now=datetime.utcnow().isoformat(),
+        )
+        row = result.single()
+        return row['node_id'] if row else node_id
+
+    def link_trade_to_nearby_events(self, trade_node_id: str, nearby_events: List[Dict]) -> int:
+        """
+        Create NEAR_EVENT relationships between a trade node and nearby geo events.
+        Called by backtest_seeder after seeding each reference trade.
+        Returns number of relationships created.
+        """
+        if not self.connected or not nearby_events:
+            return 0
+        try:
+            with self.driver.session(database=self.database) as sess:
+                return sess.execute_write(
+                    self._link_events_tx, trade_node_id, nearby_events
+                )
+        except Exception as e:
+            logger.warning(f"link_trade_to_nearby_events failed: {e}")
+            return 0
+
+    @staticmethod
+    def _link_events_tx(tx, trade_node_id: str, events: List[Dict]) -> int:
+        count = 0
+        for ev in events:
+            result = tx.run(
+                """
+                MATCH (t:Trade {id: $trade_id})
+                MATCH (g:GeopoliticalEvent {
+                    event_date: $event_date,
+                    event_text: $event_text
+                })
+                MERGE (t)-[r:NEAR_EVENT]->(g)
+                ON CREATE SET r.created_at = $now
+                RETURN r
+                """,
+                trade_id=trade_node_id,
+                event_date=str(ev.get('date', '')),
+                event_text=str(ev.get('event', '')),
+                now=datetime.utcnow().isoformat(),
+            )
+            if result.single():
+                count += 1
+        return count
+
     def health_check(self) -> Dict[str, Any]:
         """Quick health probe."""
         if not self.connected:
