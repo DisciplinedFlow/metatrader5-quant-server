@@ -26,8 +26,6 @@ After seeding, query the brain via Django shell:
     print(g.get_graph_summary())
 """
 
-import json
-
 from django.core.management.base import BaseCommand
 
 
@@ -52,7 +50,7 @@ class Command(BaseCommand):
             '--min-confluence',
             type=float,
             default=0.55,
-            help='Minimum confluence score for setups (0.0–1.0). Default: 0.55.',
+            help='Minimum confluence score for setups (0.0-1.0). Default: 0.55.',
         )
 
     def handle(self, *args, **options):
@@ -61,9 +59,9 @@ class Command(BaseCommand):
         except ImportError:
             from quant.knowledge.backtest_seeder import BacktestSeeder
 
-        symbols = options.get('symbols')
-        geo_only = options.get('geo_only', False)
-        min_confluence = options.get('min_confluence', 0.55)
+        symbols = options['symbols']
+        geo_only = options['geo_only']
+        min_confluence = options['min_confluence']
 
         self.stdout.write(self.style.MIGRATE_HEADING(
             '\n=== Neo4j Trading Brain — Backtest Seeder ===\n'

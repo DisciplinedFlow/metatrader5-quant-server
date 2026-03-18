@@ -1,7 +1,6 @@
 import os
 import traceback
 from typing import List, Dict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
@@ -53,31 +52,24 @@ def fetch_data_pos(symbol: str, timeframe: MT5Timeframe, bars: int) -> pd.DataFr
         error_msg = f"Exception fetching data for {symbol} on {timeframe}: {e}\n{traceback.format_exc()}"
         logger.error(error_msg)
 
-def fetch_data_pos_batch(symbols: list, timeframe: MT5Timeframe, bars: int, max_workers: int = 8) -> dict:
+def fetch_data_pos_batch(symbols: list, timeframe: MT5Timeframe, bars: int) -> dict:
     """
-    Fetch OHLCV data for multiple symbols in parallel using ThreadPoolExecutor.
-
+    Fetch OHLCV data for multiple symbols in a single HTTP request.
+    Server-side batch endpoint handles sequential MT5 calls (thread-safe).
     Returns dict mapping symbol -> DataFrame (or None on failure).
-    With 8 workers, 22 symbols that take ~250ms each finish in ~700ms
-    instead of ~5.5s sequential.
     """
-    results = {}
-
-    def _fetch_one(sym):
-        return sym, fetch_data_pos(sym, timeframe, bars)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_fetch_one, sym): sym for sym in symbols}
-        for future in as_completed(futures):
-            try:
-                sym, df = future.result()
-                results[sym] = df
-            except Exception as e:
-                sym = futures[future]
-                logger.error(f"Batch fetch failed for {sym}: {e}")
-                results[sym] = None
-
-    return results
+    try:
+        resp = get_session().post(
+            f"{BASE_URL}/fetch_data_pos_batch",
+            json={'symbols': symbols, 'timeframe': timeframe.value, 'bars': bars},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {sym: pd.DataFrame(rows) if rows else None for sym, rows in data.items()}
+    except Exception as e:
+        logger.error(f"Batch fetch_data_pos failed: {e}")
+        return {sym: None for sym in symbols}
 
 def fetch_data_range(symbol: str, timeframe: MT5Timeframe, from_date: datetime, to_date: datetime) -> pd.DataFrame:
     try:
@@ -146,19 +138,17 @@ def fetch_ticks(symbol: str, count: int = 1000, seconds_back: int = 10) -> pd.Da
         return pd.DataFrame()
 
 
-def fetch_ticks_batch(symbols: list, count: int = 1000, seconds_back: int = 10, max_workers: int = 8) -> dict:
-    """Fetch ticks for multiple symbols in parallel."""
-    results = {}
-    def _fetch_one(sym):
-        return sym, fetch_ticks(sym, count, seconds_back)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_fetch_one, sym): sym for sym in symbols}
-        for future in as_completed(futures):
-            try:
-                sym, df = future.result()
-                results[sym] = df
-            except Exception as e:
-                sym = futures[future]
-                logger.error(f"Batch tick fetch failed for {sym}: {e}")
-                results[sym] = pd.DataFrame()
-    return results
+def fetch_ticks_batch(symbols: list, count: int = 1000, seconds_back: int = 10) -> dict:
+    """Fetch ticks for multiple symbols in a single HTTP request."""
+    try:
+        resp = get_session().post(
+            f"{BASE_URL}/fetch_ticks_batch",
+            json={'symbols': symbols, 'count': count, 'seconds_back': seconds_back},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {sym: pd.DataFrame(rows) if rows else pd.DataFrame() for sym, rows in data.items()}
+    except Exception as e:
+        logger.error(f"Batch fetch_ticks failed: {e}")
+        return {sym: pd.DataFrame() for sym in symbols}

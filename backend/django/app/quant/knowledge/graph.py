@@ -1491,7 +1491,6 @@ class ForexKnowledgeGraph:
 
     @staticmethod
     def _create_reference_trade_tx(tx, d: Dict[str, Any]) -> str:
-        import uuid
         node_id = str(uuid.uuid4())
         symbol = d.get('symbol', 'UNKNOWN')
         market_type = SYMBOL_MARKET_TYPE.get(symbol, 'UNKNOWN')
@@ -1597,7 +1596,6 @@ class ForexKnowledgeGraph:
 
     @staticmethod
     def _create_geo_event_tx(tx, ev: Dict[str, Any]) -> str:
-        import uuid
         node_id = str(uuid.uuid4())
         cypher = """
         MERGE (g:GeopoliticalEvent {
@@ -1876,16 +1874,19 @@ class ForexKnowledgeGraph:
         from collections import defaultdict
         groups: Dict[str, list] = defaultdict(list)
 
+        # Boolean fields that map directly to condition names
+        BOOL_CONDITIONS = {
+            'fvg': 'fvg_present',
+            'cvd': 'cvd_divergence',
+            'ob': 'ob_present',
+            'fib': 'fib_present',
+        }
+
         for t in trades:
-            conds = []
-            if t.get('fvg'):  conds.append('fvg_present')
-            if t.get('cvd'):  conds.append('cvd_divergence')
-            if t.get('ob'):   conds.append('ob_present')
-            if t.get('fib'):  conds.append('fib_present')
+            conds = [name for key, name in BOOL_CONDITIONS.items() if t.get(key)]
             if t.get('htf_bias') == t.get('direction'):
                 conds.append('htf_aligned')
-            sess = (t.get('session') or 'unknown').lower()
-            conds.append(f'session_{sess}')
+            conds.append(f"session_{(t.get('session') or 'unknown').lower()}")
             conds.sort()
             fp = f"{t['symbol']}_{t['direction']}_" + '+'.join(conds)
             groups[fp].append(t)
@@ -1893,11 +1894,8 @@ class ForexKnowledgeGraph:
         count = 0
         for fp, group in groups.items():
             first = group[0]
-            wins = sum(1 for t in group if t.get('won'))
             total = len(group)
-            avg_r = sum(t.get('pnl_r') or 0 for t in group) / total
-            avg_mfe = sum(t.get('mfe') or 0 for t in group) / total
-            avg_mae = sum(t.get('mae') or 0 for t in group) / total
+            wins = sum(1 for t in group if t.get('won'))
             conds = [c for c in fp.split('_', 2)[2].split('+') if c]
 
             self.upsert_strategy_pattern({
@@ -1907,9 +1905,9 @@ class ForexKnowledgeGraph:
                 'conditions': conds,
                 'wins': wins,
                 'total': total,
-                'avg_r': avg_r,
-                'avg_mfe': avg_mfe,
-                'avg_mae': avg_mae,
+                'avg_r': sum(t.get('pnl_r') or 0 for t in group) / total,
+                'avg_mfe': sum(t.get('mfe') or 0 for t in group) / total,
+                'avg_mae': sum(t.get('mae') or 0 for t in group) / total,
                 'era': first.get('era', 'neutral'),
                 'source': 'BACKTEST_SEED',
                 'weight': 0.3,

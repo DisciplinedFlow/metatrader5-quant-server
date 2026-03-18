@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "symbol": "XAU",
+    "sl_tx": "d43e0b5cfa12b9ff06f23a814df0fe4ab886fe6f97ecb34e72e556fa4cdf81d5226d34d02c785ff8",
+    "tp_tx": "3f3bab5446c17454f4e9e4c8d3a71e1579c9506d1e308c8e9e5419ce0c019eb565a4b58d6029a4b1",
+    "created_at": 1773850244.952348
+  },
+  {
+    "symbol": "ETH",
+    "sl_tx": "0b7ad21469509b4257c004c8a585f40fc0b9d980bba9684eca243239abd45b443ad8be3869c1ef05",
+    "tp_tx": "0f52214f8a5dcb21d496e8be532c686ecbabf0ec46210f3c23d42c45961c271693a9593b1592552b",
+    "created_at": 1773857460.6060832
+  }
+]

@@ -19,7 +19,7 @@ reference node, attaches 1:1.5 and 1:3 as metadata for the brain to query.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 try:
@@ -127,12 +127,9 @@ def _simulate_single(
         sl_price = entry + sl_distance
         tp_price = entry - sl_distance * rr
 
-    tp_distance = abs(tp_price - entry)
-
-    best_r = 0.0     # MFE in R
+    best_r = 0.0     # MFE in R (also used as peak for trailing stop)
     worst_r = 0.0    # MAE in R
     trailing_exit_r = 0.0
-    peak_r = 0.0     # for trailing stop tracking
 
     outcome = 'EXPIRED'
     exit_price = entry
@@ -159,54 +156,36 @@ def _simulate_single(
         best_r = max(best_r, bar_mfe)
         worst_r = max(worst_r, bar_mae)
 
-        # Track peak for trailing stop
-        peak_r = max(peak_r, bar_mfe)
-
         # Trailing stop: exit if price gives back 50% of peak profit
-        # Only activates once peak_r > 1.0R (past 1R profit)
-        if trailing_stop and peak_r >= 1.0:
-            trailing_exit_level_r = peak_r * 0.5
-            if direction == 'bullish':
-                trailing_exit_price = entry + trailing_exit_level_r * sl_distance
-                if low <= trailing_exit_price and bar_mae > peak_r * 0.5:
-                    # Trailing exit triggered — use as secondary outcome
-                    trailing_exit_r = trailing_exit_level_r
-                    if outcome == 'EXPIRED':  # not yet hit SL/TP
-                        outcome = 'TRAILING_EXIT'
-                        exit_price = trailing_exit_price
-                        exit_bar_index = i
-                        exit_bar_time = _parse_bar_time(bar['time'])
-                        break
-            else:
-                trailing_exit_price = entry - trailing_exit_level_r * sl_distance
-                if high >= trailing_exit_price and bar_mae > peak_r * 0.5:
-                    trailing_exit_r = trailing_exit_level_r
-                    if outcome == 'EXPIRED':
-                        outcome = 'TRAILING_EXIT'
-                        exit_price = trailing_exit_price
-                        exit_bar_index = i
-                        exit_bar_time = _parse_bar_time(bar['time'])
-                        break
+        # Only activates once best_r > 1.0R (past 1R profit)
+        if trailing_stop and best_r >= 1.0:
+            trailing_exit_level_r = best_r * 0.5
+            sign = 1.0 if direction == 'bullish' else -1.0
+            trailing_exit_price = entry + sign * trailing_exit_level_r * sl_distance
+            adverse_price = low if direction == 'bullish' else high
+            triggered = (adverse_price <= trailing_exit_price) if direction == 'bullish' else (adverse_price >= trailing_exit_price)
+
+            if triggered and bar_mae > best_r * 0.5 and outcome == 'EXPIRED':
+                trailing_exit_r = trailing_exit_level_r
+                outcome = 'TRAILING_EXIT'
+                exit_price = trailing_exit_price
+                exit_bar_index = i
+                exit_bar_time = _parse_bar_time(bar['time'])
+                break
 
         # SL hit — check before TP on same bar (conservative)
         if sl_touched:
             outcome = 'LOSS'
             exit_price = sl_price
             exit_bar_index = i
-            bar_time = bar['time']
-            if isinstance(bar_time, (int, float)):
-                bar_time = datetime.fromtimestamp(bar_time, tz=timezone.utc)
-            exit_bar_time = bar_time
+            exit_bar_time = _parse_bar_time(bar['time'])
             break
 
         if tp_touched:
             outcome = 'WIN'
             exit_price = tp_price
             exit_bar_index = i
-            bar_time = bar['time']
-            if isinstance(bar_time, (int, float)):
-                bar_time = datetime.fromtimestamp(bar_time, tz=timezone.utc)
-            exit_bar_time = bar_time
+            exit_bar_time = _parse_bar_time(bar['time'])
             break
 
     # Expired — exit at last bar close

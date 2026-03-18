@@ -18,7 +18,7 @@ LIGHTER_MAX_SLIPPAGE = float(os.getenv('LIGHTER_MAX_SLIPPAGE', '0.005'))  # 0.5%
 LIGHTER_POSITION_SIZE_PCT = float(os.getenv('LIGHTER_POSITION_SIZE_PCT', '0.50'))  # 50% of capital per trade (up from 40%, justified by 65% WR / PF 2.01)
 
 # Trading pairs (Lighter perp symbols)
-LIGHTER_PAIRS = os.getenv('LIGHTER_PAIRS', 'ETH,BTC,SOL').split(',')
+LIGHTER_PAIRS = os.getenv('LIGHTER_PAIRS', 'ETH,BTC,SOL,AVAX,LINK,DOGE,XAU').split(',')
 
 # Market metadata: {symbol: (market_id, min_base, size_decimals, price_decimals)}
 # All markets enforce size_decimals + price_decimals = 6

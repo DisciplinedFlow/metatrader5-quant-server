@@ -34,6 +34,35 @@ logger = logging.getLogger('lighter-proxy')
 
 app = Flask(__name__)
 
+# ── Trading active flag & uptime ─────────────────────────
+_active = True          # When False, all trading endpoints return 503
+_start_time = _time.time()
+
+# ── CORS — allow dashboard (any localhost origin) ────────
+_CONTROL_ROUTES = frozenset(['/health', '/status', '/toggle'])
+
+@app.after_request
+def _cors(response):
+    origin = request.headers.get('Origin', '')
+    if 'localhost' in origin or '127.0.0.1' in origin:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
+@app.before_request
+def _guard_trading():
+    """Block trading endpoints when proxy is in standby mode."""
+    if request.method == 'OPTIONS':
+        return  # CORS preflight always OK
+    if request.path in _CONTROL_ROUTES:
+        return  # Control endpoints always available
+    if not _active:
+        return jsonify({
+            'error': 'Lighter proxy is in STANDBY mode — trading disabled',
+            'active': False,
+        }), 503
+
 # ── Config ────────────────────────────────────────────────
 
 API_URL = os.getenv('LIGHTER_API_URL', 'https://mainnet.zklighter.elliot.ai')
@@ -125,6 +154,31 @@ def health():
         return jsonify({'status': 'ok', 'account': ACCOUNT_INDEX})
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)}), 500
+
+
+@app.route('/status', methods=['GET'])
+def status():
+    """Lightweight status check — no signer validation, just process state."""
+    return jsonify({
+        'active': _active,
+        'uptime_s': int(_time.time() - _start_time),
+        'account': ACCOUNT_INDEX,
+        'port': PORT,
+        'markets': len(MARKETS),
+        'oco_pairs': len(_oco_pairs),
+    })
+
+
+@app.route('/toggle', methods=['POST', 'OPTIONS'])
+def toggle():
+    """Flip the active flag. When inactive, all trading endpoints return 503."""
+    if request.method == 'OPTIONS':
+        return '', 204
+    global _active
+    _active = not _active
+    state = 'ACTIVE' if _active else 'STANDBY'
+    logger.info("Trading toggled → %s", state)
+    return jsonify({'active': _active, 'state': state})
 
 
 @app.route('/order/market', methods=['POST'])
@@ -689,22 +743,15 @@ def set_leverage():
 @app.route('/orders/cancel-all', methods=['POST'])
 def cancel_all():
     """Cancel all open orders."""
-    data = request.json or {}
-    symbol = data.get('symbol')
-
+    import time as _time
     try:
         async def _execute():
             signer = await _create_signer()
             try:
-                market_index = 0
-                if symbol:
-                    meta = MARKETS.get(symbol)
-                    if not meta:
-                        return {'error': f'Unknown symbol: {symbol}'}
-                    market_index = meta['id']
+                from lighter import SignerClient as _SC
                 tx, resp, err = await signer.cancel_all_orders(
-                    market_index=market_index,
-                    tif=signer.CANCEL_ALL_TIF_IMMEDIATE,
+                    time_in_force=_SC.CANCEL_ALL_TIF_ABORT,
+                    timestamp_ms=0,
                 )
                 if err:
                     return {'error': err}

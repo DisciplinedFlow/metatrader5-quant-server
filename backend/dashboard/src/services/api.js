@@ -296,6 +296,29 @@ const api = {
     })
   },
 
+  // --- Lighter Proxy Direct (browser → macOS localhost:5555) ---
+
+  async lighterProxyDirect() {
+    try {
+      const resp = await fetch('http://localhost:5555/status', {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      })
+      return await resp.json()
+    } catch {
+      return { active: false, _offline: true }
+    }
+  },
+
+  async lighterProxyToggle() {
+    const resp = await fetch('http://localhost:5555/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(3000),
+    })
+    return await resp.json()
+  },
+
   // --- AI Brain API ---
 
   getAIBrainStatus() {

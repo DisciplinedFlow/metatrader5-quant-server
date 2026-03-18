@@ -84,7 +84,7 @@ def label_trade_pattern(
     )
 
     try:
-        response = _get_client().messages.create(
+        response = client.messages.create(
             model=MODEL,
             max_tokens=_MAX_TOKENS_LABEL,
             messages=[{'role': 'user', 'content': prompt}],

@@ -13,6 +13,13 @@ def close_trade(ticket, close_time, close_price, pnl, pnl_excluding_commission, 
             error_msg = f"No Trade found with transaction_broker_id {ticket}"
             logger.error(error_msg)
             return None
+        except Trade.MultipleObjectsReturned:
+            # Duplicate records — keep the one with close_time=None (still open), else take the oldest
+            candidates = Trade.objects.filter(transaction_broker_id=ticket)
+            trade = candidates.filter(close_time__isnull=True).first() or candidates.order_by('id').first()
+            # Delete the extra duplicates to prevent recurring errors
+            candidates.exclude(id=trade.id).delete()
+            logger.warning(f"Resolved duplicate Trade records for ticket {ticket}, kept id={trade.id}")
 
         trade.close_time = close_time
         trade.close_price = close_price

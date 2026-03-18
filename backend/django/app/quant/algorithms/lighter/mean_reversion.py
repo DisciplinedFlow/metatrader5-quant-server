@@ -111,7 +111,7 @@ MR_CONFIG = {
 }
 
 # Symbols to scan
-MR_SYMBOLS = ['ETH', 'SOL', 'XAU', 'BTC', 'EURUSD']
+MR_SYMBOLS = ['ETH', 'BTC', 'SOL', 'XAU', 'EURUSD']
 
 # Cooldown between trades on same symbol (seconds)
 MR_COOLDOWN_SECONDS = 60  # 1 minute — aggressive, zero fees make rapid trades viable

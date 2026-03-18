@@ -127,7 +127,7 @@ RSI2_CONFIG = {
 }
 
 # Symbols to scan every 10 seconds
-RSI2_SYMBOLS = ['ETH', 'SOL', 'XAU', 'BTC']
+RSI2_SYMBOLS = ['ETH', 'BTC', 'SOL', 'XAU']
 
 # Cooldown between trades on same symbol (seconds)
 RSI2_COOLDOWN_SECONDS = 30  # Ultra-aggressive — zero fees make rapid trades viable
@@ -421,13 +421,16 @@ def _scan_symbol(symbol):
         venue='LIGHTER',
     )
 
+    # Estimate taker fee (0.028% of notional = size × price)
+    entry_fee = base_size * live_price * 0.00028
+
     CryptoTrade.objects.create(
         position=position,
         order_id=result.get('tx_hash', ''),
         side='BUY' if is_buy else 'SELL',
         price=live_price,
         size=base_size,
-        fee=0.0,
+        fee=entry_fee,
         status='FILLED',
     )
 

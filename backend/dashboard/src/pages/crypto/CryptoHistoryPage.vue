@@ -19,7 +19,7 @@ const error = ref('')
 const stats = computed(() => {
   const closed = positions.value.filter(p => p.status === 'CLOSED')
   const wins = closed.filter(p => Number(p.pnl_usd) > 0)
-  const losses = closed.filter(p => Number(p.pnl_usd) <= 0)
+  const losses = closed.filter(p => Number(p.pnl_usd) < 0)
   const totalPnl = closed.reduce((sum, p) => sum + Number(p.pnl_usd ?? 0), 0)
   const avgWin = wins.length ? wins.reduce((s, p) => s + Number(p.pnl_usd), 0) / wins.length : 0
   const avgLoss = losses.length ? losses.reduce((s, p) => s + Number(p.pnl_usd), 0) / losses.length : 0

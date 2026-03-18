@@ -63,6 +63,11 @@ MT5_API_BASE = 'http://mt5:5001'
 MT5_TIMEOUT = 60  # seconds — fetching 780 bars may take a moment under Wine
 
 
+def _to_iso(value) -> str:
+    """Convert a datetime to ISO string, passing through strings unchanged."""
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
 # ---------------------------------------------------------------------------
 # MT5 data fetching
 # ---------------------------------------------------------------------------
@@ -204,12 +209,8 @@ class BacktestSeeder:
             r15 = by_rr.get(1.5)
             r30 = by_rr.get(3.0)
 
-            trigger_time = setup.trigger_bar_time
-            exit_time = canonical.exit_bar_time
-            if isinstance(trigger_time, datetime):
-                trigger_time = trigger_time.isoformat()
-            if isinstance(exit_time, datetime):
-                exit_time = exit_time.isoformat()
+            trigger_time = _to_iso(setup.trigger_bar_time)
+            exit_time = _to_iso(canonical.exit_bar_time)
 
             node_data = {
                 'symbol': symbol,

@@ -43,6 +43,8 @@ def reconcile_positions():
         return
 
     # Build exchange position map: symbol -> {side, size, entry_price}
+    # pos.position is always the absolute size — use pos.sign for direction:
+    # sign=1 → LONG, sign=-1 → SHORT (pos.position > 0 is always True, useless for direction)
     exchange_positions = {}
     for pos in (a.positions or []):
         size = float(pos.position)
@@ -50,9 +52,10 @@ def reconcile_positions():
             market_id = int(pos.market_id)
             symbol = ID_TO_SYMBOL.get(market_id)
             if symbol:
+                sign = int(pos.sign) if hasattr(pos, 'sign') and pos.sign is not None else 1
                 exchange_positions[symbol] = {
-                    'side': 'LONG' if size > 0 else 'SHORT',
-                    'size': abs(size),
+                    'side': 'LONG' if sign > 0 else 'SHORT',
+                    'size': size,
                     'entry_price': float(pos.avg_entry_price),
                 }
 
@@ -174,11 +177,11 @@ def reconcile_positions():
             except Exception:
                 close_price = db_pos.entry_price
 
-            # Calculate PnL
+            # Calculate PnL — size is already leveraged, do NOT multiply by leverage again
             if db_pos.side == 'LONG':
-                pnl = (close_price - db_pos.entry_price) * db_pos.size * db_pos.leverage
+                pnl = (close_price - db_pos.entry_price) * db_pos.size
             else:
-                pnl = (db_pos.entry_price - close_price) * db_pos.size * db_pos.leverage
+                pnl = (db_pos.entry_price - close_price) * db_pos.size
 
             db_pos.status = 'CLOSED'
             db_pos.close_price = close_price

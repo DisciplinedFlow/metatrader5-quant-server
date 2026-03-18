@@ -52,15 +52,22 @@ def close_algorithm():
             try:
                 # Retrieve the closed order and deal details
                 closed_order = get_order_from_ticket(ticket)
-                now = datetime.now(TIMEZONE)
-                closed_deal = get_deal_from_ticket(ticket, now - timedelta(hours=24), now)
+
+                # Retry up to 4 times — MT5 can take 1-3s to finalise deal history
+                closed_deal = None
+                for _attempt in range(4):
+                    now = datetime.now(TIMEZONE)
+                    closed_deal = get_deal_from_ticket(ticket, now - timedelta(hours=24), now)
+                    if closed_deal is not None:
+                        break
+                    sleep(1)
 
                 if closed_deal is not None:
-                    close_time = closed_deal.get('time', current_time)
-                    close_price = closed_deal.get('price', position.price_current)
+                    close_time = closed_deal.get('close_time', current_time)
+                    close_price = closed_deal.get('close_price', position.price_current)
                     pnl = closed_deal.get('profit', position.profit)
                     pnl_excluding_commission = pnl - closed_deal.get('commission', 0)
-                    closing_reason = closed_deal.get('reason', 'CLOSED')
+                    closing_reason = closed_deal.get('reason', 'SL/TP')
                 else:
                     # Fallback: use cached position data when deal history is unavailable
                     logger.debug(f"No deal history for ticket {ticket}, using cached position data.")
@@ -89,72 +96,9 @@ def close_algorithm():
                         "trade_id": closed_trade.id,
                         "symbol": closed_trade.symbol,
                     })
-
-                    # Broadcast via WebSocket (fire-and-forget)
-                    try:
-                        from app.ws.publisher import publish_trade_closed
-                        publish_trade_closed({
-                            'trade_id': closed_trade.id,
-                            'symbol': closed_trade.symbol,
-                            'type': closed_trade.type,
-                            'pnl': float(closed_trade.pnl) if closed_trade.pnl else 0,
-                            'close_price': float(close_price) if close_price else 0,
-                            'closing_reason': closing_reason,
-                            'strategy': getattr(closed_trade, 'strategy', ''),
-                        })
-                    except Exception:
-                        pass  # WebSocket broadcast is optional
-
-                    # Update ML features with actual outcome
-                    try:
-                        _update_ml_features(closed_trade)
-                    except Exception as e:
-                        logger.debug(f"ML feature update skipped: {e}")
-
-                    # Record to knowledge graph (async, fire-and-forget)
-                    try:
-                        from app.quant.tasks import record_to_graph
-                        from app.nexus.models import TradeFeature
-                        from django.core.cache import cache as _cache
-                        tf = TradeFeature.objects.filter(trade=closed_trade).first()
-                        features = tf.features_json if tf and isinstance(tf.features_json, dict) else {}
-                        entry_ctx = _cache.get(f'entry_context:{ticket}') or {}
-                        record_to_graph.delay({
-                            'type': 'trade',
-                            'trade_id': closed_trade.id,
-                            'features': features,
-                            'brain_meta': entry_ctx,
-                        })
-                        if entry_ctx:
-                            _cache.delete(f'entry_context:{ticket}')
-                    except Exception:
-                        pass
-
-                    # Update StrategyPattern + trigger Haiku label (async)
-                    try:
-                        from app.quant.tasks import update_brain_pattern
-                        from django.core.cache import cache as _cache
-                        fingerprint = _cache.get(f'brain_pattern:{ticket}', '')
-                        if fingerprint:
-                            won = (pnl > 0)
-                            sl_distance = abs(
-                                float(getattr(closed_trade, 'sl', 0) or 0) -
-                                float(getattr(closed_trade, 'open_price', 0) or 0)
-                            )
-                            pnl_r = (pnl / sl_distance) if sl_distance > 0 else 0.0
-                            update_brain_pattern.delay(
-                                fingerprint=fingerprint,
-                                won=won,
-                                pnl_r=float(pnl_r),
-                                symbol=closed_trade.symbol,
-                                closing_reason=closing_reason,
-                            )
-                            _cache.delete(f'brain_pattern:{ticket}')
-                    except Exception:
-                        pass  # Brain update is optional
+                    _on_trade_closed(closed_trade, ticket, close_price, pnl, closing_reason)
                 else:
-                    error_msg = f"Failed to close trade {ticket}."
-                    logger.error({"error": error_msg, "ticket": ticket})
+                    logger.error({"error": f"Failed to close trade {ticket}.", "ticket": ticket})
 
             except Exception as e:
                 error_msg = f"Error processing closed ticket {ticket}: {e}\n{traceback.format_exc()}"
@@ -205,8 +149,8 @@ def _close_orphaned_trades(current_mt5_tickets, current_time):
                 deal = get_deal_from_ticket(ticket_int, now - timedelta(hours=48), now)
 
                 if deal is not None:
-                    trade.close_time = deal.get('time', current_time)
-                    trade.close_price = deal.get('price', trade.entry_price)
+                    trade.close_time = deal.get('close_time', current_time)
+                    trade.close_price = deal.get('close_price', trade.entry_price)
                     trade.pnl = deal.get('profit', 0)
                     trade.pnl_excluding_commission = trade.pnl - deal.get('commission', 0)
                     trade.closing_reason = 'ORPHAN_SYNCED'
@@ -262,6 +206,72 @@ def _cleanup_stale_locks(positions):
         logger.warning(f"Error cleaning stale PairLocks: {e}")
 
 
+def _on_trade_closed(closed_trade, ticket, close_price, pnl, closing_reason):
+    """Run all post-close side effects (WebSocket, ML, graph, brain pattern)."""
+    # Broadcast via WebSocket
+    try:
+        from app.ws.publisher import publish_trade_closed
+        publish_trade_closed({
+            'trade_id': closed_trade.id,
+            'symbol': closed_trade.symbol,
+            'type': closed_trade.type,
+            'pnl': float(closed_trade.pnl) if closed_trade.pnl else 0,
+            'close_price': float(close_price) if close_price else 0,
+            'closing_reason': closing_reason,
+            'strategy': getattr(closed_trade, 'strategy', ''),
+        })
+    except Exception:
+        pass
+
+    # Update ML features with actual outcome
+    try:
+        _update_ml_features(closed_trade)
+    except Exception as e:
+        logger.debug(f"ML feature update skipped: {e}")
+
+    # Record to knowledge graph (async)
+    try:
+        from app.quant.tasks import record_to_graph
+        from app.nexus.models import TradeFeature
+        from django.core.cache import cache as _cache
+
+        tf = TradeFeature.objects.filter(trade=closed_trade).first()
+        features = tf.features_json if tf and isinstance(tf.features_json, dict) else {}
+        entry_ctx = _cache.get(f'entry_context:{ticket}') or {}
+        record_to_graph.delay({
+            'type': 'trade',
+            'trade_id': closed_trade.id,
+            'features': features,
+            'brain_meta': entry_ctx,
+        })
+        if entry_ctx:
+            _cache.delete(f'entry_context:{ticket}')
+    except Exception:
+        pass
+
+    # Update StrategyPattern + trigger Haiku label (async)
+    try:
+        from app.quant.tasks import update_brain_pattern
+        from django.core.cache import cache as _cache
+
+        fingerprint = _cache.get(f'brain_pattern:{ticket}', '')
+        if fingerprint:
+            sl_distance = abs(
+                float(getattr(closed_trade, 'sl', 0) or 0) -
+                float(getattr(closed_trade, 'open_price', 0) or 0)
+            )
+            update_brain_pattern.delay(
+                fingerprint=fingerprint,
+                won=(pnl > 0),
+                pnl_r=float(pnl / sl_distance) if sl_distance > 0 else 0.0,
+                symbol=closed_trade.symbol,
+                closing_reason=closing_reason,
+            )
+            _cache.delete(f'brain_pattern:{ticket}')
+    except Exception:
+        pass
+
+
 def _update_ml_features(closed_trade):
     """Update TradeFeature with actual outcome and generate LLM training data."""
     from app.nexus.models import TradeFeature
@@ -269,18 +279,16 @@ def _update_ml_features(closed_trade):
     try:
         tf = TradeFeature.objects.filter(trade=closed_trade).first()
         if tf is None:
-            return  # Trade was placed before ML system was active
+            return
 
         won = closed_trade.pnl > 0 if closed_trade.pnl else False
         tf.actual_win = won
         tf.save(update_fields=['actual_win', 'updated_at'])
 
-        # Generate LLM training data
         from app.quant.ml.data_collector import generate_training_example, save_training_example
         example = generate_training_example(closed_trade, tf)
         save_training_example(example)
 
-        # Check if model should retrain
         from app.quant.ml.trainer import should_retrain
         if should_retrain():
             logger.info("ML: Retraining triggered after new trade outcome")

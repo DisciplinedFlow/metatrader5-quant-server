@@ -67,6 +67,15 @@ PROFIT_PROTECT_GIVEBACK = 0.35  # Allow 35% giveback from peak before closing (w
 ATR_FLOOR_TRAIL_MULT = 1.0     # Trail 1.0x current ATR behind best price (tightened from 1.5)
 ATR_FLOOR_MIN_PROFIT_R = 2.0   # Only activate after 2R profit — let fixed TP fire first
 
+# -- Adaptive ATR-% Trail (from entry, M5 candle-adaptive) --
+# Trails from the moment the trade opens — no profit gate required.
+# Uses entry_atr (H1-based) so trail distance matches signal timeframe.
+# Ratchets: SL only moves in trader's favour, never loosened once set.
+ADAPTIVE_TRAIL_BASE_MULT     = 2.0   # Default: 2x entry ATR behind best price
+ADAPTIVE_TRAIL_MOMENTUM_MULT = 2.5   # Strong M5 momentum → give room to run
+ADAPTIVE_TRAIL_REVERSAL_MULT = 1.5   # M5 reversal candle → lock in profits faster
+ADAPTIVE_TRAIL_CUTOFF_MULT   = 2.0   # Force close if adverse > 2x entry ATR (gap backstop)
+
 # -- TP Removal: disabled — fixed TP handles primary exit, trail captures beyond-TP runners --
 # Previous: XAUUSD TP removed based on early data. Restored to achieve designed 1:2 R:R.
 NO_TP_SYMBOLS = set()
@@ -108,7 +117,7 @@ def manage_positions():
         positions = get_positions()
 
         if positions is None or positions.empty:
-            logger.info("Position manager: No open positions")
+            logger.debug("Position manager: No open positions")
             return
 
         for _, position in positions.iterrows():
@@ -205,6 +214,13 @@ def _manage_single_position(position):
     if _check_hard_loss_ceiling(position, trade, current_pnl):
         return
 
+    # Fetch M5 bars once — shared by adaptive trail and M5 TP mgmt to avoid double API call
+    df_m5 = _fetch_m5_bars(position.symbol)
+
+    # Adaptive ATR-% trail — active from entry, M5 candle-adaptive, H1 ATR-based
+    if _check_adaptive_trail(position, trade, df_m5):
+        return
+
     # Scale-in check (Livermore "feeling-out bet") — add remaining 40% on confirmation
     _check_scale_in(position, trade, profit_distance, minutes_in_trade)
 
@@ -218,6 +234,10 @@ def _manage_single_position(position):
 
     # Apply management phases in order
     _check_breakeven(position, trade, profit_distance, current_atr)
+
+    # Phase 1.5: M5 dynamic TP/SL — extend TP on momentum, tighten on reversal (reuse fetched bars)
+    _check_m5_tp_management(position, profit_distance, current_atr, df_m5)
+
     _check_partial_close(position, trade, profit_distance)
 
     # Dynamic trail tightening: if momentum is fading, use tighter ATR multiplier
@@ -504,6 +524,149 @@ def _check_scale_in(position, trade, profit_distance, minutes_in_trade):
 
     except Exception as e:
         logger.error(f"Scale-in check error for ticket {position.ticket}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: M5 Dynamic TP/SL Management
+# ---------------------------------------------------------------------------
+
+# Activate when price is this far (fraction) toward TP
+_M5_ACTIVATE_PROGRESS  = 0.70   # 70% of the way to TP
+# TP extension: push TP out by this many ATRs when M5 momentum is strong
+_M5_TP_EXTEND_ATR      = 0.5
+_M5_TP_MAX_EXTENSIONS  = 2      # hard cap — don't extend infinitely
+# SL tighten: pull SL this close to current price on reversal candle
+_M5_SL_TIGHTEN_ATR     = 0.25
+# TP compress: bring TP this close to current price on reversal (quick fill)
+_M5_TP_COMPRESS_ATR    = 0.35
+
+
+def _check_m5_tp_management(position, profit_distance: float, current_atr: float, df_m5=None):
+    """
+    When price is ≥70% of the way to TP, check the last 3 M5 bars:
+      • Strong momentum (3 bars moving in direction) → extend TP by 0.5 ATR
+      • Reversal candle (engulfing against direction) → tighten SL + compress TP
+        to lock the open profit and force a quick fill.
+
+    TP extensions are capped at 2 per trade. SL tightening fires once.
+    Accepts pre-fetched df_m5 to avoid duplicate API calls when called from
+    _manage_single_position() which already fetches for adaptive trail.
+    """
+    try:
+        tp = float(position.tp or 0)
+        if tp == 0:
+            return
+
+        entry_price = float(position.price_open)
+        current_price = float(position.price_current)
+        sl = float(position.sl or 0)
+        is_buy = int(position.type) == BUY
+
+        tp_dist = abs(tp - entry_price)
+        if tp_dist == 0:
+            return
+
+        progress = profit_distance / tp_dist
+        if progress < _M5_ACTIVATE_PROGRESS:
+            return  # Not in the TP zone yet
+
+        # Use pre-fetched bars if available, otherwise fetch now
+        if df_m5 is None:
+            df_m5 = _fetch_m5_bars(position.symbol)
+        if df_m5 is None or len(df_m5) < 4:
+            return
+
+        momentum, reversal = _m5_signals(df_m5, is_buy)
+
+        from django.core.cache import cache
+        ticket = position.ticket
+        ext_key = f'tp_ext:{ticket}'
+        lock_key = f'sl_lock:{ticket}'
+
+        if momentum and not cache.get(lock_key):
+            ext_count = cache.get(ext_key, 0)
+            if ext_count < _M5_TP_MAX_EXTENSIONS:
+                new_tp = tp + (_M5_TP_EXTEND_ATR * current_atr if is_buy
+                               else -_M5_TP_EXTEND_ATR * current_atr)
+                result = modify_sl_tp(position, sl,
+                                      round(new_tp, 5) if new_tp else None)
+                if result is not None and result != 'MARKET_CLOSED':
+                    cache.set(ext_key, ext_count + 1, timeout=86400)
+                    logger.info(
+                        f"M5 TP EXTENDED #{ext_count + 1}: {position.symbol} "
+                        f"ticket={ticket} progress={progress:.0%} "
+                        f"tp {tp:.5f} → {new_tp:.5f} (+{_M5_TP_EXTEND_ATR}×ATR)"
+                    )
+
+        elif reversal and not cache.get(lock_key):
+            # Tighten SL and compress TP to capture what's already on the table
+            if is_buy:
+                new_sl = max(sl, current_price - _M5_SL_TIGHTEN_ATR * current_atr)
+                new_tp = min(tp, current_price + _M5_TP_COMPRESS_ATR * current_atr)
+            else:
+                new_sl = min(sl, current_price + _M5_SL_TIGHTEN_ATR * current_atr)
+                new_tp = max(tp, current_price - _M5_TP_COMPRESS_ATR * current_atr)
+
+            sl_improved  = (is_buy and new_sl > sl) or (not is_buy and new_sl < sl)
+            tp_compressed = (is_buy and new_tp < tp) or (not is_buy and new_tp > tp)
+
+            if sl_improved or tp_compressed:
+                result = modify_sl_tp(position,
+                                      round(new_sl, 5) if sl_improved else sl,
+                                      round(new_tp, 5) if tp_compressed else None)
+                if result is not None and result != 'MARKET_CLOSED':
+                    cache.set(lock_key, True, timeout=86400)
+                    logger.info(
+                        f"M5 LOCK-IN: {position.symbol} ticket={ticket} "
+                        f"progress={progress:.0%} reversal candle — "
+                        f"sl {sl:.5f}→{new_sl:.5f} | tp {tp:.5f}→{new_tp:.5f}"
+                    )
+
+    except Exception as e:
+        logger.debug(f"M5 TP management error {position.ticket}: {e}")
+
+
+def _fetch_m5_bars(symbol: str):
+    """Fetch last 8 M5 bars from MT5. Returns DataFrame or None."""
+    try:
+        return fetch_data_pos(symbol, MT5Timeframe.M5, 8)
+    except Exception:
+        return None
+
+
+def _m5_signals(df_m5, is_buy: bool) -> tuple[bool, bool]:
+    """
+    Analyse last 3 completed M5 bars.
+
+    Returns (momentum: bool, reversal: bool).
+      momentum = all 3 bars closing in trade direction
+      reversal = last bar is an engulfing candle against trade direction
+    """
+    try:
+        bars = df_m5.iloc[-4:-1]   # last 3 completed bars (exclude still-forming)
+        if len(bars) < 3:
+            return False, False
+
+        opens  = bars['open'].tolist()
+        closes = bars['close'].tolist()
+
+        # Momentum: all 3 bars green (buy) or red (sell)
+        if is_buy:
+            momentum = all(closes[i] > opens[i] for i in range(3))
+            # Reversal: last bar is strongly bearish and body > prior bar's body
+            prev_body = abs(closes[-2] - opens[-2])
+            last_body = abs(closes[-1] - opens[-1])
+            reversal  = closes[-1] < opens[-1] and last_body > prev_body * 0.8
+        else:
+            momentum = all(closes[i] < opens[i] for i in range(3))
+            prev_body = abs(closes[-2] - opens[-2])
+            last_body = abs(closes[-1] - opens[-1])
+            reversal  = closes[-1] > opens[-1] and last_body > prev_body * 0.8
+
+        return momentum, reversal
+
+    except Exception:
+        return False, False
 
 
 # ---------------------------------------------------------------------------
@@ -982,6 +1145,84 @@ def _get_sr_trail_level(symbol, position_type, entry_price, current_price,
         logger.debug(f"S/R trail lookup failed for {symbol}: {e}")
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Adaptive ATR-% Trail (from entry, M5 candle-adaptive)
+# ---------------------------------------------------------------------------
+
+def _check_adaptive_trail(position, trade, df_m5=None) -> bool:
+    """Trail SL from entry using entry_atr (H1-based), adapting distance with M5 candle shape.
+
+    Multiplier logic (applied to entry_atr, SL ratchets — never loosened):
+      • Default: 2.0x ATR behind best price
+      • Strong M5 momentum (3 consecutive bars in direction): 2.5x — give room to run
+      • M5 reversal engulfing candle: 1.5x — lock in profits faster
+
+    Hard cutoff: if adverse price move > 2.0x entry_atr from entry, force-close immediately.
+    This backstop catches gaps and slippage past the broker SL.
+
+    Returns True if the position was force-closed (caller should return early).
+    """
+    if trade.entry_atr is None or trade.entry_atr <= 0:
+        return False
+
+    from django.core.cache import cache
+
+    position_type = position.type
+    entry_price   = float(position.price_open)
+    current_price = float(position.price_current)
+    current_sl    = float(position.sl or 0)
+    current_tp    = position.tp
+    ticket        = position.ticket
+
+    # ── Hard cutoff: adverse move beyond 2x entry ATR (gap / slippage backstop) ──
+    adverse = (entry_price - current_price) if position_type == BUY else (current_price - entry_price)
+    if adverse > ADAPTIVE_TRAIL_CUTOFF_MULT * trade.entry_atr:
+        result = close_full(position.ticket, position.symbol, position.type, position.volume)
+        if result is not None:
+            logger.warning(
+                f"ADAPTIVE CUTOFF: {position.symbol} ticket={ticket} "
+                f"adverse={adverse:.5f} > {ADAPTIVE_TRAIL_CUTOFF_MULT}x entry_atr "
+                f"({ADAPTIVE_TRAIL_CUTOFF_MULT * trade.entry_atr:.5f}) — FORCE CLOSED"
+            )
+        return True
+
+    # ── Determine multiplier from M5 candle shape ──
+    mult_key    = f'adaptive_mult:{ticket}'
+    current_mult = cache.get(mult_key) or ADAPTIVE_TRAIL_BASE_MULT
+
+    if df_m5 is not None and len(df_m5) >= 4:
+        is_buy   = position_type == BUY
+        momentum, reversal = _m5_signals(df_m5, is_buy)
+        new_mult = (ADAPTIVE_TRAIL_REVERSAL_MULT if reversal
+                    else ADAPTIVE_TRAIL_MOMENTUM_MULT if momentum
+                    else ADAPTIVE_TRAIL_BASE_MULT)
+        if new_mult != current_mult:
+            cache.set(mult_key, new_mult, timeout=86400)
+            current_mult = new_mult
+
+    # ── Compute trailing SL: best_price − (multiplier × entry_atr) ──
+    trail_dist = current_mult * trade.entry_atr
+    trail_sl   = (current_price - trail_dist) if position_type == BUY else (current_price + trail_dist)
+
+    # Ratchet: only tighten — never pull SL back
+    if not _is_better_sl(position_type, trail_sl, current_sl):
+        return False
+
+    result = modify_sl_tp(
+        position, round(trail_sl, 5),
+        current_tp if current_tp and current_tp != 0 else None,
+    )
+    if result == 'MARKET_CLOSED':
+        return False
+    if result is not None:
+        logger.debug(
+            f"ADAPTIVE TRAIL: {position.symbol} ticket={ticket} "
+            f"{'BUY' if position_type == BUY else 'SELL'} SL -> {trail_sl:.5f} "
+            f"({current_mult}x ATR={trade.entry_atr:.5f})"
+        )
+    return False
 
 
 # ---------------------------------------------------------------------------

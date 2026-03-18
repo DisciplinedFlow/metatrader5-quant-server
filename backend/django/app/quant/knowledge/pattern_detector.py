@@ -306,8 +306,6 @@ def detect_order_blocks(bars: list[dict], impulse_atr_threshold: float = 1.5) ->
             continue
 
         direction = 'bullish' if move > 0 else 'bearish'
-        # OB is the candle opposing the impulse
-        ob_direction = 'bullish' if direction == 'bullish' else 'bearish'
 
         bar = bars[i]
         bar_time = _parse_bar_time(bar['time'])
@@ -320,7 +318,7 @@ def detect_order_blocks(bars: list[dict], impulse_atr_threshold: float = 1.5) ->
             continue
 
         obs.append(OrderBlock(
-            direction=ob_direction,
+            direction=direction,
             ob_high=bar['high'],
             ob_low=bar['low'],
             ob_body_high=body_high,
@@ -375,13 +373,14 @@ def detect_fib_golden_pocket(bars: list[dict], swing_lookback: int = 50) -> list
     if not swings_high or not swings_low:
         return fibs
 
-    # Bullish retracement: swing low → swing high, price pulls back into GP
-    if swings_low and swings_high:
-        sl_idx, sl_price = swings_low[-1]
-        sh_idx, sh_price = swings_high[-1]
+    sl_idx, sl_price = swings_low[-1]
+    sh_idx, sh_price = swings_high[-1]
 
-        if sl_idx < sh_idx and sh_price > sl_price:
-            rng = sh_price - sl_price
+    if sh_price > sl_price:
+        rng = sh_price - sl_price
+
+        # Bullish retracement: swing low → swing high, price pulls back into GP
+        if sl_idx < sh_idx:
             fibs.append(FibLevel(
                 direction='bullish',
                 gp_high=sh_price - 0.618 * rng,   # 0.618 = upper bound (shallower)
@@ -393,8 +392,7 @@ def detect_fib_golden_pocket(bars: list[dict], swing_lookback: int = 50) -> list
             ))
 
         # Bearish retracement: swing high → swing low, price pulls back into GP
-        if sh_idx < sl_idx and sh_price > sl_price:
-            rng = sh_price - sl_price
+        if sh_idx < sl_idx:
             fibs.append(FibLevel(
                 direction='bearish',
                 gp_high=sl_price + 0.650 * rng,   # 0.650 deeper (higher retracement up)
@@ -574,7 +572,7 @@ def find_setups(
     fibs = detect_fib_golden_pocket(bars)
     cvd_bars = compute_cvd_proxy(bars)
     divergences_list = detect_cvd_divergence(bars, cvd_bars)
-    divergence_set = {(idx, d) for idx, d in divergences_list}
+    divergence_set = set(divergences_list)
 
     setups: list[Setup] = []
 
@@ -638,11 +636,11 @@ def find_setups(
             ))
 
     # Deduplicate: if multiple FVGs trigger on same bar, keep highest confluence
-    seen: dict[int, Setup] = {}
+    seen: dict[tuple[int, str], Setup] = {}
     for s in setups:
         key = (s.trigger_bar_index, s.direction)
         if key not in seen or s.confluence_score > seen[key].confluence_score:
-            seen[key] = s  # type: ignore[assignment]
+            seen[key] = s
 
     return sorted(seen.values(), key=lambda x: x.trigger_bar_index)
 

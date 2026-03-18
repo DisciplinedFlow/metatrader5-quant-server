@@ -100,7 +100,6 @@ def send_market_order_endpoint():
             "type": order_type_mt5,
             "deviation": data.get('deviation', 20),
             "magic": data.get('magic', 0),
-            "comment": data.get('comment', ''),
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": type_filling,
         }
@@ -246,7 +245,6 @@ def order_check_endpoint():
             "price": price,
             "deviation": data.get('deviation', 20),
             "magic": data.get('magic', 0),
-            "comment": data.get('comment', ''),
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": type_filling,
         }

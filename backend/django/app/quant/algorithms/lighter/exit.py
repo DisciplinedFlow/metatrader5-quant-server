@@ -127,9 +127,13 @@ def exit_algorithm():
 
             result = close_position(position.symbol)
 
+            # Estimate taker fee (0.028% of notional = size × price)
+            notional = position.size * current_price
+            estimated_fee = notional * 0.00028
+
             position.status = 'CLOSED'
             position.close_price = current_price
-            position.pnl_usd = pnl_usd
+            position.pnl_usd = pnl_usd - estimated_fee  # NET of fees
             position.close_reason = close_reason
             position.closed_at = timezone.now()
             position.save()
@@ -140,7 +144,7 @@ def exit_algorithm():
                 side='SELL' if position.side == 'LONG' else 'BUY',
                 price=current_price,
                 size=position.size,
-                fee=0.0,
+                fee=estimated_fee,
                 status='FILLED',
             )
 
@@ -474,8 +478,13 @@ def _check_sl_tp(position, current_price):
 # ---------------------------------------------------------------------------
 
 def _calc_pnl(position, current_price):
-    """Calculate unrealized PnL in USD."""
+    """Calculate unrealized PnL in USD.
+
+    IMPORTANT: position.size is already the leveraged position size from Lighter
+    (e.g. $12 collateral × 15x leverage / price = size). Do NOT multiply by
+    leverage again — that would inflate PnL by 15x.
+    """
     if position.side == 'LONG':
-        return (current_price - position.entry_price) * position.size * position.leverage
+        return (current_price - position.entry_price) * position.size
     else:
-        return (position.entry_price - current_price) * position.size * position.leverage
+        return (position.entry_price - current_price) * position.size

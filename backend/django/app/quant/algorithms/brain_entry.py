@@ -24,13 +24,13 @@ The brain is the only gate.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Optional
 
 from django.core.cache import cache
 
-from app.utils.api.data import fetch_data_pos
-from app.utils.api.order import send_market_order, calculate_order_size_usd
+from app.utils.api.data import fetch_data_pos_batch
+from app.utils.api.order import send_market_order
+from app.utils.arithmetics import calculate_risk_based_lots
 from app.utils.api.positions import get_positions
 from app.utils.constants import MT5Timeframe
 
@@ -79,13 +79,17 @@ def brain_entry_algorithm():
     from app.quant.knowledge.connection import get_graph
     graph = get_graph()
 
+    # Pre-fetch all symbol bars in one batch request
+    bars_batch = fetch_data_pos_batch(SCAN_SYMBOLS, MT5Timeframe.H4, H4_BARS)
+
     for symbol in SCAN_SYMBOLS:
         if symbol in open_positions:
             continue
         if cache.get(f'brain_cooldown:{symbol}'):
             continue
 
-        bars = _fetch_bars(symbol)
+        df = bars_batch.get(symbol)
+        bars = df.to_dict('records') if (df is not None and not df.empty) else []
         if not bars:
             continue
 
@@ -243,10 +247,11 @@ def _execute(symbol: str, direction: str, signals: dict, advice: dict):
     )
 
     try:
-        order_type_str = 'BUY' if direction == 'bullish' else 'SELL'
-        capital = 300.0 if symbol in _ENERGY else 2000.0
-        volume = calculate_order_size_usd(
-            symbol=symbol, sl=round(sl, 5), capital=capital,
+        volume = calculate_risk_based_lots(
+            symbol=symbol,
+            sl_distance=sl_distance,
+            target_risk=50.0,
+            order_type=order_type.upper(),
         )
         if not volume or volume <= 0:
             logger.warning(f"[brain] Could not calculate volume for {symbol}")
@@ -255,14 +260,15 @@ def _execute(symbol: str, direction: str, signals: dict, advice: dict):
         result = send_market_order(
             symbol=symbol,
             volume=volume,
-            order_type=order_type_str,
+            order_type=order_type.upper(),
             sl=round(sl, 5),
             tp=round(tp, 5),
-            comment=f"brain:{advice.get('fingerprint', '')[:28]}",
+            comment='brain',
+            min_rr=1.85,
         )
 
-        if result and result.get('ticket'):
-            ticket = result['ticket']
+        ticket = result.get('order') or result.get('ticket') if result else None
+        if ticket:
             cache.set(f'brain_pattern:{ticket}', advice.get('fingerprint', ''), timeout=86400)
             cache.set(f'brain_cooldown:{symbol}', True, timeout=_SYMBOL_COOLDOWN_TTL)
             _increment_consecutive_losses(won=False, reset=True)
@@ -272,24 +278,6 @@ def _execute(symbol: str, direction: str, signals: dict, advice: dict):
 
     except Exception as e:
         logger.error(f"[brain] Order error {symbol}: {e}")
-
-
-# ---------------------------------------------------------------------------
-# MT5 data helpers
-# ---------------------------------------------------------------------------
-
-def _fetch_bars(symbol: str) -> list[dict]:
-    """Fetch last H4_BARS H4 bars from MT5. Returns list of dicts."""
-    try:
-        df = fetch_data_pos(symbol=symbol, timeframe=MT5Timeframe.H4, bars=H4_BARS)
-        if df is None or (hasattr(df, 'empty') and df.empty):
-            return []
-        if hasattr(df, 'to_dict'):
-            return df.to_dict('records')
-        return list(df)
-    except Exception as e:
-        logger.debug(f"[brain] fetch_bars {symbol}: {e}")
-        return []
 
 
 def _open_position_symbols() -> set:
@@ -316,10 +304,10 @@ _LOSS_KEY = 'brain:consecutive_losses'
 
 
 def _circuit_broken() -> bool:
-    if cache.get(_CB_KEY):
+    active = bool(cache.get(_CB_KEY))
+    if active:
         logger.debug("[brain] Circuit breaker active — skipping scan")
-        return True
-    return False
+    return active
 
 
 def _increment_consecutive_losses(won: bool, reset: bool = False):

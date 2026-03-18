@@ -23,9 +23,15 @@ logger = logging.getLogger(__name__)
 
 # Same 14 symbols as the MT5 tick streamer
 DEFAULT_SYMBOLS = [
+    # Forex majors
     'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD',
     'USDCAD', 'USDCHF', 'EURGBP', 'USDCNH', 'USDSEK',
-    'XAUUSD', 'XAGUSD', 'USOUSD', 'UKOUSDft',
+    # Metals
+    'XAUUSD', 'XAUEUR', 'XAUAUD', 'XAUJPY', 'XAGUSD',
+    # Energy
+    'USOUSD', 'UKOUSDft', 'NG-C',
+    # US stocks
+    'AMD', 'MSFT',
 ]
 
 # Stats logging interval (seconds)
@@ -55,8 +61,9 @@ class TickConsumer:
 
         # Lazy imports — avoid importing Django/Celery at module level
         # so the module can be parsed without Django configured
-        self._cvd_engine = None
-        self._redis_sub = None  # pub/sub connection (db/2)
+        self._cvd_engine  = None
+        self._mtf_engines = {}   # symbol -> MTFEngine
+        self._redis_sub   = None  # pub/sub connection (db/2)
 
         # Stats
         self._total_ticks = 0
@@ -64,10 +71,17 @@ class TickConsumer:
         self._last_stats_time = 0
 
     def _ensure_engine(self):
-        """Lazy-init the CVD engine."""
+        """Lazy-init the CVD engine and MTF engines."""
         if self._cvd_engine is None:
             from app.quant.indicators.cvd_realtime import RealtimeCVD
             self._cvd_engine = RealtimeCVD(window_size=300)
+
+    def _get_mtf_engine(self, symbol: str):
+        """Return (or create) the MTFEngine for a symbol."""
+        if symbol not in self._mtf_engines:
+            from app.quant.engine.mtf_engine import MTFEngine
+            self._mtf_engines[symbol] = MTFEngine(symbol)
+        return self._mtf_engines[symbol]
 
     def _connect_redis(self):
         """Create or reconnect the Redis pub/sub connection."""
@@ -166,12 +180,16 @@ class TickConsumer:
 
         self._total_ticks += 1
 
-        # Process through CVD engine
+        # Process through CVD engine (caches realtime_cvd:{symbol} for MTF use)
         signal_str = self._cvd_engine.process_tick(symbol, tick)
-
         if signal_str is not None:
             self._total_signals += 1
             self._emit_signal(symbol, signal_str, tick)
+
+        # Process through MTF engine (bar builder + indicators + alignment check)
+        mtf_signal = self._get_mtf_engine(symbol).on_tick(tick)
+        if mtf_signal is not None:
+            self._emit_mtf_signal(symbol, mtf_signal)
 
     def _emit_signal(self, symbol, signal_str, tick):
         """Cache a detected signal and dispatch Celery task for fast entry."""
@@ -207,13 +225,36 @@ class TickConsumer:
             from django.core.cache import cache
             dedup_key = 'rt_entry_dispatch_lock'
             if cache.add(dedup_key, 1, timeout=10):  # Only dispatch once per 10 seconds
-                from app.quant.tasks import run_quant_entry_algorithm
-                run_quant_entry_algorithm.delay()
-                logger.info("Dispatched entry algorithm from RT signal")
+                from app.quant.tasks import run_forex_entry
+                run_forex_entry.delay()
+                logger.info("Dispatched forex entry from RT CVD signal")
             else:
                 logger.debug("Entry algorithm dispatch skipped (rate limited)")
         except Exception:
             logger.exception("Failed to dispatch entry algorithm task")
+
+    def _emit_mtf_signal(self, symbol: str, signal: dict):
+        """Cache an MTF alignment signal and dispatch the forex entry task."""
+        try:
+            from django.core.cache import cache
+            cache.set(f'mtf_signal:{symbol}', signal, timeout=60)
+        except Exception:
+            logger.exception('Failed to cache MTF signal for %s', symbol)
+
+        logger.info(
+            'MTF SIGNAL: %s %s setup=%s reason=%s atr=%.5f',
+            symbol, signal['direction'].upper(),
+            signal['setup'], signal['reason'], signal['atr'],
+        )
+
+        try:
+            from django.core.cache import cache
+            dedup_key = f'mtf_dispatch:{symbol}'
+            if cache.add(dedup_key, 1, timeout=30):
+                from app.quant.tasks import run_forex_entry
+                run_forex_entry.delay()
+        except Exception:
+            logger.exception('Failed to dispatch MTF entry for %s', symbol)
 
     def _log_stats(self):
         """Log periodic stats summary."""

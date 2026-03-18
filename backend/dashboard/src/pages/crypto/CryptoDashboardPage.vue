@@ -49,6 +49,14 @@ const lighterToggling = ref(false)
 const hyperliquidEnabled = ref(true)
 const hyperliquidToggling = ref(false)
 
+// Lighter proxy direct state (browser → macOS localhost:5555)
+const proxyDirect = reactive({
+  online: false,
+  active: false,
+  uptime: 0,
+  markets: 0,
+})
+
 // Active venue tab for positions
 const activeVenueTab = ref('all')
 
@@ -145,7 +153,7 @@ const equityCurve = computed(() => {
 const pnlStats = computed(() => {
   const ct = sortedClosed.value
   const wins = ct.filter(p => Number(p.pnl_usd) > 0)
-  const losses = ct.filter(p => Number(p.pnl_usd) <= 0)
+  const losses = ct.filter(p => Number(p.pnl_usd) < 0)
   const total = ct.reduce((s, p) => s + Number(p.pnl_usd), 0)
   const winRate = ct.length ? (wins.length / ct.length * 100) : 0
   const bestTrade = ct.length ? Math.max(...ct.map(p => Number(p.pnl_usd))) : 0
@@ -258,12 +266,23 @@ async function checkVenueHealth() {
   }
 }
 
+async function checkProxyDirect() {
+  const data = await api.lighterProxyDirect()
+  proxyDirect.online = !data._offline
+  proxyDirect.active = data.active ?? false
+  proxyDirect.uptime = data.uptime_s ?? 0
+  proxyDirect.markets = data.markets ?? 0
+}
+
 async function toggleLighter() {
   lighterToggling.value = true
   try {
-    const resp = await api.setLighterEnabled(!lighterEnabled.value)
-    lighterEnabled.value = resp.enabled
-    await checkVenueHealth()
+    // Toggle directly on the macOS proxy (no Django middleman)
+    const resp = await api.lighterProxyToggle()
+    proxyDirect.active = resp.active
+    // Also sync the Django-side flag for Celery tasks
+    await api.setLighterEnabled(resp.active)
+    lighterEnabled.value = resp.active
   } catch (err) {
     console.error('Lighter toggle error:', err)
   }
@@ -409,6 +428,20 @@ function fmtFunding(val) {
   return (val * 100).toFixed(4) + '%'
 }
 
+// Lighter proxy direct — three-state display
+const proxyDirectIcon = computed(() => {
+  if (!proxyDirect.online) return 'cancel'
+  return proxyDirect.active ? 'check_circle' : 'pause_circle'
+})
+const proxyDirectLabel = computed(() => {
+  if (!proxyDirect.online) return 'OFFLINE'
+  return proxyDirect.active ? 'ACTIVE' : 'STANDBY'
+})
+const proxyDirectClass = computed(() => {
+  if (!proxyDirect.online) return 'venue-down'
+  return proxyDirect.active ? 'venue-ok' : 'venue-standby'
+})
+
 function venueStatusIcon(status) {
   switch (status) {
     case 'connected': return 'check_circle'
@@ -430,9 +463,11 @@ function venueStatusClass(status) {
 onMounted(() => {
   refresh()
   fetchNews()
+  checkProxyDirect()
 })
 usePolling(refresh, 30000)  // 30s — Lighter API is slow + rate limited
 usePolling(fetchNews, 300000)  // 5 min — news doesn't need real-time polling
+usePolling(checkProxyDirect, 10000)  // 10s — lightweight direct ping to macOS proxy
 </script>
 
 <template>
@@ -478,18 +513,24 @@ usePolling(fetchNews, 300000)  // 5 min — news doesn't need real-time polling
               <span class="material-symbols-outlined" style="font-size:13px">{{ hyperliquidEnabled ? 'pause' : 'play_arrow' }}</span>
             </button>
           </div>
-          <div class="venue-chip" :class="[venueStatusClass(venueHealth.lighter.status), { 'venue-disabled': !lighterEnabled }]">
-            <span class="material-symbols-outlined venue-chip-icon">{{ venueStatusIcon(venueHealth.lighter.status) }}</span>
+          <div class="venue-chip" :class="proxyDirectClass">
+            <span class="material-symbols-outlined venue-chip-icon">{{ proxyDirectIcon }}</span>
             <span class="venue-chip-name">Lighter</span>
-            <span v-if="venueHealth.lighter.latency" class="venue-chip-latency">{{ venueHealth.lighter.latency }}ms</span>
+            <span class="venue-chip-state">{{ proxyDirectLabel }}</span>
+            <span v-if="proxyDirect.online && proxyDirect.uptime" class="venue-chip-latency">
+              {{ Math.floor(proxyDirect.uptime / 60) }}m up
+            </span>
             <button
               class="venue-toggle-btn"
-              :class="lighterEnabled ? 'vt-on' : 'vt-off'"
+              :class="proxyDirect.active ? 'vt-on' : 'vt-off'"
+              :disabled="!proxyDirect.online"
               :aria-busy="lighterToggling"
               @click.stop="toggleLighter"
-              :title="lighterEnabled ? 'Disable Lighter trading' : 'Enable Lighter trading'"
+              :title="!proxyDirect.online ? 'Proxy offline — start it on macOS' : proxyDirect.active ? 'Pause Lighter trading' : 'Activate Lighter trading'"
             >
-              <span class="material-symbols-outlined" style="font-size:13px">{{ lighterEnabled ? 'pause' : 'play_arrow' }}</span>
+              <span class="material-symbols-outlined" style="font-size:13px">
+                {{ !proxyDirect.online ? 'power_off' : proxyDirect.active ? 'pause' : 'play_arrow' }}
+              </span>
             </button>
           </div>
         </div>
@@ -1195,6 +1236,17 @@ usePolling(fetchNews, 300000)  // 5 min — news doesn't need real-time polling
   color: var(--tp-text-dim);
   background: rgba(100, 116, 139, 0.06);
   border-color: rgba(100, 116, 139, 0.15);
+}
+.venue-standby {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.2);
+}
+.venue-chip-state {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
 }
 
 /* System Stats */

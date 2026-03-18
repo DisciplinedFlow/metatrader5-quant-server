@@ -235,21 +235,27 @@ GEOPOLITICAL_EVENTS = [
 # Helper: find events within N hours of a timestamp
 # ---------------------------------------------------------------------------
 
+def _to_date(dt):
+    """Extract a date object from a datetime or date input."""
+    if hasattr(dt, 'date') and callable(dt.date):
+        return dt.date()
+    return dt
+
+
+def _parse_event_date(raw):
+    """Parse an event date string or pass through a date object."""
+    if isinstance(raw, date):
+        return raw
+    return date.fromisoformat(raw)
+
+
 def get_nearby_events(dt, window_hours=24):
     """Return events within ±window_hours of the given datetime."""
-    from datetime import timedelta
-    if hasattr(dt, 'date'):
-        d = dt.date() if hasattr(dt, 'date') and callable(dt.date) else dt
-    else:
-        d = dt
-
-    nearby = []
-    for ev in GEOPOLITICAL_EVENTS:
-        ev_date = ev['date'] if isinstance(ev['date'], date) else date.fromisoformat(ev['date'])
-        delta_days = abs((d - ev_date).days) if hasattr(d, '__sub__') else 999
-        if delta_days * 24 <= window_hours:
-            nearby.append(ev)
-    return nearby
+    d = _to_date(dt)
+    return [
+        ev for ev in GEOPOLITICAL_EVENTS
+        if abs((d - _parse_event_date(ev['date'])).days) * 24 <= window_hours
+    ]
 
 
 def get_era_sentiment(dt):
@@ -257,16 +263,10 @@ def get_era_sentiment(dt):
     Return the dominant sentiment for a given date based on active era tags.
     Used to enrich trade nodes with macro context without blocking logic.
     """
-    if hasattr(dt, 'date') and callable(dt.date):
-        d = dt.date()
-    else:
-        d = dt
+    d = _to_date(dt)
 
-    # Active ongoing conflicts always apply from their start date
     for ev in GEOPOLITICAL_EVENTS:
-        if ev['type'] == 'ERA_START':
-            ev_date = ev['date'] if isinstance(ev['date'], date) else date.fromisoformat(ev['date'])
-            if d >= ev_date:
-                return ev['sentiment']
+        if ev['type'] == 'ERA_START' and d >= _parse_event_date(ev['date']):
+            return ev['sentiment']
 
     return 'neutral'
