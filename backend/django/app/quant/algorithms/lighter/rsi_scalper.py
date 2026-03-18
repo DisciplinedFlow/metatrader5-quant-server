@@ -103,8 +103,8 @@ RSI2_CONFIG = {
         'rsi_overbought': 85,
         'ema_period': 50,
         'sl_pct': 0.010,   # 1.0% SL
-        'tp_pct': 0.005,   # 0.5% TP
-        'size_usd': 8,
+        'tp_pct': 0.0075,  # 0.75% TP (up from 0.5%, improves R:R from 0.5:1 to 0.75:1)
+        'size_usd': 12,
     },
     'metals': {
         'rsi_period': 2,
@@ -112,8 +112,8 @@ RSI2_CONFIG = {
         'rsi_overbought': 85,
         'ema_period': 50,
         'sl_pct': 0.008,   # 0.8% SL
-        'tp_pct': 0.004,   # 0.4% TP
-        'size_usd': 8,
+        'tp_pct': 0.006,   # 0.6% TP (up from 0.4%, improves R:R)
+        'size_usd': 12,
     },
     'forex': {
         'rsi_period': 2,
@@ -122,7 +122,7 @@ RSI2_CONFIG = {
         'ema_period': 50,
         'sl_pct': 0.003,   # 0.3% SL
         'tp_pct': 0.0015,  # 0.15% TP
-        'size_usd': 8,
+        'size_usd': 12,
     },
 }
 

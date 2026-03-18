@@ -265,7 +265,10 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.run_quant_trailing_stop_algorithm': {'queue': 'critical'},
     'quant.tasks.run_quant_close_algorithm': {'queue': 'critical'},
     'quant.tasks.run_position_reconciliation': {'queue': 'critical'},
-    'quant.tasks.run_quant_entry_algorithm': {'queue': 'critical'},
+    'quant.tasks.run_brain_entry': {'queue': 'critical'},
+    'quant.tasks.update_brain_pattern': {'queue': 'default'},
+    'quant.tasks.run_weekly_edge_review': {'queue': 'default'},
+    'quant.tasks.run_quant_entry_algorithm': {'queue': 'critical'},  # kept for reference
     'quant.tasks.run_structure_scanner': {'queue': 'critical'},
     'quant.tasks.run_ict_scanner': {'queue': 'analysis'},
     'quant.tasks.run_regime_scan': {'queue': 'analysis'},
@@ -292,10 +295,21 @@ GRAPH_ROUTER_SIGNAL_ACTIVE = os.getenv('GRAPH_ROUTER_SIGNAL_ACTIVE', 'false').lo
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 
 CELERY_BEAT_SCHEDULE = {
-    'run-quant-entry-algorithm': {
-        'task': 'quant.tasks.run_quant_entry_algorithm',
-        'schedule': 60.0 * 1,
+    # Brain entry — replaces old 12-layer pipeline. 5min cadence, deliberate.
+    'run-brain-entry': {
+        'task': 'quant.tasks.run_brain_entry',
+        'schedule': 300.0,  # every 5 minutes — selective, not frantic
     },
+    # Weekly Haiku edge review — Monday 06:00 UTC
+    'run-weekly-edge-review': {
+        'task': 'quant.tasks.run_weekly_edge_review',
+        'schedule': 60.0 * 60 * 24 * 7,  # every 7 days
+    },
+    # Old entry disabled — brain_entry replaces it
+    # 'run-quant-entry-algorithm': {
+    #     'task': 'quant.tasks.run_quant_entry_algorithm',
+    #     'schedule': 60.0 * 1,
+    # },
     'run-structure-scanner': {
         'task': 'quant.tasks.run_structure_scanner',
         'schedule': 30.0,  # Every 30s — autonomous brain scans for structure entries

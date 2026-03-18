@@ -1423,26 +1423,124 @@ def record_daily_performance():
 
 @shared_task(name='quant.tasks.check_news_sentiment', soft_time_limit=30, time_limit=45)
 def check_news_sentiment():
-    """Refresh news sentiment cache every 5 minutes.
+    """Disabled — news sentiment gating removed. Brain handles context via geo nodes."""
+    pass
 
-    Uses free RSS feeds (Yahoo Finance, ForexFactory, Reuters) to detect
-    major market-moving events. Adjusts position sizing via size_multiplier
-    in the CVD entry algorithm. Replaces the disabled Claude API macro task.
+
+# ---------------------------------------------------------------------------
+# Brain entry — replaces cvd_entry_algorithm pipeline
+# ---------------------------------------------------------------------------
+
+@shared_task(name='quant.tasks.run_brain_entry', max_retries=2, soft_time_limit=55, time_limit=75)
+def run_brain_entry():
+    """
+    Lightweight brain entry algorithm.
+    Detect signals → query Neo4j → execute if pattern confidence >= 58%.
+    Runs every 5 minutes (300s cadence in CELERY_BEAT_SCHEDULE).
+    """
+    if is_bot_paused():
+        return
+    try:
+        from app.quant.algorithms.brain_entry import brain_entry_algorithm
+        brain_entry_algorithm()
+    except SoftTimeLimitExceeded:
+        logger.warning("[brain] Entry task timed out")
+    except Exception as e:
+        logger.error(f"[brain] Entry task error: {e}")
+
+
+@shared_task(name='quant.tasks.update_brain_pattern', max_retries=2)
+def update_brain_pattern(fingerprint: str, won: bool, pnl_r: float,
+                         symbol: str = '', closing_reason: str = ''):
+    """
+    Update StrategyPattern WR after a live trade closes.
+    Then async: call Haiku to label/describe the pattern.
+    Fire-and-forget — trading continues regardless of outcome.
+    """
+    if not fingerprint:
+        return
+
+    try:
+        from app.quant.knowledge.connection import get_graph
+        graph = get_graph()
+        if graph:
+            graph.update_pattern_outcome(fingerprint, won, pnl_r)
+            graph._increment_circuit_breaker_on_loss(won)
+
+        # Async Haiku label — only if we have a real API key
+        from app.quant.intelligence.claude_analyst import label_trade_pattern
+        conditions = [c for c in fingerprint.split('_', 2)[-1].split('+') if c]
+        session = next((c.replace('session_', '') for c in conditions if c.startswith('session_')), '')
+        htf = 'bullish' if 'htf_aligned' in conditions and '_bullish_' in fingerprint else 'bearish'
+        direction = fingerprint.split('_')[1] if '_' in fingerprint else ''
+        outcome = 'WIN' if won else 'LOSS'
+
+        label = label_trade_pattern(
+            symbol=symbol or fingerprint.split('_')[0],
+            direction=direction,
+            outcome=outcome,
+            pnl_r=pnl_r,
+            conditions=conditions,
+            session=session,
+            htf_bias=htf,
+            fingerprint=fingerprint,
+        )
+        if label and graph:
+            graph.set_pattern_label(fingerprint, label)
+
+    except Exception as e:
+        logger.debug(f"[brain] update_brain_pattern failed: {e}")
+
+
+@shared_task(name='quant.tasks.run_weekly_edge_review')
+def run_weekly_edge_review():
+    """
+    Weekly Haiku review of all active StrategyPattern nodes.
+    Deactivates dead patterns. Logs emerging edges.
+    Scheduled: every Monday 06:00 UTC in CELERY_BEAT_SCHEDULE.
     """
     try:
-        from app.quant.indicators.news_sentiment import get_market_risk_level
-        result = get_market_risk_level()
-        if result['risk_level'] != 'NORMAL':
-            logger.info(
-                f"NEWS SENTIMENT: {result['risk_level']} — "
-                f"{result['reason']} ({result['headlines_checked']} headlines)"
-            )
-        else:
-            logger.debug(
-                f"News sentiment: NORMAL ({result['headlines_checked']} headlines, "
-                f"{len(result.get('matched_keywords', []))} keyword matches)"
-            )
-    except SoftTimeLimitExceeded:
-        logger.warning("News sentiment check timed out — feeds may be slow")
+        from app.quant.knowledge.connection import get_graph
+        graph = get_graph()
+        if not graph:
+            return
+
+        with graph.driver.session(database=graph.database) as sess:
+            patterns = sess.run(
+                """
+                MATCH (p:StrategyPattern {active: true})
+                RETURN p {
+                    .fingerprint, .symbol, .direction,
+                    .win_rate, .total, .avg_r, .source, .label
+                } AS p
+                """
+            ).data()
+
+        patterns = [row['p'] for row in patterns]
+        if not patterns:
+            logger.info("[brain] Weekly review: no active patterns")
+            return
+
+        from app.quant.intelligence.claude_analyst import weekly_edge_review
+        review = weekly_edge_review(patterns)
+
+        # Deactivate patterns Haiku flagged
+        for fp in review.get('deactivate', []):
+            with graph.driver.session(database=graph.database) as sess:
+                sess.run(
+                    "MATCH (p:StrategyPattern {fingerprint: $fp}) SET p.active = false",
+                    fp=fp,
+                )
+            logger.info(f"[brain] Deactivated pattern: {fp}")
+
+        # Also run automatic WR-based deactivation
+        dead = graph.deactivate_dead_patterns(min_samples=8, max_wr=0.35)
+
+        logger.info(
+            f"[brain] Weekly review: {len(review.get('deactivate', []))} Haiku-deactivated, "
+            f"{dead} auto-deactivated, {len(review.get('promote', []))} promoted | "
+            f"Observations: {review.get('observations', '')}"
+        )
+
     except Exception as e:
-        logger.debug(f"News sentiment check failed: {e}")
+        logger.error(f"[brain] Weekly review failed: {e}")

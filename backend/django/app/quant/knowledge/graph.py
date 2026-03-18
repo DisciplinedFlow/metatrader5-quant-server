@@ -1668,6 +1668,300 @@ class ForexKnowledgeGraph:
                 count += 1
         return count
 
+    # -----------------------------------------------------------------------
+    # StrategyPattern nodes — the brain's strategy layer
+    # Each node represents a recurring market fingerprint and its WR history.
+    # Python detects raw signals; Neo4j decides if they form a known edge.
+    # -----------------------------------------------------------------------
+
+    def upsert_strategy_pattern(self, data: Dict[str, Any]) -> Optional[str]:
+        """
+        Create or update a StrategyPattern node.
+
+        Fingerprint is the stable identity key: symbol_direction_cond1+cond2+...
+        On conflict: increments wins/total and recomputes win_rate.
+
+        Required keys: fingerprint, symbol, direction, conditions (list),
+                       wins, total, avg_r, avg_mfe, avg_mae, era, source, weight
+        """
+        if not self.connected:
+            return None
+        try:
+            with self.driver.session(database=self.database) as sess:
+                return sess.execute_write(self._upsert_pattern_tx, data)
+        except Exception as e:
+            logger.warning(f"upsert_strategy_pattern failed: {e}")
+            return None
+
+    @staticmethod
+    def _upsert_pattern_tx(tx, d: Dict[str, Any]) -> str:
+        cypher = """
+        MERGE (p:StrategyPattern {fingerprint: $fingerprint})
+        ON CREATE SET
+            p.symbol        = $symbol,
+            p.direction     = $direction,
+            p.conditions    = $conditions,
+            p.wins          = $wins,
+            p.total         = $total,
+            p.win_rate      = $win_rate,
+            p.avg_r         = $avg_r,
+            p.avg_mfe       = $avg_mfe,
+            p.avg_mae       = $avg_mae,
+            p.era           = $era,
+            p.source        = $source,
+            p.weight        = $weight,
+            p.active        = true,
+            p.label         = '',
+            p.created_at    = $now
+        ON MATCH SET
+            p.wins          = p.wins + $wins,
+            p.total         = p.total + $total,
+            p.win_rate      = (p.wins + $wins) * 1.0 / (p.total + $total),
+            p.avg_r         = (p.avg_r * p.total + $avg_r * $total) / (p.total + $total),
+            p.avg_mfe       = (p.avg_mfe * p.total + $avg_mfe * $total) / (p.total + $total),
+            p.avg_mae       = (p.avg_mae * p.total + $avg_mae * $total) / (p.total + $total),
+            p.weight        = CASE WHEN $source = 'LIVE' THEN 1.0 ELSE p.weight END,
+            p.updated_at    = $now
+        RETURN p.fingerprint AS fp
+        """
+        total = max(int(d.get('total', 1)), 1)
+        wins = int(d.get('wins', 0))
+        result = tx.run(
+            cypher,
+            fingerprint=d['fingerprint'],
+            symbol=d.get('symbol', ''),
+            direction=d.get('direction', ''),
+            conditions=sorted(d.get('conditions', [])),
+            wins=wins,
+            total=total,
+            win_rate=wins / total,
+            avg_r=float(d.get('avg_r', 0)),
+            avg_mfe=float(d.get('avg_mfe', 0)),
+            avg_mae=float(d.get('avg_mae', 0)),
+            era=d.get('era', 'neutral'),
+            source=d.get('source', 'BACKTEST_SEED'),
+            weight=float(d.get('weight', 0.3)),
+            now=datetime.utcnow().isoformat(),
+        )
+        row = result.single()
+        return row['fp'] if row else d['fingerprint']
+
+    def update_pattern_outcome(self, fingerprint: str, won: bool, pnl_r: float) -> bool:
+        """
+        Update a StrategyPattern node after a live trade closes.
+        Called by close.py → triggers Haiku label update.
+        Live trades carry weight=1.0 — they progressively dominate reference data.
+        """
+        if not self.connected:
+            return False
+        try:
+            with self.driver.session(database=self.database) as sess:
+                return sess.execute_write(
+                    self._update_outcome_tx, fingerprint, won, pnl_r
+                )
+        except Exception as e:
+            logger.warning(f"update_pattern_outcome failed: {e}")
+            return False
+
+    @staticmethod
+    def _update_outcome_tx(tx, fingerprint: str, won: bool, pnl_r: float) -> bool:
+        result = tx.run(
+            """
+            MATCH (p:StrategyPattern {fingerprint: $fp})
+            SET p.wins    = p.wins + CASE WHEN $won THEN 1 ELSE 0 END,
+                p.total   = p.total + 1,
+                p.win_rate = (p.wins + CASE WHEN $won THEN 1 ELSE 0 END) * 1.0 / (p.total + 1),
+                p.avg_r    = (p.avg_r * p.total + $pnl_r) / (p.total + 1),
+                p.source   = 'LIVE',
+                p.weight   = 1.0,
+                p.updated_at = $now
+            RETURN p.fingerprint AS fp
+            """,
+            fp=fingerprint,
+            won=won,
+            pnl_r=float(pnl_r),
+            now=datetime.utcnow().isoformat(),
+        )
+        return result.single() is not None
+
+    def query_best_pattern(
+        self,
+        symbol: str,
+        direction: str,
+        active_conditions: List[str],
+        min_wr: float = 0.55,
+        min_sample: int = 3,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find the best matching StrategyPattern for current market conditions.
+
+        Matches patterns where at least 2 of the current active_conditions
+        appear in the stored pattern conditions list. Ranks by:
+            win_rate × weight × match_depth
+
+        Returns None if no pattern meets WR + sample thresholds.
+        This is the ONLY gate the brain_entry algorithm uses.
+        """
+        if not self.connected:
+            return None
+        try:
+            with self.driver.session(database=self.database) as sess:
+                return sess.execute_read(
+                    self._best_pattern_tx,
+                    symbol, direction, active_conditions, min_wr, min_sample,
+                )
+        except Exception as e:
+            logger.warning(f"query_best_pattern failed: {e}")
+            return None
+
+    @staticmethod
+    def _best_pattern_tx(tx, symbol, direction, conditions, min_wr, min_sample):
+        result = tx.run(
+            """
+            MATCH (p:StrategyPattern {symbol: $symbol, direction: $direction, active: true})
+            WHERE p.total >= $min_sample AND p.win_rate >= $min_wr
+            WITH p,
+                 SIZE([c IN p.conditions WHERE c IN $conditions]) AS match_depth
+            WHERE match_depth >= 2
+            RETURN p {
+                .fingerprint, .symbol, .direction, .conditions,
+                .win_rate, .wins, .total, .avg_r, .avg_mfe, .avg_mae,
+                .era, .source, .weight, .label
+            } AS pattern,
+            match_depth,
+            p.win_rate * p.weight * match_depth AS score
+            ORDER BY score DESC
+            LIMIT 1
+            """,
+            symbol=symbol,
+            direction=direction,
+            conditions=conditions,
+            min_sample=min_sample,
+            min_wr=min_wr,
+        )
+        row = result.single()
+        if not row:
+            return None
+        p = dict(row['pattern'])
+        p['match_depth'] = row['match_depth']
+        p['score'] = row['score']
+        return p
+
+    def build_patterns_from_reference_trades(self) -> int:
+        """
+        Derive StrategyPattern nodes from existing BACKTEST_SEED Trade nodes.
+        Groups trades by (symbol, direction, conditions fingerprint) and
+        creates one StrategyPattern node per group. Safe to run multiple times.
+        """
+        if not self.connected:
+            return 0
+        try:
+            with self.driver.session(database=self.database) as sess:
+                trades = sess.run(
+                    """
+                    MATCH (t:Trade {source: 'BACKTEST_SEED'})
+                    RETURN t.symbol AS symbol, t.direction AS direction,
+                           t.fvg_present AS fvg, t.cvd_divergence AS cvd,
+                           t.ob_present AS ob, t.fib_present AS fib,
+                           t.htf_bias AS htf_bias, t.session AS session,
+                           t.era_sentiment AS era,
+                           t.is_winner AS won, t.pnl_r AS pnl_r,
+                           t.mfe AS mfe, t.mae AS mae
+                    """
+                ).data()
+        except Exception as e:
+            logger.warning(f"build_patterns_from_reference_trades fetch failed: {e}")
+            return 0
+
+        from collections import defaultdict
+        groups: Dict[str, list] = defaultdict(list)
+
+        for t in trades:
+            conds = []
+            if t.get('fvg'):  conds.append('fvg_present')
+            if t.get('cvd'):  conds.append('cvd_divergence')
+            if t.get('ob'):   conds.append('ob_present')
+            if t.get('fib'):  conds.append('fib_present')
+            if t.get('htf_bias') == t.get('direction'):
+                conds.append('htf_aligned')
+            sess = (t.get('session') or 'unknown').lower()
+            conds.append(f'session_{sess}')
+            conds.sort()
+            fp = f"{t['symbol']}_{t['direction']}_" + '+'.join(conds)
+            groups[fp].append(t)
+
+        count = 0
+        for fp, group in groups.items():
+            first = group[0]
+            wins = sum(1 for t in group if t.get('won'))
+            total = len(group)
+            avg_r = sum(t.get('pnl_r') or 0 for t in group) / total
+            avg_mfe = sum(t.get('mfe') or 0 for t in group) / total
+            avg_mae = sum(t.get('mae') or 0 for t in group) / total
+            conds = [c for c in fp.split('_', 2)[2].split('+') if c]
+
+            self.upsert_strategy_pattern({
+                'fingerprint': fp,
+                'symbol': first['symbol'],
+                'direction': first['direction'],
+                'conditions': conds,
+                'wins': wins,
+                'total': total,
+                'avg_r': avg_r,
+                'avg_mfe': avg_mfe,
+                'avg_mae': avg_mae,
+                'era': first.get('era', 'neutral'),
+                'source': 'BACKTEST_SEED',
+                'weight': 0.3,
+            })
+            count += 1
+
+        logger.info(f"Built {count} StrategyPattern nodes from reference trades")
+        return count
+
+    def set_pattern_label(self, fingerprint: str, label: str) -> bool:
+        """Set Haiku-generated human-readable label on a StrategyPattern node."""
+        if not self.connected:
+            return False
+        try:
+            with self.driver.session(database=self.database) as sess:
+                sess.run(
+                    "MATCH (p:StrategyPattern {fingerprint: $fp}) SET p.label = $label",
+                    fp=fingerprint, label=label,
+                )
+            return True
+        except Exception:
+            return False
+
+    def deactivate_dead_patterns(self, min_samples: int = 8, max_wr: float = 0.35) -> int:
+        """
+        Mark StrategyPattern nodes as inactive if they have enough samples
+        but a losing WR. Brain stops consulting them. Haiku reviews weekly.
+        """
+        if not self.connected:
+            return 0
+        try:
+            with self.driver.session(database=self.database) as sess:
+                result = sess.run(
+                    """
+                    MATCH (p:StrategyPattern {active: true})
+                    WHERE p.total >= $min_samples AND p.win_rate < $max_wr
+                    SET p.active = false, p.deactivated_at = $now
+                    RETURN count(p) AS deactivated
+                    """,
+                    min_samples=min_samples,
+                    max_wr=max_wr,
+                    now=datetime.utcnow().isoformat(),
+                )
+                row = result.single()
+                count = row['deactivated'] if row else 0
+                if count:
+                    logger.info(f"Deactivated {count} dead StrategyPattern nodes")
+                return count
+        except Exception as e:
+            logger.warning(f"deactivate_dead_patterns failed: {e}")
+            return 0
+
     def health_check(self) -> Dict[str, Any]:
         """Quick health probe."""
         if not self.connected:

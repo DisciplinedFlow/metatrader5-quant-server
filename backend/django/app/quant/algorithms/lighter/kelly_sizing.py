@@ -18,7 +18,7 @@ logger = logging.getLogger('app.lighter')
 
 # Kelly constraints
 KELLY_MIN = 0.05   # Minimum 5% of capital per trade
-KELLY_MAX = 0.50   # Maximum 50% of capital per trade
+KELLY_MAX = 0.60   # Maximum 60% of capital per trade (raised from 50%, justified by PF 2.01)
 KELLY_FRACTION = 0.25  # Quarter-Kelly
 
 # Data requirements

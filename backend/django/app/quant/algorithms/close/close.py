@@ -118,7 +118,6 @@ def close_algorithm():
                         from django.core.cache import cache as _cache
                         tf = TradeFeature.objects.filter(trade=closed_trade).first()
                         features = tf.features_json if tf and isinstance(tf.features_json, dict) else {}
-                        # Retrieve entry context cached at trade open time
                         entry_ctx = _cache.get(f'entry_context:{ticket}') or {}
                         record_to_graph.delay({
                             'type': 'trade',
@@ -129,7 +128,30 @@ def close_algorithm():
                         if entry_ctx:
                             _cache.delete(f'entry_context:{ticket}')
                     except Exception:
-                        pass  # Graph recording is optional
+                        pass
+
+                    # Update StrategyPattern + trigger Haiku label (async)
+                    try:
+                        from app.quant.tasks import update_brain_pattern
+                        from django.core.cache import cache as _cache
+                        fingerprint = _cache.get(f'brain_pattern:{ticket}', '')
+                        if fingerprint:
+                            won = (pnl > 0)
+                            sl_distance = abs(
+                                float(getattr(closed_trade, 'sl', 0) or 0) -
+                                float(getattr(closed_trade, 'open_price', 0) or 0)
+                            )
+                            pnl_r = (pnl / sl_distance) if sl_distance > 0 else 0.0
+                            update_brain_pattern.delay(
+                                fingerprint=fingerprint,
+                                won=won,
+                                pnl_r=float(pnl_r),
+                                symbol=closed_trade.symbol,
+                                closing_reason=closing_reason,
+                            )
+                            _cache.delete(f'brain_pattern:{ticket}')
+                    except Exception:
+                        pass  # Brain update is optional
                 else:
                     error_msg = f"Failed to close trade {ticket}."
                     logger.error({"error": error_msg, "ticket": ticket})
