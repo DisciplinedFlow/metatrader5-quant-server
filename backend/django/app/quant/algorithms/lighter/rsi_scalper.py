@@ -103,7 +103,7 @@ RSI2_CONFIG = {
         'rsi_overbought': 85,
         'ema_period': 50,
         'sl_pct': 0.010,   # 1.0% SL
-        'tp_pct': 0.010,   # 1.0% TP — 1:1 R:R requires only >50% WR (was 0.75%, 57% WR needed)
+        'tp_pct': 0.020,   # 2.0% TP — 1:2 R:R, break-even at 33.3% WR (was 0.75%)
         'size_usd': 12,
     },
     'metals': {
@@ -112,7 +112,7 @@ RSI2_CONFIG = {
         'rsi_overbought': 85,
         'ema_period': 50,
         'sl_pct': 0.008,   # 0.8% SL
-        'tp_pct': 0.008,   # 0.8% TP — 1:1 R:R (was 0.6%)
+        'tp_pct': 0.016,   # 1.6% TP — 1:2 R:R (was 0.6%)
         'size_usd': 12,
     },
     'forex': {
@@ -121,7 +121,7 @@ RSI2_CONFIG = {
         'rsi_overbought': 85,
         'ema_period': 50,
         'sl_pct': 0.003,   # 0.3% SL
-        'tp_pct': 0.003,   # 0.3% TP — 1:1 R:R (was 0.15%)
+        'tp_pct': 0.006,   # 0.6% TP — 1:2 R:R (was 0.15%)
         'size_usd': 12,
     },
 }
