@@ -293,18 +293,7 @@ def entry_algorithm():
                 logger.debug("Lighter: no signal for %s", symbol)
                 continue
 
-            # Intelligence layers (fail-open)
-            news_risk = _get_news_risk()
-            news_mult = news_risk.get('size_multiplier', 1.0)
-
-            direction_str = 'BUY' if signal > 0 else 'SELL'
-            hour_utc = datetime.now(timezone.utc).hour
-            graph_advice = _get_graph_advice(symbol, direction_str, hour_utc)
-            graph_mult = graph_advice.get('size_modifier', 1.0)
-
-            if graph_advice.get('recommendation') == 'AVOID':
-                logger.info("Lighter EMA %s: Graph AVOID — skipping", symbol)
-                continue
+            # News/graph removed — news permanently EXTREME, graph offline
 
             # Symbol performance filter
             sym_ok, sym_mult = _check_symbol_performance(symbol)
@@ -318,9 +307,8 @@ def entry_algorithm():
                 logger.warning("Lighter: no price data for %s", symbol)
                 continue
 
-            # Calculate position size in USD (with performance-based + intelligence scaling)
-            intel_mult = news_mult * graph_mult
-            position_usd = LIGHTER_CAPITAL_USD * LIGHTER_POSITION_SIZE_PCT * LIGHTER_LEVERAGE * sym_mult * get_combined_sizing(symbol) * intel_mult
+            # Calculate position size in USD
+            position_usd = LIGHTER_CAPITAL_USD * LIGHTER_POSITION_SIZE_PCT * LIGHTER_LEVERAGE * sym_mult * get_combined_sizing(symbol)
             if position_usd < meta['min_quote']:
                 logger.warning("Lighter: position size $%.2f below minimum $%.2f for %s",
                                position_usd, meta['min_quote'], symbol)
@@ -329,14 +317,9 @@ def entry_algorithm():
             is_buy = signal > 0
             side = 'LONG' if is_buy else 'SHORT'
 
-            if intel_mult != 1.0:
-                logger.info("Lighter INTEL: %s news=%s(%.2f) graph=%s(%.2f) → size_mult=%.2f",
-                            symbol, news_risk.get('risk_level', 'NORMAL'), news_mult,
-                            graph_advice.get('recommendation', 'NORMAL'), graph_mult, intel_mult)
-
-            logger.info("Lighter ENTRY: %s %s $%.2f (price=%.4f, leverage=%dx, signal=%s, size_mult=%.2f)",
+            logger.info("Lighter ENTRY: %s %s $%.2f (price=%.4f, leverage=%dx, signal=%s, sym_mult=%.2f)",
                          symbol, side, position_usd, current_price, LIGHTER_LEVERAGE,
-                         signal_type, sym_mult * intel_mult)
+                         signal_type, sym_mult)
 
             # Set leverage first
             lev_result = update_leverage(symbol, LIGHTER_LEVERAGE)

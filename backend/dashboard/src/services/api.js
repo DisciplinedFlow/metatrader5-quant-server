@@ -289,6 +289,14 @@ const api = {
     return this.django('v1/crypto/lighter/proxy/')
   },
 
+  getLighterAPITrades() {
+    return this.django('v1/crypto/lighter/trades/')
+  },
+
+  getCryptoMLStats() {
+    return this.django('v1/crypto/ml/stats/')
+  },
+
   setLighterEnabled(enabled) {
     return this.django('v1/crypto/lighter/proxy/', {
       method: 'POST',

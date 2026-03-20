@@ -62,11 +62,14 @@ SESSION_MULTIPLIERS = {
 }
 
 # ── Per-symbol multipliers from historical performance ─────
+# Reset to 1.0 on Mar 19 2026: old penalties were derived from bad pre-fix strategy data
+# (22.3% WR due to no trend filter + duplicate strategies). Recalibrate after 50+ trades.
 SYMBOL_MULTIPLIERS = {
-    'ETH': 1.2,
     'SOL': 1.0,
     'XAU': 1.0,
-    'BTC': 0.7,
+    'AVAX': 1.0,
+    'LINK': 1.0,
+    'DOGE': 1.0,
     'EURUSD': 0.5,
     'GBPUSD': 0.0,  # DISABLED
 }
@@ -125,15 +128,14 @@ def get_symbol_multiplier(symbol: str) -> float:
 
 
 def get_combined_sizing(symbol: str) -> float:
-    """Return combined sizing multiplier (all four factors multiplied).
+    """Return combined sizing multiplier.
 
-    session (0.6-1.2) * news (0.5-1.0) * symbol (0.0-1.2) * kelly (0.25-2.5)
+    session (0.6-1.2) * symbol (0.0-1.2) * kelly (0.25-2.5)
 
-    Example: ETH during US overlap with normal news, Kelly=1.2 = 1.2 * 1.0 * 1.2 * 1.2 = 1.728
-    Example: GBPUSD anytime = anything * anything * 0.0 * anything = 0.0 (blocked)
+    News removed: keyword filter was permanently EXTREME (war/iran/gold always in headlines)
+    and was double-counted in rsi_scalper. Session time + kelly is sufficient.
     """
     session = get_session_multiplier()
-    news = get_news_multiplier(symbol)
     sym = get_symbol_multiplier(symbol)
 
     # Adaptive Kelly: uses recent trade history for mathematically optimal sizing
@@ -144,10 +146,10 @@ def get_combined_sizing(symbol: str) -> float:
         logger.debug("Kelly sizing unavailable: %s", e)
         kelly = 1.0
 
-    combined = session * news * sym * kelly
+    combined = session * sym * kelly
 
     if combined != 1.0:
-        logger.debug("Session sizing %s: session=%.2f news=%.2f symbol=%.2f kelly=%.2f -> combined=%.3f",
-                      symbol, session, news, sym, kelly, combined)
+        logger.debug("Session sizing %s: session=%.2f symbol=%.2f kelly=%.2f -> combined=%.3f",
+                      symbol, session, sym, kelly, combined)
 
     return combined

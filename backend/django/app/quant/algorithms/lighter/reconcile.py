@@ -42,6 +42,13 @@ def reconcile_positions():
         logger.debug("Reconcile: failed to fetch account: %s", e)
         return
 
+    # Cache collateral so entry algorithms can guard without extra API calls
+    try:
+        from django.core.cache import cache
+        cache.set('lighter:collateral', float(a.collateral), timeout=90)
+    except Exception:
+        pass
+
     # Build exchange position map: symbol -> {side, size, entry_price}
     # pos.position is always the absolute size — use pos.sign for direction:
     # sign=1 → LONG, sign=-1 → SHORT (pos.position > 0 is always True, useless for direction)
@@ -167,56 +174,22 @@ def reconcile_positions():
             if update_fields:
                 db_pos.save(update_fields=update_fields)
 
-    # ── Fix 2: DB shows open, exchange doesn't → mark as closed ──
+    # ── Fix 2: DB shows open, exchange doesn't → delete stale DB record ──
+    # Do NOT create fake CLOSED trades — they pollute ML training data.
+    # The exit algorithm is the only source of truth for closed trades.
     for symbol, db_pos in db_symbols.items():
         if symbol not in exchange_positions:
-            # Position closed on exchange but DB still shows open
-            try:
-                prices = get_best_bid_ask(symbol)
-                close_price = prices.get('mid', db_pos.entry_price)
-            except Exception:
-                close_price = db_pos.entry_price
-
-            # Calculate PnL — size is already leveraged, do NOT multiply by leverage again
-            if db_pos.side == 'LONG':
-                pnl = (close_price - db_pos.entry_price) * db_pos.size
-            else:
-                pnl = (db_pos.entry_price - close_price) * db_pos.size
-
-            db_pos.status = 'CLOSED'
-            db_pos.close_price = close_price
-            db_pos.pnl_usd = pnl
-            db_pos.close_reason = 'RECONCILE'
-            db_pos.closed_at = timezone.now()
-            db_pos.save()
+            # Grace period: don't touch positions opened < 90s ago (fill settlement race)
+            if db_pos.opened_at and (timezone.now() - db_pos.opened_at).total_seconds() < 90:
+                logger.debug("RECONCILE: Skipping %s — opened %ds ago (grace period)",
+                             symbol, (timezone.now() - db_pos.opened_at).total_seconds())
+                continue
 
             logger.info(
-                "RECONCILE: Closed stale DB record %s %s (pnl=$%.2f, id=%d)",
-                symbol, db_pos.side, pnl, db_pos.id,
+                "RECONCILE: Deleting stale DB record %s %s (id=%d) — not on exchange",
+                symbol, db_pos.side, db_pos.id,
             )
-
-            # Record to Neo4j
-            try:
-                from app.quant.tasks import record_to_graph
-                record_to_graph.delay({
-                    'type': 'lighter_trade',
-                    'trade_id': f'lighter_{db_pos.id}',
-                    'django_id': db_pos.id,
-                    'symbol': symbol,
-                    'direction': 'BUY' if db_pos.side == 'LONG' else 'SELL',
-                    'entry_price': db_pos.entry_price,
-                    'close_price': close_price,
-                    'pnl': pnl,
-                    'strategy': db_pos.entry_signal,
-                    'closing_reason': 'RECONCILE',
-                    'entry_time': db_pos.opened_at,
-                    'close_time': db_pos.closed_at,
-                    'venue': 'LIGHTER',
-                    'hour_utc': db_pos.opened_at.hour if db_pos.opened_at else 0,
-                    'day_of_week': db_pos.opened_at.weekday() if db_pos.opened_at else 0,
-                })
-            except Exception:
-                pass
+            db_pos.delete()
 
     # ── Additional reconcile duties ──
     try:

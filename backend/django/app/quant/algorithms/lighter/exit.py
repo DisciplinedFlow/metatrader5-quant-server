@@ -24,15 +24,16 @@ logger = logging.getLogger('app.lighter')
 BREAKEVEN_PROFIT_PCT = 0.02        # Move SL to entry after 2% unrealized profit
 
 # Tiered profit protection: (min_peak_usd, keep_fraction)
-# Higher peaks get tighter protection to lock in more profit
+# Higher peaks get tighter protection to lock in more profit.
+# Raised from 60/70/80 to 40/50/60 — let winners run, fees eat 37% of small exits.
 PROFIT_TIERS = [
-    (3.00, 0.80),   # $3.00+ peak → close if drops below 80% of peak
-    (1.00, 0.70),   # $1.00+ peak → close if drops below 70% of peak
-    (0.30, 0.60),   # $0.30+ peak → close if drops below 60% of peak
+    (3.00, 0.60),   # $3.00+ peak → close if drops below 60% of peak (was 80%)
+    (1.00, 0.50),   # $1.00+ peak → close if drops below 50% of peak (was 70%)
+    (0.50, 0.40),   # $0.50+ peak → close if drops below 40% of peak (was 60% at $0.30)
 ]
 # Fallback for legacy references
-PROFIT_PROTECT_MIN_USD = 0.30
-PROFIT_PROTECT_GIVEBACK = 0.60
+PROFIT_PROTECT_MIN_USD = 0.50
+PROFIT_PROTECT_GIVEBACK = 0.40
 TIME_EXIT_HOURS = 48               # Close stale positions after 48 hours
 TIME_EXIT_MIN_PROFIT_PCT = 0.01    # ...unless profit exceeds 1%
 
@@ -68,6 +69,7 @@ def _get_trail_tiers(symbol):
 
 def exit_algorithm():
     """Monitor Lighter positions and exit on SL/TP/trailing + position management."""
+    import time
     from app.crypto.models import CryptoPosition, CryptoTrade
 
     open_positions = CryptoPosition.objects.filter(
@@ -77,12 +79,19 @@ def exit_algorithm():
     if not open_positions.exists():
         return
 
+    seen_symbols = set()  # track which symbols already had a price fetched this cycle
+
     for position in open_positions:
         try:
             meta = LIGHTER_MARKETS.get(position.symbol)
             if meta is None:
                 logger.warning("Lighter exit: unknown symbol %s", position.symbol)
                 continue
+
+            # Throttle: only sleep before a real API call (cache hits are free)
+            if position.symbol not in seen_symbols:
+                seen_symbols.add(position.symbol)
+                time.sleep(0.35)  # 350ms between unique-symbol fetches → ≤3 req/s
 
             prices = get_best_bid_ask(position.symbol)
             current_price = prices.get('mid')
@@ -150,6 +159,28 @@ def exit_algorithm():
 
             logger.info("Lighter position closed: %s pnl=$%.2f reason=%s",
                          position.symbol, pnl_usd, close_reason)
+
+            # Record ML training data (features from entry + outcome)
+            try:
+                from django.core.cache import cache as _cache
+                features = _cache.get(f'lighter:ml_features:{position.id}')
+                if features:
+                    import json as _json, os as _os
+                    features['pnl'] = float(pnl_usd)
+                    features['won'] = pnl_usd > 0
+                    features['close_price'] = float(current_price)
+                    features['close_reason'] = close_reason
+                    features['duration_min'] = round((position.closed_at - position.opened_at).total_seconds() / 60) if position.opened_at and position.closed_at else 0
+                    features['peak_pnl'] = float(position.peak_profit_usd or 0)
+                    ml_dir = '/app/ml_models/crypto_training_data'
+                    _os.makedirs(ml_dir, exist_ok=True)
+                    with open(f'{ml_dir}/trades.jsonl', 'a') as f:
+                        f.write(_json.dumps(features, default=str) + '\n')
+                    _cache.delete(f'lighter:ml_features:{position.id}')
+                    logger.info("ML training data saved: %s %s pnl=$%.4f",
+                                position.symbol, 'WIN' if pnl_usd > 0 else 'LOSS', pnl_usd)
+            except Exception as e:
+                logger.debug("ML feature recording failed: %s", e)
 
             # Update trade close in Neo4j knowledge graph
             # Uses update_trade_close to fill in the OPEN node created at entry.

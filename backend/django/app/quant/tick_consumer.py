@@ -191,6 +191,10 @@ class TickConsumer:
         if mtf_signal is not None:
             self._emit_mtf_signal(symbol, mtf_signal)
 
+        # Oil EMA 8/21 BUY-only crossover (geopolitical trend strategy)
+        if symbol in ('USOUSD', 'UKOUSDft'):
+            self._check_oil_ema_crossover(symbol)
+
     def _emit_signal(self, symbol, signal_str, tick):
         """Cache a detected signal and dispatch Celery task for fast entry."""
         from app.quant.indicators.cvd_realtime import _signal_direction
@@ -220,11 +224,28 @@ class TickConsumer:
             signal_data['cvd_value'], signal_data['tick_count'],
         )
 
+        # Bridge CVD LoP → mtf_signal for XAUUSD only (session-filtered in entry algo)
+        if symbol == 'XAUUSD' and 'lack_of_participants' in signal_str:
+            try:
+                from django.core.cache import cache as django_cache
+                from app.quant.engine import indicators as ind
+                engine = self._get_mtf_engine(symbol)
+                h1_bars = engine.builder.bars('H1') if engine._seeded else []
+                atr_val = ind.atr(h1_bars) if h1_bars else None
+                if atr_val and atr_val > 0:
+                    django_cache.set(f'mtf_signal:{symbol}', {
+                        'direction': direction, 'setup': 'cvd_lop',
+                        'reason': signal_str, 'level': None, 'atr': atr_val,
+                    }, timeout=60)
+                    logger.info('[tick_consumer] CVD LoP → XAUUSD dir=%s atr=%.2f', direction, atr_val)
+            except Exception:
+                logger.exception('[tick_consumer] Failed to bridge CVD LoP for XAUUSD')
+
         # Dispatch Celery task for immediate entry evaluation (rate-limited)
         try:
             from django.core.cache import cache
             dedup_key = 'rt_entry_dispatch_lock'
-            if cache.add(dedup_key, 1, timeout=10):  # Only dispatch once per 10 seconds
+            if cache.add(dedup_key, 1, timeout=10):
                 from app.quant.tasks import run_forex_entry
                 run_forex_entry.delay()
                 logger.info("Dispatched forex entry from RT CVD signal")
@@ -255,6 +276,42 @@ class TickConsumer:
                 run_forex_entry.delay()
         except Exception:
             logger.exception('Failed to dispatch MTF entry for %s', symbol)
+
+    def _check_oil_ema_crossover(self, symbol: str):
+        """BUY-only EMA 8/21 crossover for oil — geopolitical trend strategy."""
+        try:
+            engine = self._get_mtf_engine(symbol)
+            if not engine._seeded:
+                return
+            from app.quant.engine import indicators as ind
+            h1_bars = engine.builder.bars('H1')
+            if len(h1_bars) < 22:
+                return
+            closes = [b.c for b in h1_bars]
+            # EMA 8 and EMA 21
+            import pandas as pd
+            s = pd.Series(closes)
+            ema8 = s.ewm(span=8, adjust=False).mean()
+            ema21 = s.ewm(span=21, adjust=False).mean()
+            # Crossover: EMA8 just crossed above EMA21
+            if ema8.iloc[-1] > ema21.iloc[-1] and ema8.iloc[-2] <= ema21.iloc[-2]:
+                atr_val = ind.atr(h1_bars)
+                if not atr_val or atr_val <= 0:
+                    return
+                from django.core.cache import cache
+                # Rate limit: one signal per symbol per 30 min
+                dedup = f'oil_ema_cross:{symbol}'
+                if not cache.add(dedup, 1, timeout=1800):
+                    return
+                cache.set(f'mtf_signal:{symbol}', {
+                    'direction': 'buy', 'setup': 'ema_crossover',
+                    'reason': 'oil_ema_8_21_buy', 'level': None, 'atr': atr_val,
+                }, timeout=120)
+                logger.info('[tick_consumer] OIL EMA BUY → %s atr=%.4f', symbol, atr_val)
+                from app.quant.tasks import run_forex_entry
+                run_forex_entry.delay()
+        except Exception:
+            logger.exception('[tick_consumer] Oil EMA check failed for %s', symbol)
 
     def _log_stats(self):
         """Log periodic stats summary."""

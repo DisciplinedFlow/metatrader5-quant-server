@@ -118,31 +118,37 @@ def get_candles(symbol: str, resolution: str = '1h', count_back: int = 100) -> l
 
 
 def get_best_bid_ask(symbol: str) -> dict:
-    """Get current best bid/ask from orderbook + last trade price from details."""
+    """Get current best bid/ask from orderbook.
+
+    Results are cached in Redis for 8 seconds. All Celery workers share
+    this cache, so concurrent tasks (exit, entry, scalper) hitting the
+    same symbol within one cycle make only ONE real API call instead of
+    5+. This prevents CloudFront 429 rate-limiting under high position counts.
+    """
+    from django.core.cache import cache
+    cache_key = f'lighter:price:{symbol}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     market_id = get_market_id(symbol)
 
     async def _fetch():
         api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
         try:
             order_api = lighter.OrderApi(api)
-            # Get top-of-book bid/ask
             ob = await order_api.order_book_orders(market_id=market_id, limit=1)
             best_bid = float(ob.bids[0].price) if hasattr(ob, 'bids') and ob.bids else None
             best_ask = float(ob.asks[0].price) if hasattr(ob, 'asks') and ob.asks else None
-
-            # Get last trade price from details
-            details = await order_api.order_book_details(market_id=market_id)
-            last_price = None
-            if details.order_book_details:
-                detail = details.order_book_details[0]
-                last_price = float(detail.last_trade_price) if hasattr(detail, 'last_trade_price') else None
-
-            mid = (best_bid + best_ask) / 2 if best_bid and best_ask else last_price
-            return {'bid': best_bid, 'ask': best_ask, 'mid': mid, 'last': last_price}
+            mid = (best_bid + best_ask) / 2 if best_bid and best_ask else None
+            return {'bid': best_bid, 'ask': best_ask, 'mid': mid, 'last': mid}
         finally:
             await api.close()
 
-    return _run(_fetch())
+    result = _run(_fetch())
+    if result.get('mid'):  # only cache valid responses
+        cache.set(cache_key, result, timeout=20)
+    return result
 
 
 def get_exchange_stats() -> dict:
@@ -339,14 +345,35 @@ def place_oco_sltp(symbol: str, is_long: bool, base_amount: float, stop_loss_pri
     The proxy places separate SL and TP orders (native OCO is broken on
     Lighter) and registers the pair for cleanup tracking. When one fills,
     the reconciler cancels the other.
+
+    If the first attempt fails due to pending order quota, cancels all open
+    limit orders for this symbol (grid orders) and retries once.
     """
-    result = _proxy_post('/order/oco-sltp', {
+    payload = {
         'symbol': symbol,
         'is_long': is_long,
         'base_amount': base_amount,
         'stop_loss_price': stop_loss_price,
         'take_profit_price': take_profit_price,
-    })
+    }
+    result = _proxy_post('/order/oco-sltp', payload)
+
+    # Retry once after clearing ALL grid orders if quota exceeded.
+    # The pending order limit is global per-account — grid orders on BTC/ETH eat the
+    # quota even when placing OCO for SOL/XAU. Cancel all symbols, not just this one.
+    if result.get('error') and 'pending order count' in str(result.get('error', '')):
+        logger.warning("Lighter OCO %s: order quota hit — cancelling all grid orders and retrying", symbol)
+        try:
+            from .grid import GRID_CONFIG
+            for grid_sym in GRID_CONFIG:
+                try:
+                    cancel_all_orders(grid_sym)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug("OCO retry: grid cancel failed: %s", e)
+        result = _proxy_post('/order/oco-sltp', payload)
+
     if result.get('error'):
         logger.error("Lighter OCO SL/TP failed: %s %s SL=%.4f TP=%.4f — %s",
                       symbol, 'LONG' if is_long else 'SHORT',

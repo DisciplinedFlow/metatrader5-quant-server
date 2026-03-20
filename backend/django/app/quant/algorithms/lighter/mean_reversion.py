@@ -111,7 +111,8 @@ MR_CONFIG = {
 }
 
 # Symbols to scan
-MR_SYMBOLS = ['ETH', 'BTC', 'SOL', 'XAU', 'EURUSD']
+# BTC removed: 50% WR, -$4.08 net PnL | ETH removed: 60% WR, -$8.32 net PnL
+MR_SYMBOLS = ['SOL', 'XAU', 'EURUSD']
 
 # Cooldown between trades on same symbol (seconds)
 MR_COOLDOWN_SECONDS = 60  # 1 minute — aggressive, zero fees make rapid trades viable
@@ -212,6 +213,12 @@ def mean_reversion_algorithm(symbols=None):
 
     if mr_open >= 4:  # Aggressive — up to 4 MR positions
         logger.debug("MR: max positions reached (%d/4)", mr_open)
+        return
+
+    # Global cap — enforces exchange OCO slot limit (2 positions × SL+TP = 4 conditional orders max)
+    from .config import is_global_position_limit_reached
+    if is_global_position_limit_reached():
+        logger.debug("MR: global position limit reached, skipping")
         return
 
     for symbol in symbols:
@@ -333,24 +340,7 @@ def _scan_symbol(symbol):
     # ML filter disabled — collecting training data, brain learns from trades
     # Re-enable once model has 200+ crypto trades to train on
 
-    # ── Neo4j feedback loop (NEVER blocks — adjusts size or skips) ──
-    neo4j_mult = 1.0
-    neo4j_info = 'neo4j_neutral'
-    try:
-        from .neo4j_feedback import get_neo4j_sizing
-        mr_direction = 'LONG' if signal > 0 else 'SHORT'
-        mr_hour = __import__('datetime').datetime.utcnow().hour
-        neo4j_mult = get_neo4j_sizing(symbol, mr_direction, 'mr', mr_hour)
-        if neo4j_mult == 0.0:
-            logger.info("MR %s: Neo4j feedback SKIP — historical WR too low", symbol)
-            return
-        elif neo4j_mult != 1.0:
-            neo4j_info = f"neo4j_{neo4j_mult:.2f}x"
-        else:
-            neo4j_info = "neo4j_neutral"
-    except Exception as e:
-        logger.debug("MR %s: Neo4j feedback failed: %s", symbol, e)
-        neo4j_info = "neo4j_error"
+    # Neo4j feedback removed — graph is offline, was always returning 1.0
 
     # ── Confluence scoring (NEVER blocks — only adjusts size) ──
     confluence = None
@@ -415,18 +405,7 @@ def _scan_symbol(symbol):
         logger.debug("MR %s: trade flow check failed: %s", symbol, e)
         flow_info = "flow_error"
 
-    # ── News risk + Graph advisor (fail-open, never block) ──
-    news_risk = _get_news_risk()
-    news_mult = news_risk.get('size_multiplier', 1.0)
-
-    current_hour_utc = __import__('datetime').datetime.utcnow().hour
-    direction_str = 'BUY' if signal > 0 else 'SELL'
-    graph_advice = _get_graph_advice(symbol, direction_str, current_hour_utc)
-    graph_mult = graph_advice.get('size_modifier', 1.0)
-
-    if graph_advice.get('recommendation') == 'AVOID':
-        logger.info("MR %s: Graph AVOID — skipping", symbol)
-        return
+    # News + graph removed — news was permanently EXTREME, graph is offline
 
     # ── Execute entry ──
     is_buy = signal > 0
@@ -445,13 +424,8 @@ def _scan_symbol(symbol):
     else:
         position_usd = base_position_usd * conf_mult
 
-    # Apply neo4j feedback + funding + trade flow + news + graph multipliers
-    position_usd = position_usd * neo4j_mult * funding_mult * flow_mult * news_mult * graph_mult
-
-    if news_mult != 1.0 or graph_mult != 1.0:
-        logger.info("MR %s: intel sizing news=%s(%.2fx) graph=%s(%.2fx)",
-                     symbol, news_risk['risk_level'], news_mult,
-                     graph_advice['recommendation'], graph_mult)
+    # Apply funding + trade flow multipliers
+    position_usd = position_usd * funding_mult * flow_mult
 
     # Get live price
     prices = get_best_bid_ask(symbol)
@@ -460,10 +434,10 @@ def _scan_symbol(symbol):
         return
 
     confluence_str = f"confluence={confluence.total_score}/5 {confluence.band} {confluence.size_multiplier * 100:.0f}%" if confluence else "liq_only"
-    logger.info("MR ENTRY: %s %s $%.2f mode=%s (price=%.4f, RSI=%.1f, ADX=%.1f, BB=[%.4f, %.4f, %.4f], %s, liq=%.1fx, %s, %s, %s)",
+    logger.info("MR ENTRY: %s %s $%.2f mode=%s (price=%.4f, RSI=%.1f, ADX=%.1f, BB=[%.4f, %.4f, %.4f], %s, liq=%.1fx, %s, %s)",
                 symbol, side, position_usd, size_mode, live_price, current_rsi, current_adx,
                 current_bb_lower, current_bb_mid, current_bb_upper,
-                confluence_str, liq_ratio, neo4j_info, funding_info, flow_info)
+                confluence_str, liq_ratio, funding_info, flow_info)
 
     # Set leverage
     try:

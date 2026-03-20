@@ -31,61 +31,6 @@ from .session_sizing import get_combined_sizing
 logger = logging.getLogger('app.lighter')
 
 
-# ── Intelligence layers (all fail-open, never block trading) ─────────
-
-def _get_news_risk():
-    """Get news risk level — cached 5min, fail-open."""
-    try:
-        from app.quant.indicators.news_sentiment import get_market_risk_level
-        return get_market_risk_level()
-    except Exception:
-        return {'risk_level': 'NORMAL', 'size_multiplier': 1.0}
-
-
-def _get_graph_advice(symbol, direction, hour_utc):
-    """Get Neo4j graph advisor — cached 5min, fail-open."""
-    try:
-        from app.quant.knowledge.advisor import get_trade_advice
-        return get_trade_advice(
-            symbol=symbol,
-            direction='BUY' if direction > 0 else 'SELL',
-            strategy='LIGHTER_RSI2',
-            hour_utc=hour_utc,
-            setup_type='RSI_SCALP',
-        )
-    except Exception:
-        return {'confidence': 0.5, 'size_modifier': 1.0, 'recommendation': 'NORMAL'}
-
-
-def _record_reasoning(trade_id, symbol, direction, rsi_val, ema_trend,
-                      signal_type, graph_advice, news_risk, position_usd):
-    """Record trade reasoning to Neo4j — fire-and-forget."""
-    try:
-        from app.quant.tasks import record_to_graph
-        record_to_graph.delay({
-            'type': 'trade_reasoning',
-            'reasoning': {
-                'trade_id': trade_id,
-                'symbol': symbol,
-                'direction': 'BUY' if direction > 0 else 'SELL',
-                'setup_type': 'RSI_SCALP',
-                'entry_source': 'LIGHTER_RSI2',
-                'entry_zone': f'RSI2_{rsi_val:.0f}',
-                'htf_trend': ema_trend.upper(),
-                'news_risk': news_risk.get('risk_level', 'NORMAL'),
-                'news_size_mult': news_risk.get('size_multiplier', 1.0),
-                'graph_confidence': graph_advice.get('confidence', 0.5),
-                'graph_recommendation': graph_advice.get('recommendation', 'NORMAL'),
-                'confluence_score': 0,
-                'reasoning_text': (
-                    f'RSI2={rsi_val:.0f} in {ema_trend} trend, '
-                    f'signal={signal_type}, size=${position_usd:.2f}'
-                ),
-            }
-        })
-    except Exception:
-        pass
-
 
 PLATFORM_PREFIX = 'lighter:'
 
@@ -127,7 +72,8 @@ RSI2_CONFIG = {
 }
 
 # Symbols to scan every 10 seconds
-RSI2_SYMBOLS = ['ETH', 'BTC', 'SOL', 'XAU']
+# BTC removed: 50% WR, -$4.08 net PnL | ETH removed: 60% WR, -$8.32 net PnL
+RSI2_SYMBOLS = ['SOL', 'XAU']
 
 # Cooldown between trades on same symbol (seconds)
 # 600s = 10 min: prevents re-entering same downtrend on 15m bars (knife-catching)
@@ -207,6 +153,12 @@ def rsi_scalper_algorithm(symbols=None):
         logger.debug("RSI2: max positions reached (%d/%d)", rsi2_open, RSI2_MAX_POSITIONS)
         return
 
+    # Global cap — enforces exchange OCO slot limit (2 positions × SL+TP = 4 orders max)
+    from .config import is_global_position_limit_reached
+    if is_global_position_limit_reached():
+        logger.debug("RSI2: global position limit reached, skipping")
+        return
+
     for symbol in symbols:
         try:
             # Re-check position count inside loop — may have opened one this iteration
@@ -280,25 +232,6 @@ def _scan_symbol(symbol):
     # ML filter disabled — collecting training data, brain learns from trades
     # Re-enable once model has 200+ crypto trades to train on
 
-    # ── Neo4j feedback loop (NEVER blocks — adjusts size or skips) ──
-    neo4j_mult = 1.0
-    neo4j_info = 'neo4j_neutral'
-    try:
-        from .neo4j_feedback import get_neo4j_sizing
-        direction = 'LONG' if signal > 0 else 'SHORT'
-        hour = __import__('datetime').datetime.utcnow().hour
-        neo4j_mult = get_neo4j_sizing(symbol, direction, 'rsi2', hour)
-        if neo4j_mult == 0.0:
-            logger.info("RSI2 %s: Neo4j feedback SKIP — historical WR too low", symbol)
-            return False
-        elif neo4j_mult != 1.0:
-            neo4j_info = f"neo4j_{neo4j_mult:.2f}x"
-        else:
-            neo4j_info = "neo4j_neutral"
-    except Exception as e:
-        logger.debug("RSI2 %s: Neo4j feedback failed: %s", symbol, e)
-        neo4j_info = "neo4j_error"
-
     # ── Funding rate contrarian signal (NEVER blocks — adjusts size) ──
     funding_mult = 1.0
     funding_info = ''
@@ -353,30 +286,13 @@ def _scan_symbol(symbol):
         logger.debug("RSI2 %s: trade flow check failed: %s", symbol, e)
         flow_info = "flow_error"
 
-    # ── News sentiment sizing (cached 5min, fail-open) ──
-    news_risk = _get_news_risk()
-    news_mult = news_risk.get('size_multiplier', 1.0)
-    news_info = f"news_{news_risk.get('risk_level', 'NORMAL')}({news_mult:.2f}x)"
-
-    # ── Graph advisor (richer than neo4j_sizing — cached 5min, fail-open) ──
-    current_hour_utc = __import__('datetime').datetime.utcnow().hour
-    graph_advice = _get_graph_advice(symbol, signal, current_hour_utc)
-    graph_mult = graph_advice.get('size_modifier', 1.0)
-    graph_info = f"graph_{graph_advice.get('recommendation', 'NORMAL')}({graph_mult:.2f}x)"
-    if graph_advice.get('recommendation') == 'AVOID':
-        logger.info("RSI2 %s: Graph advisor AVOID — skipping", symbol)
-        return False
-
-    if news_mult != 1.0 or graph_mult != 1.0:
-        logger.info("RSI2 %s: intelligence sizing: %s %s", symbol, news_info, graph_info)
-
     # ── Execute entry ──
     is_buy = signal > 0
     side = 'LONG' if is_buy else 'SHORT'
     position_usd = config['size_usd'] * LIGHTER_LEVERAGE * get_combined_sizing(symbol)
 
-    # Apply neo4j feedback + funding + trade flow + news + graph multipliers
-    position_usd = position_usd * neo4j_mult * funding_mult * flow_mult * news_mult * graph_mult
+    # Apply funding + trade flow multipliers (the only ones that actually help)
+    position_usd = position_usd * funding_mult * flow_mult
 
     # Get live price
     prices = get_best_bid_ask(symbol)
@@ -384,9 +300,9 @@ def _scan_symbol(symbol):
     if not live_price or live_price <= 0:
         return False
 
-    logger.info("RSI2 ENTRY: %s %s $%.2f (price=%.4f, RSI(2)=%.1f, EMA50=%.4f, trend=%s, %s, %s, %s, %s, %s)",
+    logger.info("RSI2 ENTRY: %s %s $%.2f (price=%.4f, RSI(2)=%.1f, EMA50=%.4f, trend=%s, %s, %s)",
                 symbol, side, position_usd, live_price, current_rsi, current_ema, trend,
-                neo4j_info, funding_info, flow_info, news_info, graph_info)
+                funding_info, flow_info)
 
     # Set leverage
     try:
@@ -436,31 +352,29 @@ def _scan_symbol(symbol):
         status='FILLED',
     )
 
-    # Record trade open to knowledge graph
+    # Record ML features at entry (cached in Redis, saved to JSONL on close)
     try:
-        from app.quant.tasks import record_to_graph
-        record_to_graph.delay({
-            'type': 'lighter_trade_open',
-            'trade_id': f'lighter_{position.id}',
-            'django_id': position.id,
+        from django.core.cache import cache as _cache
+        from datetime import datetime, timezone as _tz
+        now = datetime.now(_tz.utc)
+        _cache.set(f'lighter:ml_features:{position.id}', {
             'symbol': symbol,
-            'direction': 'BUY' if is_buy else 'SELL',
-            'entry_time': position.opened_at,
+            'side': side,
+            'strategy': 'rsi2',
             'entry_price': float(live_price),
-            'strategy': position.entry_signal or 'unknown',
-            'venue': 'LIGHTER',
-            'hour_utc': position.opened_at.hour if position.opened_at else 0,
-            'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
-            'trading_era': 'BRAIN_V1',
-        })
+            'position_usd': float(position_usd),
+            'rsi2': float(current_rsi),
+            'ema50': float(current_ema),
+            'trend': trend,
+            'signal_type': signal_type,
+            'funding_mult': float(funding_mult),
+            'flow_mult': float(flow_mult),
+            'session_hour': now.hour,
+            'day_of_week': now.weekday(),
+            'leverage': LIGHTER_LEVERAGE,
+        }, timeout=86400)  # 24h TTL
     except Exception:
         pass
-
-    # Record trade reasoning to Neo4j (fire-and-forget)
-    _record_reasoning(
-        position.id, symbol, signal, current_rsi, trend,
-        signal_type, graph_advice, news_risk, position_usd,
-    )
 
     # Place native on-chain SL/TP as OCO group (one-cancels-other)
     try:

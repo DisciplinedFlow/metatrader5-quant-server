@@ -148,18 +148,26 @@ def _close_orphaned_trades(current_mt5_tickets, current_time):
                 now = datetime.now(TIMEZONE)
                 deal = get_deal_from_ticket(ticket_int, now - timedelta(hours=48), now)
 
-                if deal is not None:
+                if deal is not None and deal.get('still_open'):
+                    # Deal exists but no exit yet — skip, will retry next cycle
+                    logger.debug(f"Orphan {ticket_str}: deal found but still_open, skipping")
+                    continue
+
+                if deal is not None and not deal.get('still_open'):
                     trade.close_time = deal.get('close_time', current_time)
                     trade.close_price = deal.get('close_price', trade.entry_price)
                     trade.pnl = deal.get('profit', 0)
                     trade.pnl_excluding_commission = trade.pnl - deal.get('commission', 0)
                     trade.closing_reason = 'ORPHAN_SYNCED'
-                else:
-                    trade.close_time = current_time
-                    trade.close_price = trade.entry_price
-                    trade.pnl = 0
-                    trade.pnl_excluding_commission = 0
-                    trade.closing_reason = 'ORPHAN_NO_DEAL'
+                elif deal is None:
+                    # No deals at all — likely a phantom order (accepted but never filled)
+                    # Delete phantom trades instead of recording fake pnl=0
+                    logger.warning(
+                        f"PHANTOM DELETED: {trade.symbol} ticket={ticket_str} "
+                        f"— no deals found, order never filled"
+                    )
+                    trade.delete()
+                    continue
 
                 trade.save(update_fields=[
                     'close_time', 'close_price', 'pnl',
@@ -256,10 +264,9 @@ def _on_trade_closed(closed_trade, ticket, close_price, pnl, closing_reason):
 
         fingerprint = _cache.get(f'brain_pattern:{ticket}', '')
         if fingerprint:
-            sl_distance = abs(
-                float(getattr(closed_trade, 'sl', 0) or 0) -
-                float(getattr(closed_trade, 'open_price', 0) or 0)
-            )
+            # Compute R-multiple from entry_atr (SL = 1.8x ATR)
+            entry_atr = float(getattr(closed_trade, 'entry_atr', 0) or 0)
+            sl_distance = entry_atr * 1.8 if entry_atr > 0 else 0
             update_brain_pattern.delay(
                 fingerprint=fingerprint,
                 won=(pnl > 0),

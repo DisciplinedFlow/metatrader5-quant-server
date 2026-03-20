@@ -85,6 +85,19 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
             logger.error("Order response missing 'result' field")
             return None
 
+        # Verify order actually filled — deal>0 and price>0
+        # MT5 can return retcode=10009 (DONE) with a valid order ticket
+        # but deal=0/price=0 when the broker connection is flaky
+        deal_ticket = order.get('deal', 0)
+        fill_price = order.get('price', 0)
+        if not deal_ticket or not fill_price:
+            logger.error(
+                "Order accepted but NOT FILLED: %s %s deal=%s price=%s order=%s — "
+                "broker may be disconnected",
+                symbol, order_type_str, deal_ticket, fill_price, order.get('order'),
+            )
+            return None
+
         return order
         
     except requests.exceptions.HTTPError as e:

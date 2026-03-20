@@ -5,18 +5,21 @@ import api from '@/services/api'
 
 const status = ref(null)
 const predictions = ref([])
+const cryptoML = ref(null)
 const loading = ref(true)
 const activeTab = ref('overview')
 const activeMLTab = ref('forex')
 
 async function refresh() {
   try {
-    const [s, p] = await Promise.all([
+    const [s, p, c] = await Promise.all([
       api.getMLStatus(),
       api.getMLPredictions(50),
+      api.getCryptoMLStats(),
     ])
     status.value = s
     predictions.value = p
+    cryptoML.value = c
   } catch (err) {
     console.error('ML status error:', err)
   }
@@ -868,22 +871,86 @@ function modelTypeClassFor(type) {
     </template>
 
     <!-- ===== CRYPTO ML TAB ===== -->
-    <div v-if="activeMLTab === 'crypto'" class="crypto-ml-placeholder">
+    <div v-if="activeMLTab === 'crypto'" class="crypto-ml-section">
       <div class="tp-card">
-        <div class="card-inner" style="text-align: center; padding: 3rem;">
-          <span class="material-symbols-outlined" style="font-size: 48px; color: var(--tp-text-muted);">model_training</span>
+        <div class="card-inner" style="text-align: center; padding: 2rem;">
+          <span class="material-symbols-outlined" style="font-size: 48px;" :style="{ color: cryptoML?.model_ready ? '#22c55e' : 'var(--tp-text-muted)' }">
+            {{ cryptoML?.model_ready ? 'check_circle' : 'model_training' }}
+          </span>
           <h3>Crypto ML Pipeline</h3>
-          <p style="color: var(--tp-text-dim);">Training data: 99+ Lighter.xyz trades in Neo4j</p>
-          <div style="display: flex; gap: 1rem; justify-content: center; margin-top: 1rem;">
-            <div class="stat-mini"><span class="stat-val">99+</span><span class="stat-lbl">Training Trades</span></div>
-            <div class="stat-mini"><span class="stat-val">58%</span><span class="stat-lbl">Current Win Rate</span></div>
-            <div class="stat-mini"><span class="stat-val">ETH</span><span class="stat-lbl">Best Symbol</span></div>
-            <div class="stat-mini"><span class="stat-val">RSI(2)</span><span class="stat-lbl">Top Strategy</span></div>
-          </div>
-          <p style="color: var(--tp-text-dim); margin-top: 1.5rem; font-size: 0.8rem;">
-            Model training will begin when sufficient labeled data is collected.<br/>
-            Features: RSI, BB, ADX, session, confluence score, time-of-day, funding rate.
+          <p style="color: var(--tp-text-dim);">
+            {{ cryptoML?.training?.total || 0 }} / {{ cryptoML?.training?.target || 200 }} trades collected for training
           </p>
+
+          <!-- Progress bar -->
+          <div style="max-width: 400px; margin: 1rem auto; background: var(--tp-border); border-radius: 4px; height: 8px; overflow: hidden;">
+            <div :style="{ width: (cryptoML?.training?.progress_pct || 0) + '%', background: '#22c55e', height: '100%', transition: 'width 0.5s' }"></div>
+          </div>
+
+          <div style="display: flex; gap: 1rem; justify-content: center; margin-top: 1.25rem; flex-wrap: wrap;">
+            <div class="stat-mini">
+              <span class="stat-val">{{ cryptoML?.training?.total || 0 }}</span>
+              <span class="stat-lbl">Training Trades</span>
+            </div>
+            <div class="stat-mini">
+              <span class="stat-val" :style="{ color: (cryptoML?.training?.win_rate || 0) >= 60 ? '#22c55e' : (cryptoML?.training?.win_rate || 0) >= 50 ? '#eab308' : '#ef4444' }">
+                {{ cryptoML?.training?.win_rate || 0 }}%
+              </span>
+              <span class="stat-lbl">Win Rate</span>
+            </div>
+            <div class="stat-mini">
+              <span class="stat-val">{{ cryptoML?.training?.best_symbol || '-' }}</span>
+              <span class="stat-lbl">Best Symbol</span>
+            </div>
+            <div class="stat-mini">
+              <span class="stat-val">{{ cryptoML?.training?.best_strategy || '-' }}</span>
+              <span class="stat-lbl">Top Strategy</span>
+            </div>
+            <div class="stat-mini">
+              <span class="stat-val" :style="{ color: (cryptoML?.training?.net_pnl || 0) >= 0 ? '#22c55e' : '#ef4444' }">
+                ${{ (cryptoML?.training?.net_pnl || 0).toFixed(2) }}
+              </span>
+              <span class="stat-lbl">Net P&L</span>
+            </div>
+            <div class="stat-mini">
+              <span class="stat-val">{{ (cryptoML?.training?.avg_duration_min || 0).toFixed(0) }}m</span>
+              <span class="stat-lbl">Avg Duration</span>
+            </div>
+          </div>
+
+          <!-- Per-symbol breakdown -->
+          <div v-if="cryptoML?.training?.by_symbol && Object.keys(cryptoML.training.by_symbol).length" style="margin-top: 1.5rem;">
+            <h4 style="font-size: 0.75rem; text-transform: uppercase; color: var(--tp-text-muted); letter-spacing: 0.06em; margin-bottom: 0.5rem;">Per Symbol</h4>
+            <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+              <div v-for="(stats, sym) in cryptoML.training.by_symbol" :key="sym" class="symbol-chip">
+                <span style="font-weight: 700;">{{ sym }}</span>
+                <span :style="{ color: stats.pnl >= 0 ? '#22c55e' : '#ef4444' }">
+                  {{ stats.wins }}W/{{ stats.losses }}L ${{ stats.pnl.toFixed(2) }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <p style="color: var(--tp-text-dim); margin-top: 1.5rem; font-size: 0.8rem;">
+            {{ cryptoML?.model_ready ? 'Ready to train! 200+ labeled trades collected.' : 'Collecting labeled data. Model training begins at 200 trades.' }}<br/>
+            Features: {{ (cryptoML?.features || []).join(', ') }}
+          </p>
+        </div>
+      </div>
+
+      <!-- Current session stats -->
+      <div v-if="cryptoML?.session?.total" class="tp-card" style="margin-top: 1rem;">
+        <div class="card-inner" style="padding: 1.25rem;">
+          <h4 style="font-size: 0.8rem; font-weight: 700; margin-bottom: 0.75rem;">Current Session</h4>
+          <div style="display: flex; gap: 1.5rem;">
+            <div>
+              <span style="font-weight: 700;">{{ cryptoML.session.wins }}W / {{ cryptoML.session.losses }}L</span>
+              <span style="color: var(--tp-text-dim); font-size: 0.8rem;"> ({{ cryptoML.session.win_rate }}%)</span>
+            </div>
+            <div :style="{ color: cryptoML.session.net_pnl >= 0 ? '#22c55e' : '#ef4444', fontWeight: 700 }">
+              ${{ cryptoML.session.net_pnl.toFixed(4) }}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1406,8 +1473,9 @@ function modelTypeClassFor(type) {
 .ml-tab.active { background: var(--tp-primary); color: white; }
 
 /* Crypto ML placeholder */
-.crypto-ml-placeholder { padding: 0 1.15rem; }
+.crypto-ml-placeholder, .crypto-ml-section { padding: 0 1.15rem; }
 .stat-mini { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
 .stat-val { font-size: 1.2rem; font-weight: 800; color: var(--tp-text); }
 .stat-lbl { font-size: 0.6rem; color: var(--tp-text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }
+.symbol-chip { display: flex; gap: 0.5rem; padding: 0.3rem 0.75rem; background: var(--tp-bg-card); border: 1px solid var(--tp-border); border-radius: 6px; font-size: 0.78rem; }
 </style>

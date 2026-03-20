@@ -39,7 +39,7 @@ _active = True          # When False, all trading endpoints return 503
 _start_time = _time.time()
 
 # ── CORS — allow dashboard (any localhost origin) ────────
-_CONTROL_ROUTES = frozenset(['/health', '/status', '/toggle'])
+_CONTROL_ROUTES = frozenset(['/health', '/status', '/toggle', '/trades'])
 
 @app.after_request
 def _cors(response):
@@ -171,11 +171,18 @@ def status():
 
 @app.route('/toggle', methods=['POST', 'OPTIONS'])
 def toggle():
-    """Flip the active flag. When inactive, all trading endpoints return 503."""
+    """Set or flip the active flag. When inactive, all trading endpoints return 503.
+
+    POST with {"active": true/false} to set explicitly, or POST with no body to flip.
+    """
     if request.method == 'OPTIONS':
         return '', 204
     global _active
-    _active = not _active
+    data = request.get_json(silent=True) or {}
+    if 'active' in data:
+        _active = bool(data['active'])
+    else:
+        _active = not _active
     state = 'ACTIVE' if _active else 'STANDBY'
     logger.info("Trading toggled → %s", state)
     return jsonify({'active': _active, 'state': state})
@@ -671,9 +678,11 @@ def close_position():
                 if position is None:
                     return {'error': f'No open position for {symbol}'}
 
-                pos_size = float(position.position)
-                is_ask = pos_size > 0  # positive = long, sell to close
-                abs_size = abs(pos_size)
+                # position.position is ALWAYS positive (absolute size string).
+                # Direction lives in position.sign: 1=LONG, -1=SHORT.
+                abs_size = float(position.position)
+                sign = int(position.sign) if hasattr(position, 'sign') and position.sign is not None else 1
+                is_ask = sign > 0  # long (sign=1) -> sell to close; short (sign=-1) -> buy to close
                 sdk_amount = int(round(abs_size * (10 ** meta['size_dec'])))
 
                 ideal_price = await signer.get_best_price(meta['id'], is_ask)
@@ -742,19 +751,38 @@ def set_leverage():
 
 @app.route('/orders/cancel-all', methods=['POST'])
 def cancel_all():
-    """Cancel all open orders."""
-    import time as _time
+    """Cancel all open orders.
+
+    Sends two cancel-all transactions:
+    1. CANCEL_ALL_TIF_ABORT  — cancels regular limit orders in the order book.
+    2. CANCEL_ALL_TIF_IMMEDIATE — cancels pending conditional orders (SL/TP type)
+       that don't appear in account_active_orders but consume the pending quota.
+    """
     try:
         async def _execute():
             signer = await _create_signer()
             try:
                 from lighter import SignerClient as _SC
-                tx, resp, err = await signer.cancel_all_orders(
+                errors = []
+
+                # Cancel regular limit orders
+                _, _, err = await signer.cancel_all_orders(
                     time_in_force=_SC.CANCEL_ALL_TIF_ABORT,
                     timestamp_ms=0,
                 )
                 if err:
-                    return {'error': err}
+                    errors.append(f'ABORT: {err}')
+
+                # Cancel conditional orders (SL/TP pending queue)
+                _, _, err2 = await signer.cancel_all_orders(
+                    time_in_force=_SC.CANCEL_ALL_TIF_IMMEDIATE,
+                    timestamp_ms=0,
+                )
+                if err2:
+                    errors.append(f'IMMEDIATE: {err2}')
+
+                if errors:
+                    return {'status': 'partial', 'errors': errors}
                 return {'status': 'ok'}
             finally:
                 await signer.close()
@@ -762,6 +790,41 @@ def cancel_all():
         result = _run(_execute())
         return jsonify(result)
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/trades', methods=['GET'])
+def account_trades():
+    """Fetch authenticated trade history for this account."""
+    limit = request.args.get('limit', 100, type=int)
+    try:
+        async def _fetch():
+            signer = await _create_signer()
+            try:
+                auth_token = signer.create_auth_token_with_expiry(
+                    signer.DEFAULT_10_MIN_AUTH_EXPIRY,
+                )
+                api = lighter.ApiClient(configuration=lighter.Configuration(host=API_URL))
+                try:
+                    order_api = lighter.OrderApi(api)
+                    resp = await order_api.trades_without_preload_content(
+                        sort_by='timestamp',
+                        sort_dir='desc',
+                        limit=limit,
+                        account_index=ACCOUNT_INDEX,
+                        authorization=auth_token,
+                    )
+                    body = await resp.read()
+                    return json.loads(body.decode())
+                finally:
+                    await api.close()
+            finally:
+                await signer.close()
+
+        data = _run(_fetch())
+        return jsonify(data)
+    except Exception as e:
+        logger.error("Trade history error: %s", e)
         return jsonify({'error': str(e)}), 500
 
 

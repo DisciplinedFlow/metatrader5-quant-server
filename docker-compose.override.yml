@@ -87,14 +87,3 @@ services:
       - default
       - traefik-public
 
-  grafana:
-    labels:
-      traefik.enable: "true"
-      traefik.docker.network: traefik-public
-      traefik.http.routers.grafana.rule: Host(`${GRAFANA_DOMAIN}`)
-      traefik.http.routers.grafana.entrypoints: http
-      traefik.http.routers.grafana.tls: "false"
-      traefik.http.routers.grafana.tls.certresolver: ""
-      traefik.http.services.grafana.loadbalancer.server.port: "3000"
-    ports:
-      - 3001:3000  # Remap to avoid port conflict with MT5 VNC through Traefik

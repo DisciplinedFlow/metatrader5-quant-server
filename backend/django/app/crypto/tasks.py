@@ -178,6 +178,40 @@ def run_lighter_exit():
         logger.error(f"run_lighter_exit error: {e}")
 
 
+@shared_task(name='crypto.tasks.run_lighter_momentum', max_retries=2, soft_time_limit=55)
+def run_lighter_momentum():
+    """EMA momentum entries for Lighter.xyz. Complements CVD divergence."""
+    if is_crypto_bot_paused():
+        return
+    if _check_global_daily_halt():
+        logger.debug("Daily halt — skipping lighter momentum entry.")
+        return
+    try:
+        from app.quant.algorithms.lighter.momentum_entry import momentum_entry_algorithm
+        momentum_entry_algorithm()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_momentum timed out.")
+    except Exception as e:
+        logger.error(f"run_lighter_momentum error: {e}")
+
+
+@shared_task(name='crypto.tasks.run_lighter_cvd', max_retries=2, soft_time_limit=55)
+def run_lighter_cvd():
+    """CVD divergence entry for Lighter.xyz. Reads active CVD strategies from DB."""
+    if is_crypto_bot_paused():
+        return
+    if _check_global_daily_halt():
+        logger.debug("Daily halt — skipping lighter CVD entry.")
+        return
+    try:
+        from app.quant.algorithms.lighter.cvd_entry import cvd_entry_algorithm
+        cvd_entry_algorithm()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_cvd timed out.")
+    except Exception as e:
+        logger.error(f"run_lighter_cvd error: {e}")
+
+
 # ── Funding Rate Arbitrage Monitor ────────────────────────
 
 @shared_task(name='crypto.tasks.train_crypto_ml', max_retries=1, soft_time_limit=120)

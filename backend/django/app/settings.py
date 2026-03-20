@@ -282,6 +282,8 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.run_graph_enrichment': {'queue': 'analysis'},
     'quant.tasks.check_graph_health': {'queue': 'default'},
     'quant.tasks.check_news_sentiment': {'queue': 'default'},
+    'crypto.tasks.run_lighter_cvd': {'queue': 'analysis'},
+    'crypto.tasks.run_lighter_momentum': {'queue': 'analysis'},
 }
 
 # --- Neo4j Knowledge Graph ---
@@ -303,7 +305,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     'run-quant-trailing-stop-algorithm': {
         'task': 'quant.tasks.run_quant_trailing_stop_algorithm',
-        'schedule': 2,
+        'schedule': 15,
     },
     'run-quant-close-algorithm': {
         'task': 'quant.tasks.run_quant_close_algorithm',
@@ -324,7 +326,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     'run-lighter-exit': {
         'task': 'crypto.tasks.run_lighter_exit',
-        'schedule': 30.0,
+        # 15s cycle: trailing stop ratchets 4x faster than before.
+        # Price cache (20s TTL) absorbs bursts — real API calls stay ≤3/min per symbol.
+        # On-chain OCO is the backstop for sub-15s flash crashes.
+        'schedule': 15.0,
     },
     'run-lighter-rsi-scalper': {
         'task': 'crypto.tasks.run_lighter_rsi_scalper',
@@ -345,5 +350,13 @@ CELERY_BEAT_SCHEDULE = {
     'run-lighter-mean-reversion': {
         'task': 'crypto.tasks.run_lighter_mean_reversion',
         'schedule': 300.0,
+    },
+    'run-lighter-cvd': {
+        'task': 'crypto.tasks.run_lighter_cvd',
+        'schedule': 60.0,
+    },
+    'run-lighter-momentum': {
+        'task': 'crypto.tasks.run_lighter_momentum',
+        'schedule': 60.0,
     },
 }

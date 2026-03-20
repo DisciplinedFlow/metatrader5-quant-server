@@ -31,11 +31,11 @@ logger = logging.getLogger('app.lighter')
 # ── Grid configuration per asset class ──────────────────
 
 GRID_CONFIG = {
-    # $30 account — bigger sizes for meaningful captures
-    # Each grid fill at 0.3% on $50 notional = $0.15 profit
-    # 4 levels each side = $40 max exposure per symbol
-    'ETH':    {'spacing_pct': 0.003, 'levels': 4, 'size_usd': 10, 'range_mult': 2.0},
-    'BTC':    {'spacing_pct': 0.003, 'levels': 4, 'size_usd': 10, 'range_mult': 2.0},
+    # $30 account — 2 levels each side = 4 orders per symbol × 2 symbols = 8 total grid orders.
+    # Leaves ~12 slots free for OCO SL/TP orders from CVD/RSI2/MOM strategies.
+    # (Exchange has a global pending order quota; 4 levels = 16 grid orders exhausted it.)
+    # Grid disabled — $23 account needs full order quota for RSI scalper SL/TP OCO orders
+    # 'SOL':    {'spacing_pct': 0.003, 'levels': 2, 'size_usd': 10, 'range_mult': 2.0},
 }
 
 # Default for unlisted symbols
@@ -121,6 +121,23 @@ def _manage_symbol_grid(symbol):
     meta = LIGHTER_MARKETS.get(symbol)
     if meta is None:
         return
+
+    # Do not run grid when an open directional position exists for this symbol.
+    # Grid limit orders and OCO SL/TP orders compete for the same exchange pending-order
+    # quota. With grid active, OCO placement fails with 'maximum pending order count
+    # per market reached', leaving positions without hard stop-loss protection.
+    try:
+        from app.crypto.models import CryptoPosition
+        if CryptoPosition.objects.filter(status='OPEN', symbol=symbol).exists():
+            state = _get_grid_state(symbol)
+            if state.get('active'):
+                cancel_all_orders(symbol)
+                state['active'] = False
+                _set_grid_state(symbol, state)
+                logger.info("Grid %s: paused — open position exists, freeing OCO slots", symbol)
+            return
+    except Exception as e:
+        logger.debug("Grid %s: position check failed: %s", symbol, e)
 
     config = GRID_CONFIG.get(symbol, DEFAULT_CONFIG)
     state = _get_grid_state(symbol)

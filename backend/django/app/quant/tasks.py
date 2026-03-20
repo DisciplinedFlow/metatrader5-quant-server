@@ -238,12 +238,7 @@ def fetch_market_pulse():
         except Exception as e:
             logger.error(f'Market pulse calendar fetch failed: {e}')
 
-    # Update high-impact event guards (scans calendar for imminent NFP, FOMC, CPI, etc.)
-    try:
-        from app.quant.macro_analyst import update_event_guards
-        update_event_guards()
-    except Exception as e:
-        logger.error(f'Event guard update failed: {e}')
+    # macro_analyst module removed — event guards (NFP/FOMC/CPI) not available
 
 
 @shared_task(name='quant.tasks.check_tick_consumer_health', max_retries=0, soft_time_limit=10, time_limit=15)
