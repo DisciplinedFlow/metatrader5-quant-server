@@ -15,7 +15,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from .config import LIGHTER_MARKETS
-from .client import get_best_bid_ask, close_position
+from .client import get_best_bid_ask, close_position, get_trade_fill
 from .entry import PLATFORM_PREFIX
 
 logger = logging.getLogger('app.lighter')
@@ -136,24 +136,39 @@ def exit_algorithm():
 
             result = close_position(position.symbol)
 
-            # Estimate taker fee (0.028% of notional = size × price)
-            notional = position.size * current_price
-            estimated_fee = notional * 0.00028
+            # Capture real fill from exchange via tx_hash
+            tx_hash = result.get('tx_hash', '') if result else ''
+            fill = get_trade_fill(tx_hash) if tx_hash else {}
+            fill_price = fill.get('price', current_price)
+            exchange_pnl = fill.get('pnl')
+
+            # Use exchange PnL if available, otherwise calculate from fill price
+            if exchange_pnl is not None:
+                final_pnl = exchange_pnl
+            else:
+                final_pnl = _calc_pnl(position, fill_price)
+                notional = position.size * fill_price
+                final_pnl -= notional * 0.00028  # estimated taker fee
 
             position.status = 'CLOSED'
-            position.close_price = current_price
-            position.pnl_usd = pnl_usd - estimated_fee  # NET of fees
+            position.close_price = fill_price
+            position.pnl_usd = final_pnl
             position.close_reason = close_reason
             position.closed_at = timezone.now()
             position.save()
 
+            if fill:
+                logger.info("Lighter close fill captured: %s price=%.4f exch_pnl=%s",
+                            position.symbol, fill_price,
+                            f"${exchange_pnl:.4f}" if exchange_pnl is not None else "N/A")
+
             CryptoTrade.objects.create(
                 position=position,
-                order_id=result.get('tx_hash', '') if result else '',
+                order_id=tx_hash,
                 side='SELL' if position.side == 'LONG' else 'BUY',
-                price=current_price,
+                price=fill_price,
                 size=position.size,
-                fee=estimated_fee,
+                fee=fill.get('fee', 0.0) or 0.0,
                 status='FILLED',
             )
 

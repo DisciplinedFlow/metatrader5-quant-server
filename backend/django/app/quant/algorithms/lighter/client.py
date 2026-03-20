@@ -416,3 +416,73 @@ def cancel_all_orders(symbol: str = None) -> dict:
     if symbol:
         data['symbol'] = symbol
     return _proxy_post('/orders/cancel-all', data)
+
+
+# ---------------------------------------------------------------------------
+# Fill capture — query exchange for actual fill prices after order execution
+# ---------------------------------------------------------------------------
+
+_ID_TO_SYMBOL = {v['id']: k for k, v in LIGHTER_MARKETS.items()}
+
+
+def get_position_fill(symbol: str) -> dict:
+    """Get the current exchange position state for a symbol.
+
+    Returns dict with 'entry_price', 'size', 'side' from the exchange,
+    or empty dict if no position found.
+    """
+    try:
+        acct = get_account_info()
+        a = acct.accounts[0] if hasattr(acct, 'accounts') and acct.accounts else None
+        if not a:
+            return {}
+        market_id = get_market_id(symbol)
+        for pos in (a.positions or []):
+            if int(pos.market_id) == market_id and float(pos.position) != 0:
+                return {
+                    'entry_price': float(pos.avg_entry_price),
+                    'size': float(pos.position),
+                    'side': 'LONG' if int(pos.sign) > 0 else 'SHORT',
+                }
+        return {}
+    except Exception as e:
+        logger.debug("get_position_fill failed for %s: %s", symbol, e)
+        return {}
+
+
+def get_trade_fill(tx_hash: str) -> dict:
+    """Get actual fill data for a trade by its tx_hash from the exchange.
+
+    Returns dict with 'price', 'size', 'pnl', 'fee' from the exchange,
+    or empty dict if not found. Queries the authenticated /trades endpoint
+    via the signer proxy.
+    """
+    try:
+        url = f"{LIGHTER_SIGNER_PROXY_URL}/trades?limit=10"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        trades = data if isinstance(data, list) else data.get('trades', data.get('data', []))
+        for t in trades:
+            if t.get('tx_hash') == tx_hash:
+                # Determine which side we are
+                is_our_ask = t.get('ask_account_id') == LIGHTER_ACCOUNT_INDEX
+                is_our_bid = t.get('bid_account_id') == LIGHTER_ACCOUNT_INDEX
+                pnl = None
+                fee = None
+                if is_our_ask:
+                    pnl = t.get('ask_account_pnl')
+                    fee = t.get('taker_fee') or t.get('maker_fee')
+                elif is_our_bid:
+                    pnl = t.get('bid_account_pnl')
+                    fee = t.get('taker_fee') or t.get('maker_fee')
+                return {
+                    'price': float(t['price']),
+                    'size': float(t['size']),
+                    'pnl': float(pnl) if pnl is not None else None,
+                    'fee': float(fee) / 10000 if fee is not None else None,
+                }
+        return {}
+    except Exception as e:
+        logger.debug("get_trade_fill failed for tx %s: %s", tx_hash[:16], e)
+        return {}

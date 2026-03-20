@@ -20,7 +20,7 @@ from .config import (
     LIGHTER_PAIRS, LIGHTER_MAX_POSITIONS,
     LIGHTER_LEVERAGE, LIGHTER_MARKETS,
 )
-from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
+from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp, get_position_fill
 from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
@@ -338,12 +338,23 @@ def entry_algorithm():
                 logger.error("Lighter: order failed for %s, cleaned up DB reservation: %s", symbol, result['error'])
                 continue
 
+            # Capture real fill price from exchange (post-settlement)
+            fill = get_position_fill(symbol)
+            fill_price = fill.get('entry_price', current_price)
+            fill_size = fill.get('size', base_size)
+            if fill:
+                position.entry_price = fill_price
+                position.size = fill_size
+                position.save(update_fields=['entry_price', 'size'])
+                logger.info("Lighter fill captured: %s entry=%.4f size=%.6f (quote=%.4f)",
+                            symbol, fill_price, fill_size, current_price)
+
             CryptoTrade.objects.create(
                 position=position,
                 order_id=result.get('tx_hash', ''),
                 side='BUY' if is_buy else 'SELL',
-                price=current_price,
-                size=base_size,
+                price=fill_price,
+                size=fill_size,
                 fee=0.0,
                 status='FILLED',
             )

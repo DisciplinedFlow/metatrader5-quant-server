@@ -122,7 +122,7 @@ def reconcile_positions():
             )
 
         else:
-            # Position exists in both — update size/entry/side if they drifted
+            # Position exists in both — always sync entry/size/side from exchange
             db_pos = db_symbols[symbol]
             update_fields = []
 
@@ -133,20 +133,25 @@ def reconcile_positions():
                     symbol, db_pos.side, exch['side'],
                 )
                 db_pos.side = exch['side']
-                db_pos.entry_price = exch['entry_price']
-                db_pos.size = exch['size']
-                update_fields = ['side', 'entry_price', 'size']
+                update_fields.append('side')
 
-            # Size/entry drift (>1%)
-            elif abs(db_pos.size - exch['size']) / max(exch['size'], 0.0001) > 0.01:
-                old_size = db_pos.size
-                db_pos.size = exch['size']
-                db_pos.entry_price = exch['entry_price']
-                update_fields = ['size', 'entry_price']
+            # Always sync entry price from exchange avg_entry_price
+            if abs(db_pos.entry_price - exch['entry_price']) > 0.001:
                 logger.info(
-                    "RECONCILE: Updated %s size %.6f -> %.6f, entry -> %.4f",
-                    symbol, old_size, exch['size'], exch['entry_price'],
+                    "RECONCILE: %s entry_price %.4f -> %.4f",
+                    symbol, db_pos.entry_price, exch['entry_price'],
                 )
+                db_pos.entry_price = exch['entry_price']
+                update_fields.append('entry_price')
+
+            # Always sync size from exchange
+            if abs(db_pos.size - exch['size']) / max(exch['size'], 0.0001) > 0.001:
+                logger.info(
+                    "RECONCILE: %s size %.6f -> %.6f",
+                    symbol, db_pos.size, exch['size'],
+                )
+                db_pos.size = exch['size']
+                update_fields.append('size')
 
             if update_fields:
                 db_pos.save(update_fields=update_fields)
