@@ -21,9 +21,9 @@ LIGHTER_MAX_SLIPPAGE = float(os.getenv('LIGHTER_MAX_SLIPPAGE', '0.005'))  # 0.5%
 LIGHTER_POSITION_SIZE_PCT = float(os.getenv('LIGHTER_POSITION_SIZE_PCT', '0.50'))  # 50% of capital per trade (up from 40%, justified by 65% WR / PF 2.01)
 
 # Trading pairs (Lighter perp symbols)
-# BTC removed: 50% WR, -$4.08 net PnL across 12 trades (outsized losses)
-# ETH removed: 60% WR, -$8.32 net PnL across 15 trades (outsized losses)
-LIGHTER_PAIRS = os.getenv('LIGHTER_PAIRS', 'SOL,AVAX,LINK,DOGE,XAU').split(',')
+# Backtest-validated only: XAU 1h EMA(5/100) 61.5% WR PF 2.88,
+# AVAX 1h EMA(8/21) 57.1% WR PF 2.53. All others removed.
+LIGHTER_PAIRS = os.getenv('LIGHTER_PAIRS', 'XAU,AVAX').split(',')
 
 # Market metadata: {symbol: (market_id, min_base, size_decimals, price_decimals)}
 # All markets enforce size_decimals + price_decimals = 6
@@ -109,7 +109,7 @@ def sdk_to_human_price(symbol: str, sdk_price: int) -> float:
 def is_global_position_limit_reached() -> bool:
     """Return True if the global Lighter position cap is reached across ALL strategies.
 
-    Checks CryptoPosition directly so every strategy (CVD, MOM, RSI2, grid) shares
+    Checks CryptoPosition directly so every strategy (CVD, MOM, RSI2) shares
     the same hard limit. Capped at LIGHTER_MAX_POSITIONS=2 to match the exchange's
     ~4 conditional order limit (2 positions × SL+TP each).
     """

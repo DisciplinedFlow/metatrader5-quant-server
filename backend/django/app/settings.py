@@ -330,6 +330,7 @@ CELERY_BEAT_SCHEDULE = {
         # Price cache (20s TTL) absorbs bursts — real API calls stay ≤3/min per symbol.
         # On-chain OCO is the backstop for sub-15s flash crashes.
         'schedule': 15.0,
+        'options': {'queue': 'critical'},
     },
     'run-lighter-rsi-scalper': {
         'task': 'crypto.tasks.run_lighter_rsi_scalper',
@@ -343,20 +344,34 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'crypto.tasks.run_lighter_entry',
         'schedule': 60.0,
     },
-    'run-lighter-grid': {
-        'task': 'crypto.tasks.run_lighter_grid',
-        'schedule': 60.0,
-    },
-    'run-lighter-mean-reversion': {
+'run-lighter-mean-reversion': {
         'task': 'crypto.tasks.run_lighter_mean_reversion',
         'schedule': 300.0,
     },
-    'run-lighter-cvd': {
-        'task': 'crypto.tasks.run_lighter_cvd',
-        'schedule': 60.0,
+    # DISABLED: CVD and momentum strategies did not pass backtest validation (2026-03-20)
+    # 'run-lighter-cvd': {
+    #     'task': 'crypto.tasks.run_lighter_cvd',
+    #     'schedule': 60.0,
+    # },
+    # 'run-lighter-momentum': {
+    #     'task': 'crypto.tasks.run_lighter_momentum',
+    #     'schedule': 60.0,
+    # },
+    # ── Monitoring ──────────────────────────────────────────
+    'fetch-market-pulse': {
+        'task': 'quant.tasks.fetch_market_pulse',
+        'schedule': 120.0,
     },
-    'run-lighter-momentum': {
-        'task': 'crypto.tasks.run_lighter_momentum',
-        'schedule': 60.0,
+    'check-news-sentiment': {
+        'task': 'quant.tasks.check_news_sentiment',
+        'schedule': 300.0,
+    },
+    'check-graph-health': {
+        'task': 'quant.tasks.check_graph_health',
+        'schedule': 300.0,
+    },
+    'run-funding-arb-scan': {
+        'task': 'crypto.tasks.run_funding_arb_scan',
+        'schedule': 300.0,
     },
 }

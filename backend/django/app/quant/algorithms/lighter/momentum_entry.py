@@ -29,7 +29,7 @@ from django.core.cache import cache
 
 from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
 from .client import get_best_bid_ask, get_candles, place_market_order_usd, update_leverage, place_oco_sltp
-from .session_sizing import get_combined_sizing
+from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
 
@@ -153,16 +153,6 @@ def _set_cooldown(symbol: str):
     cache.set(f'lighter:mom_cooldown:{symbol}', True, timeout=MOM_COOLDOWN_SECONDS)
 
 
-# ── News risk (fail-open) ─────────────────────────────────────────────────
-
-def _get_news_mult() -> float:
-    try:
-        from app.quant.indicators.news_sentiment import get_market_risk_level
-        return get_market_risk_level().get('size_multiplier', 1.0)
-    except Exception:
-        return 1.0
-
-
 # ── Main entry ────────────────────────────────────────────────────────────
 
 def momentum_entry_algorithm():
@@ -208,7 +198,6 @@ def momentum_entry_algorithm():
         ).values_list('symbol', flat=True)
     )
 
-    news_mult = _get_news_mult()
     hour_utc = datetime.now(timezone.utc).hour
 
     for symbol in MOM_PAIRS:
@@ -216,13 +205,15 @@ def momentum_entry_algorithm():
             break
         if symbol in open_symbols:
             continue
+        if cache.get(f'lighter:vanish_cooldown:{symbol}'):
+            continue
         if LIGHTER_MARKETS.get(symbol) is None:
             continue
         if not _check_cooldown(symbol):
             continue
 
         try:
-            opened = _scan_symbol(symbol, news_mult, hour_utc)
+            opened = _scan_symbol(symbol, hour_utc)
             if opened:
                 mom_open += 1
                 open_symbols.add(symbol)
@@ -230,7 +221,7 @@ def momentum_entry_algorithm():
             logger.error("MOM entry error for %s: %s", symbol, e)
 
 
-def _scan_symbol(symbol: str, news_mult: float, hour_utc: int) -> bool:
+def _scan_symbol(symbol: str, hour_utc: int) -> bool:
     """Evaluate EMA momentum signal for one symbol and enter if confirmed.
 
     Returns True if a position was opened.
@@ -287,7 +278,7 @@ def _scan_symbol(symbol: str, news_mult: float, hour_utc: int) -> bool:
     tp_pct = TP_PCT[is_metal]
 
     # News removed — permanently EXTREME, irrelevant for crypto
-    position_usd = RISK_PER_TRADE_USD / sl_pct * get_combined_sizing(symbol)
+    position_usd = calculate_position_usd(symbol, sl_pct, risk_per_trade=RISK_PER_TRADE_USD)
 
     meta = LIGHTER_MARKETS[symbol]
     if position_usd < meta['min_quote']:
@@ -312,9 +303,9 @@ def _scan_symbol(symbol: str, news_mult: float, hour_utc: int) -> bool:
 
     logger.info(
         "MOM ENTRY: %s %s $%.2f (price=%.4f SL=%.4f TP=%.4f "
-        "ema_sep=%.2f%% ob=%s news=%.2f)",
+        "ema_sep=%.2f%% ob=%s)",
         symbol, side, position_usd, live_price, stop_loss, take_profit,
-        sep_pct * 100, 'OB' if is_ob_pair else 'NO_OB', news_mult,
+        sep_pct * 100, 'OB' if is_ob_pair else 'NO_OB',
     )
 
     # ── Set leverage ──────────────────────────────────────────────────
@@ -355,27 +346,6 @@ def _scan_symbol(symbol: str, news_mult: float, hour_utc: int) -> bool:
         fee=0.0,
         status='FILLED',
     )
-
-    # ── Knowledge graph — fire-and-forget ─────────────────────────────
-    try:
-        from app.quant.tasks import record_to_graph
-        record_to_graph.delay({
-            'type': 'lighter_trade_open',
-            'trade_id': f'lighter_{position.id}',
-            'django_id': position.id,
-            'symbol': symbol,
-            'direction': direction_str,
-            'entry_time': position.opened_at,
-            'entry_price': float(live_price),
-            'strategy': signal_tag,
-            'venue': 'LIGHTER',
-            'hour_utc': position.opened_at.hour if position.opened_at else hour_utc,
-            'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
-            'trading_era': 'MOM_V1',
-            'extra': {'ema_sep_pct': sep_pct, 'sl_pct': sl_pct, 'tp_pct': tp_pct},
-        })
-    except Exception:
-        pass
 
     # ── On-chain OCO SL/TP (initial backstop — exit.py trails from here) ──
     try:

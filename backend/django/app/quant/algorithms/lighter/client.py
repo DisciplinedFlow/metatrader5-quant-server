@@ -347,7 +347,7 @@ def place_oco_sltp(symbol: str, is_long: bool, base_amount: float, stop_loss_pri
     the reconciler cancels the other.
 
     If the first attempt fails due to pending order quota, cancels all open
-    limit orders for this symbol (grid orders) and retries once.
+    limit orders for this symbol and retries once.
     """
     payload = {
         'symbol': symbol,
@@ -358,20 +358,13 @@ def place_oco_sltp(symbol: str, is_long: bool, base_amount: float, stop_loss_pri
     }
     result = _proxy_post('/order/oco-sltp', payload)
 
-    # Retry once after clearing ALL grid orders if quota exceeded.
-    # The pending order limit is global per-account — grid orders on BTC/ETH eat the
-    # quota even when placing OCO for SOL/XAU. Cancel all symbols, not just this one.
+    # Retry once after clearing pending orders if quota exceeded.
     if result.get('error') and 'pending order count' in str(result.get('error', '')):
-        logger.warning("Lighter OCO %s: order quota hit — cancelling all grid orders and retrying", symbol)
+        logger.warning("Lighter OCO %s: order quota hit — cancelling pending orders and retrying", symbol)
         try:
-            from .grid import GRID_CONFIG
-            for grid_sym in GRID_CONFIG:
-                try:
-                    cancel_all_orders(grid_sym)
-                except Exception:
-                    pass
+            cancel_all_orders(symbol)
         except Exception as e:
-            logger.debug("OCO retry: grid cancel failed: %s", e)
+            logger.debug("OCO retry: cancel failed: %s", e)
         result = _proxy_post('/order/oco-sltp', payload)
 
     if result.get('error'):

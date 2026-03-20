@@ -807,15 +807,13 @@ def account_trades():
                 api = lighter.ApiClient(configuration=lighter.Configuration(host=API_URL))
                 try:
                     order_api = lighter.OrderApi(api)
-                    resp = await order_api.trades_without_preload_content(
-                        sort_by='timestamp',
-                        sort_dir='desc',
-                        limit=limit,
-                        account_index=ACCOUNT_INDEX,
-                        authorization=auth_token,
-                    )
-                    body = await resp.read()
-                    return json.loads(body.decode())
+                    import aiohttp
+                    # auth_token is (token_str, None) tuple
+                    token = auth_token[0] if isinstance(auth_token, tuple) else auth_token
+                    url = f'{API_URL}/api/v1/trades?sort_by=timestamp&sort_dir=desc&limit={limit}&account_index={ACCOUNT_INDEX}&auth={token}'
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url) as resp:
+                            return await resp.json()
                 finally:
                     await api.close()
             finally:

@@ -1,22 +1,14 @@
 """
-Lighter.xyz Mean Reversion Strategy — BB(20,2.5) + RSI(14) + ADX(14) filter
+Lighter.xyz Mean Reversion Strategy — BB + RSI + ADX filter
 + Liquidation Cascade Detector.
 
-Academic evidence: ADX filter turned $7K loss into $57K profit in backtests.
-Only trades when market is ranging (ADX < 25). Enters at Bollinger Band
-extremes confirmed by RSI, exits at the mean (middle BB).
+Per-symbol backtest-validated configs:
+- XAU 15m: BB(14,3σ)+RSI(14)<30/>70+ADX<35, TP=mid_bb, SL=2% → 89.7% WR, PF 5.15
+- SOL 1h:  BB(20,2.5σ)+RSI(14)<30/>70+ADX<35, TP=1% fixed, SL=2% → 85.2% WR, PF 2.44
 
 Liquidation cascade integration:
 - If BB/RSI + liquidation cascade align: boost position by 50% (confluence)
 - If liquidation cascade fires alone (without BB/RSI): enter with half position size
-- Signal types: mr_liq_buy / mr_liq_sell (liquidation-only), mr_buy/mr_sell (BB/RSI+liq boost)
-
-Optimized for zero-fee venues — targets 0.3-0.8% captures per trade.
-
-Asset-class aware:
-- Crypto: BB(20, 2.5), RSI <20/>80
-- Metals: BB(20, 2.0), RSI <25/>75
-- Forex: BB(20, 2.0), RSI <25/>75 (tighter bands for lower vol)
 """
 import logging
 import math
@@ -27,103 +19,43 @@ from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
 from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
 from .confluence import score_entry
 from .liquidation_detector import check_liquidation_signal
-from .session_sizing import get_combined_sizing
+from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
 
 
-# ── Intelligence layers (all fail-open, never block trading) ──
-
-def _get_news_risk():
-    try:
-        from app.quant.indicators.news_sentiment import get_market_risk_level
-        return get_market_risk_level()
-    except Exception:
-        return {'risk_level': 'NORMAL', 'size_multiplier': 1.0}
-
-
-def _get_graph_advice(symbol, direction, hour_utc):
-    try:
-        from app.quant.knowledge.advisor import get_trade_advice
-        return get_trade_advice(
-            symbol=symbol,
-            direction=direction,
-            strategy='LIGHTER_MEAN_REVERSION',
-            hour_utc=hour_utc,
-            setup_type='MEAN_REVERSION',
-        )
-    except Exception:
-        return {'confidence': 0.5, 'size_modifier': 1.0, 'recommendation': 'NORMAL'}
-
-
-def _record_reasoning(trade_id, symbol, direction, rsi_val, bb_position, adx_val, liq_signal, graph_advice, news_risk, position_usd):
-    try:
-        from app.quant.tasks import record_to_graph
-        record_to_graph.delay({
-            'type': 'trade_reasoning',
-            'reasoning': {
-                'trade_id': trade_id,
-                'symbol': symbol,
-                'direction': direction,
-                'setup_type': 'MEAN_REVERSION',
-                'entry_source': 'LIGHTER_MR',
-                'entry_zone': bb_position,
-                'news_risk': news_risk.get('risk_level', 'NORMAL'),
-                'news_size_mult': news_risk.get('size_multiplier', 1.0),
-                'graph_confidence': graph_advice.get('confidence', 0.5),
-                'graph_recommendation': graph_advice.get('recommendation', 'NORMAL'),
-                'reasoning_text': f'BB {bb_position}, RSI={rsi_val:.0f}, ADX={adx_val:.0f}, liq={liq_signal}, size=${position_usd:.2f}',
-            }
-        })
-    except Exception:
-        pass
-
-
 PLATFORM_PREFIX = 'lighter:'
 
-# ── Asset-class configs ─────────────────────────────────
+# ── Per-symbol configs (backtest-validated) ──
 
-FOREX_SYMBOLS = {'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'}
-METALS_SYMBOLS = {'XAU', 'XAG', 'PAXG', 'WTI'}
-
-MR_CONFIG = {
-    'crypto': {
+MR_CONFIGS = {
+    'XAU': {
+        'bb_period': 14, 'bb_std': 3.0,
+        'rsi_period': 14, 'rsi_oversold': 30, 'rsi_overbought': 70,
+        'adx_max': 35,
+        'sl_pct': 0.02,
+        'tp_mode': 'mid_bb',       # dynamic: TP = middle Bollinger Band
+        'tp_fixed_pct': None,
+        'timeframe': '15m',
+    },
+    'SOL': {
         'bb_period': 20, 'bb_std': 2.5,
-        'rsi_period': 14, 'rsi_oversold': 25, 'rsi_overbought': 75,
-        'adx_max': 40,   # Relaxed — BB+RSI already filter, don't miss volatile moves
-        'sl_pct': 0.02, 'tp_pct': 0.01,
-        'size_usd': 8,
-    },
-    'metals': {
-        'bb_period': 20, 'bb_std': 2.0,
-        'rsi_period': 14, 'rsi_oversold': 28, 'rsi_overbought': 72,
-        'adx_max': 35,   # Relaxed — XAU moves fast, catch the pumps
-        'sl_pct': 0.015, 'tp_pct': 0.008,
-        'size_usd': 8,
-    },
-    'forex': {
-        'bb_period': 20, 'bb_std': 2.0,
-        'rsi_period': 14, 'rsi_oversold': 28, 'rsi_overbought': 72,
-        'adx_max': 30,   # Slightly relaxed
-        'sl_pct': 0.005, 'tp_pct': 0.003,
-        'size_usd': 8,
+        'rsi_period': 14, 'rsi_oversold': 30, 'rsi_overbought': 70,
+        'adx_max': 35,
+        'sl_pct': 0.02,
+        'tp_mode': 'fixed',         # fixed: TP = 1% from entry
+        'tp_fixed_pct': 0.01,
+        'timeframe': '1h',
     },
 }
 
-# Symbols to scan
-# BTC removed: 50% WR, -$4.08 net PnL | ETH removed: 60% WR, -$8.32 net PnL
-MR_SYMBOLS = ['SOL', 'XAU', 'EURUSD']
+MR_SYMBOLS = list(MR_CONFIGS.keys())
 
-# Cooldown between trades on same symbol (seconds)
-MR_COOLDOWN_SECONDS = 60  # 1 minute — aggressive, zero fees make rapid trades viable
+MR_COOLDOWN_SECONDS = 60
 
 
 def _get_config(symbol):
-    if symbol in FOREX_SYMBOLS:
-        return MR_CONFIG['forex']
-    elif symbol in METALS_SYMBOLS:
-        return MR_CONFIG['metals']
-    return MR_CONFIG['crypto']
+    return MR_CONFIGS.get(symbol, MR_CONFIGS['XAU'])
 
 
 def _calculate_bb(closes, period=20, std_mult=2.0):
@@ -241,14 +173,19 @@ def _scan_symbol(symbol):
                                       entry_signal__startswith=PLATFORM_PREFIX).exists():
         return
 
+    # Vanish cooldown — position recently disappeared from exchange
+    if cache.get(f'lighter:vanish_cooldown:{symbol}'):
+        return
+
     # Check cooldown
     if not _check_cooldown(symbol):
         return
 
     config = _get_config(symbol)
 
-    # Fetch 15m candles (best timeframe for crypto MR per research)
-    candles = get_candles(symbol, resolution='15m', count_back=60)
+    # Fetch candles at per-symbol validated timeframe
+    tf = config.get('timeframe', '15m')
+    candles = get_candles(symbol, resolution=tf, count_back=60)
     if not candles or len(candles) < config['bb_period'] + 10:
         return
 
@@ -405,12 +342,10 @@ def _scan_symbol(symbol):
         logger.debug("MR %s: trade flow check failed: %s", symbol, e)
         flow_info = "flow_error"
 
-    # News + graph removed — news was permanently EXTREME, graph is offline
-
     # ── Execute entry ──
     is_buy = signal > 0
     side = 'LONG' if is_buy else 'SHORT'
-    base_position_usd = config['size_usd'] * LIGHTER_LEVERAGE * get_combined_sizing(symbol)
+    base_position_usd = calculate_position_usd(symbol, config['sl_pct'])
 
     # Size adjustment: confluence boosts size, never blocks
     conf_mult = confluence.size_multiplier if confluence else 1.0
@@ -451,13 +386,19 @@ def _scan_symbol(symbol):
         logger.error("MR %s: order failed: %s", symbol, result['error'])
         return
 
-    # Calculate SL/TP — TP targets the mean (middle BB), SL is wider
+    # Calculate SL/TP — per-symbol: mid_bb (XAU) or fixed % (SOL)
     if is_buy:
-        take_profit = current_bb_mid  # Target the mean
         stop_loss = live_price * (1 - config['sl_pct'])
+        if config.get('tp_mode') == 'fixed':
+            take_profit = live_price * (1 + config['tp_fixed_pct'])
+        else:
+            take_profit = current_bb_mid
     else:
-        take_profit = current_bb_mid  # Target the mean
         stop_loss = live_price * (1 + config['sl_pct'])
+        if config.get('tp_mode') == 'fixed':
+            take_profit = live_price * (1 - config['tp_fixed_pct'])
+        else:
+            take_profit = current_bb_mid
 
     # Record position
     base_size = position_usd / live_price
@@ -483,41 +424,6 @@ def _scan_symbol(symbol):
         size=base_size,
         fee=0.0,
         status='FILLED',
-    )
-
-    # Record trade open to knowledge graph
-    try:
-        from app.quant.tasks import record_to_graph
-        record_to_graph.delay({
-            'type': 'lighter_trade_open',
-            'trade_id': f'lighter_{position.id}',
-            'django_id': position.id,
-            'symbol': symbol,
-            'direction': 'BUY' if is_buy else 'SELL',
-            'entry_time': position.opened_at,
-            'entry_price': float(live_price),
-            'strategy': position.entry_signal or 'unknown',
-            'venue': 'LIGHTER',
-            'hour_utc': position.opened_at.hour if position.opened_at else 0,
-            'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
-            'trading_era': 'BRAIN_V1',
-        })
-    except Exception:
-        pass
-
-    # Record reasoning to knowledge graph
-    bb_position = 'lower' if is_buy else 'upper'
-    _record_reasoning(
-        trade_id=position.id,
-        symbol=symbol,
-        direction=side,
-        rsi_val=current_rsi,
-        bb_position=bb_position,
-        adx_val=current_adx,
-        liq_signal=liq_signal,
-        graph_advice=graph_advice,
-        news_risk=news_risk,
-        position_usd=position_usd,
     )
 
     # Place native on-chain SL/TP as OCO group (one-cancels-other)

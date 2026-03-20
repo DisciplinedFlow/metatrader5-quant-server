@@ -4,16 +4,16 @@ Lighter.xyz Position Reconciliation — keeps DB in sync with exchange.
 Runs every 60s. Compares DB open positions with actual Lighter exchange positions.
 Fixes two types of drift:
 1. Exchange has position, DB doesn't → create DB record (orphaned position)
-2. DB shows open, exchange doesn't → mark DB as closed (stale record)
+2. DB shows open, exchange doesn't → mark CLOSED with estimated PnL + set cooldown
 
 Also:
-3. sync_neo4j() — backfills closed Lighter trades into the Neo4j knowledge graph
-4. cleanup_oco_orphans() — cancels the surviving SL or TP when its counterpart fills
+3. cleanup_oco_orphans() — cancels the surviving SL or TP when its counterpart fills
 
 This ensures trailing stops, SL/TP, and exit phases always have accurate data.
 """
 import logging
 from django.utils import timezone
+from django.core.cache import cache
 
 from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
 from .client import get_account_info, get_best_bid_ask
@@ -25,8 +25,8 @@ PLATFORM_PREFIX = 'lighter:'
 # Reverse lookup: market_id -> symbol
 ID_TO_SYMBOL = {v['id']: k for k, v in LIGHTER_MARKETS.items()}
 
-# Redis key for tracking the last Neo4j sync timestamp
-_NEO4J_SYNC_KEY = 'lighter:neo4j_last_sync_id'
+# Cooldown after a position vanishes from exchange — prevents re-entry loop
+VANISH_COOLDOWN_SECONDS = 600  # 10 minutes
 
 
 def reconcile_positions():
@@ -44,14 +44,11 @@ def reconcile_positions():
 
     # Cache collateral so entry algorithms can guard without extra API calls
     try:
-        from django.core.cache import cache
         cache.set('lighter:collateral', float(a.collateral), timeout=90)
     except Exception:
         pass
 
     # Build exchange position map: symbol -> {side, size, entry_price}
-    # pos.position is always the absolute size — use pos.sign for direction:
-    # sign=1 → LONG, sign=-1 → SHORT (pos.position > 0 is always True, useless for direction)
     exchange_positions = {}
     for pos in (a.positions or []):
         size = float(pos.position)
@@ -124,26 +121,6 @@ def reconcile_positions():
                 stop_loss, take_profit, position.id,
             )
 
-            # Record trade open to knowledge graph
-            try:
-                from app.quant.tasks import record_to_graph
-                record_to_graph.delay({
-                    'type': 'lighter_trade_open',
-                    'trade_id': f'lighter_{position.id}',
-                    'django_id': position.id,
-                    'symbol': symbol,
-                    'direction': 'BUY' if exch['side'] == 'LONG' else 'SELL',
-                    'entry_time': position.opened_at,
-                    'entry_price': float(entry),
-                    'strategy': position.entry_signal or 'reconciled',
-                    'venue': 'LIGHTER',
-                    'hour_utc': position.opened_at.hour if position.opened_at else 0,
-                    'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
-                    'trading_era': 'BRAIN_V1',
-                })
-            except Exception:
-                pass
-
         else:
             # Position exists in both — update size/entry/side if they drifted
             db_pos = db_symbols[symbol]
@@ -174,9 +151,7 @@ def reconcile_positions():
             if update_fields:
                 db_pos.save(update_fields=update_fields)
 
-    # ── Fix 2: DB shows open, exchange doesn't → delete stale DB record ──
-    # Do NOT create fake CLOSED trades — they pollute ML training data.
-    # The exit algorithm is the only source of truth for closed trades.
+    # ── Fix 2: DB shows open, exchange doesn't → record as CLOSED + cooldown ──
     for symbol, db_pos in db_symbols.items():
         if symbol not in exchange_positions:
             # Grace period: don't touch positions opened < 90s ago (fill settlement race)
@@ -185,101 +160,41 @@ def reconcile_positions():
                              symbol, (timezone.now() - db_pos.opened_at).total_seconds())
                 continue
 
-            logger.info(
-                "RECONCILE: Deleting stale DB record %s %s (id=%d) — not on exchange",
-                symbol, db_pos.side, db_pos.id,
+            # Estimate PnL from last known price
+            estimated_pnl = 0.0
+            try:
+                prices = get_best_bid_ask(symbol)
+                close_price = prices.get('mid')
+                if close_price and close_price > 0:
+                    if db_pos.side == 'LONG':
+                        estimated_pnl = (close_price - db_pos.entry_price) * db_pos.size
+                    else:
+                        estimated_pnl = (db_pos.entry_price - close_price) * db_pos.size
+                    db_pos.close_price = close_price
+            except Exception:
+                pass
+
+            # Mark as CLOSED — not delete — so PnL is tracked
+            db_pos.status = 'CLOSED'
+            db_pos.close_reason = 'SYNC'
+            db_pos.closed_at = timezone.now()
+            db_pos.pnl_usd = estimated_pnl
+            db_pos.save()
+
+            # Set cooldown to prevent immediate re-entry loop
+            cache.set(f'lighter:vanish_cooldown:{symbol}', True, timeout=VANISH_COOLDOWN_SECONDS)
+
+            logger.warning(
+                "RECONCILE: %s %s vanished from exchange — marked CLOSED "
+                "(id=%d, est_pnl=$%.4f, cooldown=%ds)",
+                symbol, db_pos.side, db_pos.id, estimated_pnl, VANISH_COOLDOWN_SECONDS,
             )
-            db_pos.delete()
 
     # ── Additional reconcile duties ──
-    try:
-        sync_neo4j()
-    except Exception as e:
-        logger.debug("Neo4j sync during reconcile failed: %s", e)
-
     try:
         cleanup_oco_orphans(exchange_positions)
     except Exception as e:
         logger.debug("OCO cleanup during reconcile failed: %s", e)
-
-
-def sync_neo4j():
-    """Backfill closed Lighter trades into the Neo4j knowledge graph.
-
-    Uses a Redis-stored last-synced position ID to avoid re-processing trades
-    every cycle. Only processes trades closed since the last sync.
-    Catches duplicate constraint violations and skips them.
-    """
-    from django.core.cache import cache
-    from app.crypto.models import CryptoPosition
-
-    try:
-        from app.quant.knowledge.connection import get_graph
-        graph = get_graph()
-        if graph is None:
-            return  # Neo4j not available
-    except Exception:
-        return
-
-    # Get the last synced position ID (0 = never synced, backfill all)
-    last_synced_id = cache.get(_NEO4J_SYNC_KEY, 0)
-
-    # Get all closed Lighter trades with PnL, newer than last sync
-    closed_trades = CryptoPosition.objects.filter(
-        status='CLOSED',
-        venue='LIGHTER',
-        pnl_usd__isnull=False,
-        id__gt=last_synced_id,
-    ).order_by('id')
-
-    if not closed_trades.exists():
-        return
-
-    synced = 0
-    skipped = 0
-    max_id = last_synced_id
-
-    for pos in closed_trades:
-        try:
-            trade_data = {
-                'trade_id': f'lighter_{pos.id}',
-                'django_id': pos.id,
-                'symbol': pos.symbol,
-                'direction': 'BUY' if pos.side == 'LONG' else 'SELL',
-                'entry_time': pos.opened_at,
-                'close_time': pos.closed_at,
-                'entry_price': float(pos.entry_price or 0),
-                'close_price': float(pos.close_price or 0),
-                'pnl': float(pos.pnl_usd or 0),
-                'strategy': pos.entry_signal or 'unknown',
-                'closing_reason': pos.close_reason or '',
-                'venue': 'LIGHTER',
-                'hour_utc': pos.opened_at.hour if pos.opened_at else 0,
-                'day_of_week': pos.opened_at.weekday() if pos.opened_at else 0,
-            }
-            result = graph.record_trade(trade_data)
-            if result:
-                synced += 1
-            else:
-                skipped += 1
-        except Exception as e:
-            err_str = str(e)
-            if 'already exists' in err_str or 'ConstraintValidation' in err_str:
-                skipped += 1
-            else:
-                logger.debug("Neo4j sync error for position %d: %s", pos.id, e)
-                skipped += 1
-
-        if pos.id > max_id:
-            max_id = pos.id
-
-    # Update the watermark so we don't re-process these trades
-    if max_id > last_synced_id:
-        cache.set(_NEO4J_SYNC_KEY, max_id, timeout=None)  # persist indefinitely
-
-    if synced > 0:
-        logger.info("NEO4J SYNC: backfilled %d Lighter trades (%d skipped/dupes), watermark=%d",
-                     synced, skipped, max_id)
 
 
 def cleanup_oco_orphans(exchange_positions=None):

@@ -17,70 +17,39 @@ import pandas as pd
 import numpy as np
 
 from .config import (
-    LIGHTER_PAIRS, LIGHTER_CAPITAL_USD, LIGHTER_MAX_POSITIONS,
-    LIGHTER_LEVERAGE, LIGHTER_POSITION_SIZE_PCT, LIGHTER_MARKETS,
+    LIGHTER_PAIRS, LIGHTER_MAX_POSITIONS,
+    LIGHTER_LEVERAGE, LIGHTER_MARKETS,
 )
 from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
-from .session_sizing import get_combined_sizing
+from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
 
 
-# Intelligence layers (all fail-open, never block trading)
-def _get_news_risk():
-    try:
-        from app.quant.indicators.news_sentiment import get_market_risk_level
-        return get_market_risk_level()
-    except Exception:
-        return {'risk_level': 'NORMAL', 'size_multiplier': 1.0}
-
-
-def _get_graph_advice(symbol, direction, hour_utc):
-    try:
-        from app.quant.knowledge.advisor import get_trade_advice
-        return get_trade_advice(
-            symbol=symbol,
-            direction=direction,
-            strategy='LIGHTER_EMA_ENTRY',
-            hour_utc=hour_utc,
-            setup_type='TREND_CONTINUATION',
-        )
-    except Exception:
-        return {'confidence': 0.5, 'size_modifier': 1.0, 'recommendation': 'NORMAL'}
-
-
-def _record_reasoning(trade_id, symbol, direction, signal_type, graph_advice, news_risk, position_usd):
-    try:
-        from app.quant.tasks import record_to_graph
-        record_to_graph.delay({
-            'type': 'trade_reasoning',
-            'reasoning': {
-                'trade_id': trade_id,
-                'symbol': symbol,
-                'direction': direction,
-                'setup_type': 'TREND_CONTINUATION',
-                'entry_source': 'LIGHTER_EMA',
-                'entry_zone': signal_type,
-                'news_risk': news_risk.get('risk_level', 'NORMAL'),
-                'news_size_mult': news_risk.get('size_multiplier', 1.0),
-                'graph_confidence': graph_advice.get('confidence', 0.5),
-                'graph_recommendation': graph_advice.get('recommendation', 'NORMAL'),
-                'reasoning_text': f'EMA {signal_type}, size=${position_usd:.2f}',
-            }
-        })
-    except Exception:
-        pass
-
-
 PLATFORM_PREFIX = 'lighter:'
-EMA_FAST = 8
-EMA_SLOW = 21
+
+# Per-symbol EMA parameters — backtest-validated (2026-03-20)
+# XAU 1h: EMA(5/100), 61.5% WR, PF 2.88
+# AVAX 1h: EMA(8/21), 57.1% WR, PF 2.53
+EMA_PARAMS = {
+    'XAU': {'fast': 5, 'slow': 100},
+    'AVAX': {'fast': 8, 'slow': 21},
+}
+DEFAULT_EMA = {'fast': 8, 'slow': 21}
+
+# Per-symbol SL/TP as fractions — backtest-validated (2026-03-20)
+SL_TP_PARAMS = {
+    'XAU': (0.015, 0.03),   # 1.5% SL, 3% TP
+    'AVAX': (0.03, 0.06),   # 3% SL, 6% TP
+}
+DEFAULT_SL_TP = (0.03, 0.06)  # Default: 3% SL, 6% TP
+
 RSI_PERIOD = 14
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 65
 RSI_PULLBACK_BUY = 40    # For trend-following: buy when RSI dips below this in uptrend
 RSI_PULLBACK_SELL = 60   # For trend-following: sell when RSI rises above this in downtrend
-CANDLE_COUNT = 100
+CANDLE_COUNT = 150  # Enough for EMA(100) + warmup
 
 # Symbol performance filter thresholds
 SYMBOL_FILTER_LOOKBACK = 10
@@ -101,18 +70,22 @@ def _calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def _generate_signal_multitf(candles_1h: list, candles_15m: list) -> tuple:
+def _generate_signal_multitf(candles_1h: list, candles_15m: list, symbol: str = '') -> tuple:
     """Multi-timeframe signal generation.
 
     Returns (signal: int, signal_type: str) where signal is 1/-1/0
     and signal_type describes the trigger for logging.
     """
-    if len(candles_1h) < EMA_SLOW + 5:
+    ema_cfg = EMA_PARAMS.get(symbol, DEFAULT_EMA)
+    ema_fast_period = ema_cfg['fast']
+    ema_slow_period = ema_cfg['slow']
+
+    if len(candles_1h) < ema_slow_period + 5:
         return 0, ''
 
     closes_1h = pd.Series([float(c['c']) for c in candles_1h])
-    ema_fast_1h = _calculate_ema(closes_1h, EMA_FAST)
-    ema_slow_1h = _calculate_ema(closes_1h, EMA_SLOW)
+    ema_fast_1h = _calculate_ema(closes_1h, ema_fast_period)
+    ema_slow_1h = _calculate_ema(closes_1h, ema_slow_period)
     rsi_1h = _calculate_rsi(closes_1h, RSI_PERIOD)
 
     if pd.isna(ema_fast_1h.iloc[-1]) or pd.isna(ema_slow_1h.iloc[-1]) or pd.isna(rsi_1h.iloc[-1]):
@@ -267,6 +240,10 @@ def entry_algorithm():
             continue
         if open_count >= LIGHTER_MAX_POSITIONS:
             break
+        # Vanish cooldown — position recently disappeared from exchange, don't re-enter
+        if cache.get(f'lighter:vanish_cooldown:{symbol}'):
+            logger.debug("Lighter: %s in vanish cooldown, skipping", symbol)
+            continue
 
         meta = LIGHTER_MARKETS.get(symbol)
         if meta is None:
@@ -275,8 +252,11 @@ def entry_algorithm():
 
         try:
             # Fetch both timeframes
+            ema_cfg = EMA_PARAMS.get(symbol, DEFAULT_EMA)
+            ema_slow_period = ema_cfg['slow']
+
             candles_1h = get_candles(symbol, resolution='1h', count_back=CANDLE_COUNT)
-            if not candles_1h or len(candles_1h) < EMA_SLOW + 5:
+            if not candles_1h or len(candles_1h) < ema_slow_period + 5:
                 logger.debug("Lighter: not enough 1h data for %s (%d bars)",
                              symbol, len(candles_1h) if candles_1h else 0)
                 continue
@@ -288,12 +268,10 @@ def entry_algorithm():
             except Exception as e:
                 logger.debug("Lighter: 15m candles unavailable for %s: %s", symbol, e)
 
-            signal, signal_type = _generate_signal_multitf(candles_1h, candles_15m)
+            signal, signal_type = _generate_signal_multitf(candles_1h, candles_15m, symbol)
             if signal == 0:
                 logger.debug("Lighter: no signal for %s", symbol)
                 continue
-
-            # News/graph removed — news permanently EXTREME, graph offline
 
             # Symbol performance filter
             sym_ok, sym_mult = _check_symbol_performance(symbol)
@@ -307,8 +285,11 @@ def entry_algorithm():
                 logger.warning("Lighter: no price data for %s", symbol)
                 continue
 
-            # Calculate position size in USD
-            position_usd = LIGHTER_CAPITAL_USD * LIGHTER_POSITION_SIZE_PCT * LIGHTER_LEVERAGE * sym_mult * get_combined_sizing(symbol)
+            # Per-symbol SL/TP from backtest-validated params
+            sl_pct, tp_pct = SL_TP_PARAMS.get(symbol, DEFAULT_SL_TP)
+
+            # Calculate position size in USD — risk-normalised via unified sizing
+            position_usd = calculate_position_usd(symbol, sl_pct) * sym_mult
             if position_usd < meta['min_quote']:
                 logger.warning("Lighter: position size $%.2f below minimum $%.2f for %s",
                                position_usd, meta['min_quote'], symbol)
@@ -316,30 +297,6 @@ def entry_algorithm():
 
             is_buy = signal > 0
             side = 'LONG' if is_buy else 'SHORT'
-
-            logger.info("Lighter ENTRY: %s %s $%.2f (price=%.4f, leverage=%dx, signal=%s, sym_mult=%.2f)",
-                         symbol, side, position_usd, current_price, LIGHTER_LEVERAGE,
-                         signal_type, sym_mult)
-
-            # Set leverage first
-            lev_result = update_leverage(symbol, LIGHTER_LEVERAGE)
-            if lev_result.get('error'):
-                logger.error("Lighter: leverage update failed for %s: %s", symbol, lev_result['error'])
-                continue
-
-            # Place market order
-            result = place_market_order_usd(symbol, is_buy, position_usd)
-            if result.get('error'):
-                continue
-
-            # Calculate SL/TP levels — asset-class aware
-            # Forex: tight (0.5%/1%), Metals: medium (1.5%/3%), Crypto: wide (3%/6%)
-            if symbol in ('EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'):
-                sl_pct, tp_pct = 0.005, 0.01    # Forex: 0.5% SL, 1% TP
-            elif symbol in ('XAU', 'XAG', 'PAXG', 'WTI'):
-                sl_pct, tp_pct = 0.015, 0.03    # Metals/commodities: 1.5% SL, 3% TP
-            else:
-                sl_pct, tp_pct = 0.03, 0.06     # Crypto: 3% SL, 6% TP
             if is_buy:
                 stop_loss = current_price * (1 - sl_pct)
                 take_profit = current_price * (1 + tp_pct)
@@ -347,18 +304,39 @@ def entry_algorithm():
                 stop_loss = current_price * (1 + sl_pct)
                 take_profit = current_price * (1 - tp_pct)
 
-            # Record position
             base_size = position_usd / current_price
+
+            # Reserve position in DB BEFORE placing exchange order — prevents duplicates
             position = CryptoPosition.objects.create(
                 symbol=symbol,
                 side=side,
                 entry_price=current_price,
                 size=base_size,
                 leverage=LIGHTER_LEVERAGE,
-                entry_signal=f"{PLATFORM_PREFIX}{signal_type}_ema_{EMA_FAST}_{EMA_SLOW}",
+                entry_signal=f"{PLATFORM_PREFIX}{signal_type}_ema_{ema_cfg['fast']}_{ema_cfg['slow']}",
                 stop_loss=stop_loss,
                 take_profit=take_profit,
             )
+
+            logger.info("Lighter ENTRY: %s %s $%.2f (price=%.4f, leverage=%dx, signal=%s, sym_mult=%.2f)",
+                         symbol, side, position_usd, current_price, LIGHTER_LEVERAGE,
+                         signal_type, sym_mult)
+
+            # Set leverage (non-blocking)
+            try:
+                lev_result = update_leverage(symbol, LIGHTER_LEVERAGE)
+                if lev_result.get('error'):
+                    logger.warning("Lighter: leverage update failed for %s: %s — proceeding with current leverage", symbol, lev_result['error'])
+            except Exception as e:
+                logger.warning("Lighter: leverage exception for %s: %s — proceeding", symbol, e)
+
+            # Place market order
+            result = place_market_order_usd(symbol, is_buy, position_usd)
+            if result.get('error'):
+                # Order failed — clean up the reserved DB record
+                position.delete()
+                logger.error("Lighter: order failed for %s, cleaned up DB reservation: %s", symbol, result['error'])
+                continue
 
             CryptoTrade.objects.create(
                 position=position,
@@ -366,39 +344,8 @@ def entry_algorithm():
                 side='BUY' if is_buy else 'SELL',
                 price=current_price,
                 size=base_size,
-                fee=0.0,  # Lighter has zero fees
+                fee=0.0,
                 status='FILLED',
-            )
-
-            # Record trade open to knowledge graph
-            try:
-                from app.quant.tasks import record_to_graph
-                record_to_graph.delay({
-                    'type': 'lighter_trade_open',
-                    'trade_id': f'lighter_{position.id}',
-                    'django_id': position.id,
-                    'symbol': symbol,
-                    'direction': 'BUY' if is_buy else 'SELL',
-                    'entry_time': position.opened_at,
-                    'entry_price': float(current_price),
-                    'strategy': position.entry_signal or 'unknown',
-                    'venue': 'LIGHTER',
-                    'hour_utc': position.opened_at.hour if position.opened_at else 0,
-                    'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
-                    'trading_era': 'BRAIN_V1',
-                })
-            except Exception:
-                pass  # Graph recording is optional
-
-            # Record reasoning to knowledge graph
-            _record_reasoning(
-                trade_id=position.id,
-                symbol=symbol,
-                direction=direction_str,
-                signal_type=signal_type,
-                graph_advice=graph_advice,
-                news_risk=news_risk,
-                position_usd=position_usd,
             )
 
             # Place native on-chain SL/TP as OCO group (one-cancels-other)

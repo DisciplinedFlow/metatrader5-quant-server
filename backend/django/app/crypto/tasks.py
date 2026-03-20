@@ -125,18 +125,6 @@ def run_lighter_mean_reversion():
         logger.error(f"run_lighter_mean_reversion error: {e}")
 
 
-@shared_task(name='crypto.tasks.run_lighter_grid', max_retries=2, soft_time_limit=45)
-def run_lighter_grid():
-    if is_crypto_bot_paused():
-        return
-    try:
-        from app.quant.algorithms.lighter.grid import grid_algorithm
-        grid_algorithm()
-    except SoftTimeLimitExceeded:
-        logger.error("run_lighter_grid timed out.")
-    except Exception as e:
-        logger.error(f"run_lighter_grid error: {e}")
-
 
 @shared_task(name='crypto.tasks.run_lighter_rsi_scalper', max_retries=2, soft_time_limit=45)
 def run_lighter_rsi_scalper():
@@ -151,7 +139,7 @@ def run_lighter_rsi_scalper():
         logger.error(f"run_lighter_rsi_scalper error: {e}")
 
 
-@shared_task(name='crypto.tasks.run_lighter_reconcile', max_retries=1, soft_time_limit=45)
+@shared_task(name='crypto.tasks.run_lighter_reconcile', max_retries=1, soft_time_limit=20)
 def run_lighter_reconcile():
     """Sync DB positions with actual Lighter exchange state."""
     if is_crypto_bot_paused():
@@ -165,7 +153,7 @@ def run_lighter_reconcile():
         logger.error(f"run_lighter_reconcile error: {e}")
 
 
-@shared_task(name='crypto.tasks.run_lighter_exit', max_retries=3, soft_time_limit=60)
+@shared_task(name='crypto.tasks.run_lighter_exit', max_retries=3, soft_time_limit=20)
 def run_lighter_exit():
     if is_crypto_bot_paused():
         return

@@ -182,31 +182,6 @@ def exit_algorithm():
             except Exception as e:
                 logger.debug("ML feature recording failed: %s", e)
 
-            # Update trade close in Neo4j knowledge graph
-            # Uses update_trade_close to fill in the OPEN node created at entry.
-            # Falls back to full create if the open node doesn't exist.
-            try:
-                from app.quant.tasks import record_to_graph
-                record_to_graph.delay({
-                    'type': 'lighter_trade_close',
-                    'trade_id': f'lighter_{position.id}',
-                    'django_id': position.id,
-                    'symbol': position.symbol,
-                    'direction': 'BUY' if position.side == 'LONG' else 'SELL',
-                    'entry_price': float(position.entry_price),
-                    'close_price': float(current_price),
-                    'pnl': float(pnl_usd),
-                    'strategy': position.entry_signal or 'unknown',
-                    'closing_reason': close_reason,
-                    'entry_time': position.opened_at,
-                    'close_time': position.closed_at,
-                    'venue': 'LIGHTER',
-                    'hour_utc': position.opened_at.hour if position.opened_at else 0,
-                    'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
-                })
-            except Exception:
-                pass
-
         except Exception as e:
             logger.error("Lighter exit error for %s: %s", position.symbol, e)
 

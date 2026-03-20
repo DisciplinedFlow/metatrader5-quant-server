@@ -38,7 +38,7 @@ from django.core.cache import cache
 
 from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
 from .client import get_best_bid_ask, get_candles, place_market_order_usd, update_leverage, place_oco_sltp
-from .session_sizing import get_combined_sizing
+from .sizing import calculate_position_usd
 from .cvd_calculator import detect_divergence, detect_multitf_divergence, get_cvd_dataframe
 
 logger = logging.getLogger('app.lighter')
@@ -112,30 +112,6 @@ def _get_1h_trend(symbol: str) -> int:
     if ema_fast < ema_slow:
         return -1
     return 0
-
-
-# ── Intelligence layers (all fail-open) ─────────────────────────────────
-
-def _get_news_risk():
-    try:
-        from app.quant.indicators.news_sentiment import get_market_risk_level
-        return get_market_risk_level()
-    except Exception:
-        return {'risk_level': 'NORMAL', 'size_multiplier': 1.0}
-
-
-def _get_graph_advice(symbol, direction, hour_utc, cvd_type):
-    try:
-        from app.quant.knowledge.advisor import get_trade_advice
-        return get_trade_advice(
-            symbol=symbol,
-            direction='BUY' if direction > 0 else 'SELL',
-            strategy=f'LIGHTER_CVD_{cvd_type.upper()}',
-            hour_utc=hour_utc,
-            setup_type='CVD_DIVERGENCE',
-        )
-    except Exception:
-        return {'confidence': 0.5, 'size_modifier': 1.0, 'recommendation': 'NORMAL'}
 
 
 # ── Active strategy loader ────────────────────────────────────────────────
@@ -245,8 +221,6 @@ def cvd_entry_algorithm():
         ).values_list('symbol', flat=True)
     )
 
-    news_risk = _get_news_risk()
-    news_mult = news_risk.get('size_multiplier', 1.0)
     hour_utc = datetime.now(timezone.utc).hour
 
     for strategy in strategies:
@@ -262,6 +236,8 @@ def cvd_entry_algorithm():
                 break
             if symbol in open_symbols:
                 continue
+            if cache.get(f'lighter:vanish_cooldown:{symbol}'):
+                continue
             if not _check_cooldown(symbol, cvd_type):
                 continue
             if LIGHTER_MARKETS.get(symbol) is None:
@@ -274,7 +250,6 @@ def cvd_entry_algorithm():
                     sl_pct=sl_pct,
                     tp_pct=tp_pct,
                     strategy_name=strategy['name'],
-                    news_mult=news_mult,
                     hour_utc=hour_utc,
                 )
                 if opened:
@@ -284,7 +259,7 @@ def cvd_entry_algorithm():
                 logger.error("CVD entry error for %s (%s): %s", symbol, cvd_type, e)
 
 
-def _scan_symbol(symbol, cvd_type, sl_pct, tp_pct, strategy_name, news_mult, hour_utc):
+def _scan_symbol(symbol, cvd_type, sl_pct, tp_pct, strategy_name, hour_utc):
     """Detect CVD divergence on one symbol and enter if confirmed.
 
     Returns True if a position was opened.
@@ -341,10 +316,8 @@ def _scan_symbol(symbol, cvd_type, sl_pct, tp_pct, strategy_name, news_mult, hou
     except Exception as e:
         logger.debug("CVD OB gate unavailable for %s: %s", symbol, e)
 
-    # Graph/news removed — graph offline, news permanently EXTREME
-
     # ── Risk-normalised sizing ─────────────────────────────────────────
-    position_usd = RISK_PER_TRADE_USD / sl_pct * get_combined_sizing(symbol)
+    position_usd = calculate_position_usd(symbol, sl_pct, risk_per_trade=RISK_PER_TRADE_USD)
 
     meta = LIGHTER_MARKETS[symbol]
     if position_usd < meta['min_quote']:
@@ -371,9 +344,9 @@ def _scan_symbol(symbol, cvd_type, sl_pct, tp_pct, strategy_name, news_mult, hou
         take_profit = live_price * (1 - tp_pct)
 
     logger.info(
-        "CVD ENTRY: %s %s $%.2f (price=%.4f SL=%.4f TP=%.4f type=%s label=%s news=%.2f graph=%.2f)",
+        "CVD ENTRY: %s %s $%.2f (price=%.4f SL=%.4f TP=%.4f type=%s label=%s)",
         symbol, side, position_usd, live_price, stop_loss, take_profit,
-        cvd_type, label, news_mult, graph_mult,
+        cvd_type, label,
     )
 
     # ── Set leverage ───────────────────────────────────────────────────
@@ -414,33 +387,6 @@ def _scan_symbol(symbol, cvd_type, sl_pct, tp_pct, strategy_name, news_mult, hou
         fee=0.0,
         status='FILLED',
     )
-
-    # ── Knowledge graph — fire-and-forget ─────────────────────────────
-    try:
-        from app.quant.tasks import record_to_graph
-        record_to_graph.delay({
-            'type': 'lighter_trade_open',
-            'trade_id': f'lighter_{position.id}',
-            'django_id': position.id,
-            'symbol': symbol,
-            'direction': direction_str,
-            'entry_time': position.opened_at,
-            'entry_price': float(live_price),
-            'strategy': signal_tag,
-            'venue': 'LIGHTER',
-            'hour_utc': position.opened_at.hour if position.opened_at else hour_utc,
-            'day_of_week': position.opened_at.weekday() if position.opened_at else 0,
-            'trading_era': 'CVD_V1',
-            'extra': {
-                'cvd_type': cvd_type,
-                'cvd_label': label,
-                'strategy_name': strategy_name,
-                'sl_pct': sl_pct,
-                'tp_pct': tp_pct,
-            },
-        })
-    except Exception:
-        pass
 
     # ── Native on-chain OCO SL/TP ──────────────────────────────────────
     try:

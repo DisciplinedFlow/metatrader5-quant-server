@@ -603,11 +603,20 @@ def check_news_sentiment():
 @shared_task(name='quant.tasks.run_forex_entry', max_retries=2, soft_time_limit=55, time_limit=75)
 def run_forex_entry():
     """
-    KISS forex entry — FVG bounce + swing sweep. No ML, no Neo4j.
-    Runs every 5 minutes from Celery beat.
+    Forex entry — runs BOTH the sweep system AND CVD tick entry.
+    Dispatched by tick_consumer on CVD signals + Celery beat every 60s.
     """
     if is_bot_paused():
         return
+    # CVD tick-based entry (24/7, uses real-time tick CVD signals)
+    try:
+        from app.quant.algorithms.entry_cvd_tick import entry_cvd_tick_algorithm
+        entry_cvd_tick_algorithm()
+    except SoftTimeLimitExceeded:
+        logger.warning("[entry_cvd_tick] Task timed out")
+    except Exception as e:
+        logger.error(f"[entry_cvd_tick] Task error: {e}")
+    # Sweep-based entry (session-specific, candle-based)
     try:
         from app.quant.algorithms.entry_forex import entry_forex_algorithm
         entry_forex_algorithm()

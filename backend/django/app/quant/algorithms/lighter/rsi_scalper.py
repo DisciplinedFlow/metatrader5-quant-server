@@ -26,7 +26,7 @@ from django.core.cache import cache
 
 from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
 from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
-from .session_sizing import get_combined_sizing
+from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
 
@@ -184,6 +184,10 @@ def _scan_symbol(symbol):
                                       entry_signal__startswith=PLATFORM_PREFIX).exists():
         return False
 
+    # Vanish cooldown — position recently disappeared from exchange
+    if cache.get(f'lighter:vanish_cooldown:{symbol}'):
+        return False
+
     # Check cooldown
     if not _check_cooldown(symbol):
         return False
@@ -289,7 +293,7 @@ def _scan_symbol(symbol):
     # ── Execute entry ──
     is_buy = signal > 0
     side = 'LONG' if is_buy else 'SHORT'
-    position_usd = config['size_usd'] * LIGHTER_LEVERAGE * get_combined_sizing(symbol)
+    position_usd = calculate_position_usd(symbol, config['sl_pct'])
 
     # Apply funding + trade flow multipliers (the only ones that actually help)
     position_usd = position_usd * funding_mult * flow_mult
