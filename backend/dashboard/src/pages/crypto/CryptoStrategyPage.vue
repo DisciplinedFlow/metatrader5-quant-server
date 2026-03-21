@@ -1,15 +1,9 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { usePolling } from '@/composables/usePolling'
 import { useToast } from '@/composables/useToast'
 import api from '@/services/api'
 import SectionNav from '@/components/SectionNav.vue'
-import EquityCurveChart from '@/components/charts/EquityCurveChart.vue'
-import TradeMarkersChart from '@/components/charts/TradeMarkersChart.vue'
-import SymbolBreakdownTable from '@/components/charts/SymbolBreakdownTable.vue'
-import BacktestHistoryChart from '@/components/charts/BacktestHistoryChart.vue'
-import StrategyBuilder from '@/components/StrategyBuilder.vue'
-import StrategyLibrary from '@/components/StrategyLibrary.vue'
 
 const cryptoLinks = [
   { to: '/crypto', label: 'Overview' },
@@ -22,156 +16,145 @@ const cryptoLinks = [
 
 const toast = useToast()
 
-// Active strategy state
-const config = ref({
-  pairs: ['BTC', 'ETH', 'SOL'],
-  capital_usd: 1000,
-  max_positions: 3,
-  leverage: 1,
-  strategy: 'momentum',
-  fast_ma: 50,
-  slow_ma: 200,
-  lookback: 252,
-  max_position_pct: 0.10,
-})
-const configLoading = ref(false)
-const latestBacktest = ref(null)
-const backtests = ref([])
-
-// New multi-strategy backtest results
-const allBacktestResults = ref([])
-const runningAllBacktests = ref(false)
-
-// Strategy metadata for the 5 new strategies
-const STRATEGY_META = {
-  rsi_mean_reversion: {
-    name: 'RSI Mean Reversion',
-    desc: 'Buy RSI oversold + lower Bollinger Band, sell overbought + upper band',
-    icon: 'swap_vert',
-    color: '#3b82f6',
+// ── Strategy definitions (mirrors the actual Celery tasks) ──
+const STRATEGIES = [
+  {
+    key: 'rsi2_scalper',
+    task: 'run_lighter_rsi_scalper',
+    name: 'RSI(2) Scalper',
+    desc: 'Ultra-fast mean reversion — RSI(2) oversold/overbought with EMA(50) trend filter. 20-50 trades/day.',
+    icon: 'bolt',
+    color: '#f59e0b',
+    interval: '30s',
+    type: 'entry',
+    signals: ['rsi2_validated', 'rsi2_buy_rsi15_emaup', 'rsi2_sell_rsi100_emadown', 'rsi2_sell_rsi88_emadown'],
   },
-  ema_ribbon_trend: {
-    name: 'EMA Ribbon Trend',
-    desc: '4-EMA ribbon alignment (8/13/21/55) + ADX trend strength filter',
+  {
+    key: 'ema_crossover',
+    task: 'run_lighter_entry',
+    name: 'EMA Crossover',
+    desc: 'Multi-timeframe EMA momentum — 1h crossover for trend, 15m RSI pullback for timing. Per-symbol validated params.',
     icon: 'stacked_line_chart',
     color: '#8b5cf6',
+    interval: '60s',
+    type: 'entry',
+    signals: ['crossover_confirmed_ema_'],
   },
-  macd_momentum: {
-    name: 'MACD Momentum',
-    desc: 'MACD histogram crossover confirmed by EMA(50) trend direction',
-    icon: 'speed',
-    color: '#f59e0b',
+  {
+    key: 'mean_reversion',
+    task: 'run_lighter_mean_reversion',
+    name: 'BB Mean Reversion',
+    desc: 'Bollinger Bands(14, 3σ) + RSI(14) + ADX < 35 range filter. Liquidation cascade boost. 85-89% backtest WR.',
+    icon: 'swap_vert',
+    color: '#3b82f6',
+    interval: '5m',
+    type: 'entry',
+    signals: ['mean_reversion', 'bb_reversal'],
   },
-  bollinger_squeeze_breakout: {
-    name: 'Bollinger Squeeze Breakout',
-    desc: 'Volatility compression detection + volume-confirmed breakout',
-    icon: 'unfold_more',
-    color: '#ef4444',
-  },
-  confluence_scorer: {
-    name: 'Confluence Scorer',
-    desc: '6-indicator scoring: RSI + MACD + EMA + SMA + Volume + StochRSI',
-    icon: 'hub',
+  {
+    key: 'cvd_main',
+    task: 'run_crypto_entry',
+    name: 'H4/H1 CVD Entry',
+    desc: 'Multi-timeframe structure — H4 bias + H1 CVD divergence + real-time order book filter. Core alpha strategy.',
+    icon: 'query_stats',
     color: '#22c55e',
+    interval: '60s',
+    type: 'entry',
+    signals: ['h4_h1_cvd', 'cvd_lop', 'cvd_absorption'],
   },
-}
+  {
+    key: 'funding_arb',
+    task: 'run_funding_arb_scan',
+    name: 'Funding Arb Scout',
+    desc: 'Scans funding rate spreads across exchanges for arbitrage signals. Monitor-only, no auto-execution.',
+    icon: 'search_insights',
+    color: '#06b6d4',
+    interval: '5m',
+    type: 'monitor',
+    signals: [],
+  },
+  {
+    key: 'cvd_lighter',
+    task: 'run_lighter_cvd',
+    name: 'CVD Divergence (Lighter)',
+    desc: 'Binance CVD proxy for Lighter entries. DISABLED — 7.8% live WR, failed backtest validation Mar 20.',
+    icon: 'show_chart',
+    color: '#6b7280',
+    interval: '60s',
+    type: 'entry',
+    disabled: true,
+    signals: [],
+  },
+  {
+    key: 'momentum_lighter',
+    task: 'run_lighter_momentum',
+    name: 'EMA Momentum (Lighter)',
+    desc: 'Trend-following pullback entries. DISABLED — failed backtest validation Mar 20.',
+    icon: 'trending_up',
+    color: '#6b7280',
+    interval: '60s',
+    type: 'entry',
+    disabled: true,
+    signals: [],
+  },
+]
 
-import { computed } from 'vue'
-
-// Group backtest results by strategy
-const strategyResults = computed(() => {
-  const grouped = {}
-  for (const r of allBacktestResults.value) {
-    const name = r.strategy_name
-    if (!grouped[name]) grouped[name] = []
-    grouped[name].push(r)
-  }
-  // Build summary per strategy
-  const strategies = []
-  for (const [name, results] of Object.entries(grouped)) {
-    if (name === 'momentum') continue // legacy, shown separately
-    const meta = STRATEGY_META[name] || { name, desc: '', icon: 'psychology', color: '#6b7280' }
-    const sorted = results.sort((a, b) => new Date(b.run_time) - new Date(a.run_time))
-    const latest = sorted[0]
-    const passed = results.filter(r => r.passed)
-    const bestPnl = results.reduce((best, r) => r.total_pnl > (best?.total_pnl ?? -Infinity) ? r : best, null)
-    const avgWinRate = results.length ? results.reduce((s, r) => s + (r.win_rate || 0), 0) / results.length : 0
-    const totalPnl = results.reduce((s, r) => s + (r.total_pnl || 0), 0)
-    const symbols = [...new Set(results.map(r => r.symbol))]
-    strategies.push({
-      key: name,
-      ...meta,
-      results: sorted,
-      latest,
-      bestPnl,
-      passedCount: passed.length,
-      totalResults: results.length,
-      avgWinRate,
-      totalPnl,
-      symbols,
-    })
-  }
-  // Sort by total PnL descending
-  return strategies.sort((a, b) => b.totalPnl - a.totalPnl)
-})
-
-// Custom strategy state
-const customStrategies = ref([])
-const loadingBtn = ref({})
-const detailData = ref({})
-const historyData = ref({})
-const activeTab = ref({})
-const showBuilder = ref(false)
-
-// Bot control
+// ── State ──
 const botPaused = ref(false)
 const botStatusLoading = ref(false)
+const mlData = ref(null)
+const showDisabled = ref(false)
 
-// Page tab
-const pageTab = ref('active')
+const activeStrategies = computed(() => STRATEGIES.filter(s => !s.disabled))
+const disabledStrategies = computed(() => STRATEGIES.filter(s => s.disabled))
+const displayStrategies = computed(() => showDisabled.value ? STRATEGIES : activeStrategies.value)
 
-// Chart tab for active strategy
-const activeChartTab = ref('equity')
+// ── Live performance from ML stats API ──
+// API returns: { training: { total, wins, losses, win_rate, net_pnl, avg_duration_min, by_strategy: { "lighter:rsi2_validated": { wins, losses, pnl }, ... } } }
+function strategyStats(strategy) {
+  if (!mlData.value?.training?.by_strategy) return { trades: 0, wins: 0, losses: 0, winRate: 0, pnl: 0, avgDuration: 0 }
+  const byStrat = mlData.value.training.by_strategy
+  let wins = 0, losses = 0, pnl = 0
+  for (const [key, val] of Object.entries(byStrat)) {
+    if (strategy.signals.some(s => key.includes(s))) {
+      wins += val.wins || 0
+      losses += val.losses || 0
+      pnl += val.pnl || 0
+    }
+  }
+  const total = wins + losses
+  return {
+    trades: total,
+    wins,
+    losses,
+    winRate: total ? (wins / total * 100) : 0,
+    pnl,
+    avgDuration: mlData.value.training.avg_duration_min || 0,
+  }
+}
 
+const totalStats = computed(() => {
+  const t = mlData.value?.training
+  if (!t) return { trades: 0, wins: 0, winRate: 0, pnl: 0 }
+  return {
+    trades: t.total || 0,
+    wins: t.wins || 0,
+    winRate: t.win_rate || 0,
+    pnl: t.net_pnl || 0,
+  }
+})
+
+// ── API ──
 async function refresh() {
-  const [configResult, backtestsResult, botResult] = await Promise.allSettled([
-    api.getCryptoStrategyConfig(),
-    api.getCryptoBacktests(),
+  const [botResult, mlResult] = await Promise.allSettled([
     api.getCryptoBotStatus(),
+    api.getCryptoMLStats(),
   ])
-  if (configResult.status === 'fulfilled') {
-    config.value = { ...config.value, ...configResult.value }
-  }
-  if (backtestsResult.status === 'fulfilled') {
-    const list = backtestsResult.value.results || backtestsResult.value
-    allBacktestResults.value = list
-    // Legacy momentum backtests for the active card
-    const momentumResults = list.filter(r => r.strategy_name === 'momentum')
-    backtests.value = momentumResults
-    if (momentumResults.length > 0) latestBacktest.value = momentumResults[0]
-  }
   if (botResult.status === 'fulfilled') {
     botPaused.value = botResult.value.paused
   }
-}
-
-async function runAllBacktests() {
-  runningAllBacktests.value = true
-  try {
-    await api.runAllCryptoBacktests()
-    toast.success('Multi-strategy backtest started — results will appear shortly')
-  } catch (err) {
-    toast.error(`Backtest failed: ${err.message}`)
-  }
-  runningAllBacktests.value = false
-}
-
-async function refreshCustom() {
-  try {
-    const resp = await api.getCustomStrategies('CRYPTO')
-    customStrategies.value = resp.results || resp
-  } catch (err) {
-    console.error('Custom strategies error:', err)
+  if (mlResult.status === 'fulfilled') {
+    mlData.value = mlResult.value
   }
 }
 
@@ -180,831 +163,580 @@ async function toggleBot() {
   try {
     const resp = await api.setCryptoBotPaused(!botPaused.value)
     botPaused.value = resp.paused
+    toast.success(botPaused.value ? 'Bot paused' : 'Bot resumed')
   } catch (err) {
     toast.error(`Bot toggle failed: ${err.message}`)
   }
   botStatusLoading.value = false
 }
 
-async function saveConfig() {
-  configLoading.value = true
-  try {
-    await api.updateCryptoStrategyConfig(config.value)
-    toast.success('Config saved')
-  } catch (err) {
-    toast.error(`Config save failed: ${err.message}`)
-  }
-  configLoading.value = false
-}
-
-async function runBacktest() {
-  loadingBtn.value['active-backtest'] = true
-  try {
-    await api.runCryptoBacktest()
-    toast.success('Backtest started -- results will appear shortly')
-  } catch (err) {
-    toast.error(`Backtest failed: ${err.message}`)
-  }
-  loadingBtn.value['active-backtest'] = false
-}
-
-async function runCustomBacktest(id) {
-  loadingBtn.value[`cbacktest-${id}`] = true
-  try {
-    await api.runCustomBacktest(id)
-    toast.success('Custom backtest started')
-  } catch (err) {
-    toast.error(`Backtest failed: ${err.message}`)
-  }
-  loadingBtn.value[`cbacktest-${id}`] = false
-}
-
-async function deleteCustom(id) {
-  try {
-    await api.deleteCustomStrategy(id)
-    toast.success('Strategy deleted')
-    await refreshCustom()
-  } catch (err) {
-    toast.error(`Delete failed: ${err.message}`)
-  }
-}
-
-async function activateCustom(id) {
-  loadingBtn.value[`activate-${id}`] = true
-  try {
-    await api.activateCustomStrategy(id)
-    toast.success('Strategy activated — config updated')
-    await refresh()
-  } catch (err) {
-    toast.error(`Activation failed: ${err.message}`)
-  }
-  loadingBtn.value[`activate-${id}`] = false
-}
-
-function computeBreakdown(trades) {
-  if (!trades || !trades.length) return {}
-  const breakdown = {}
-  for (const t of trades) {
-    const key = t.symbol || 'Unknown'
-    if (!breakdown[key]) {
-      breakdown[key] = { wins: 0, losses: 0, total_pnl: 0, trades: 0 }
-    }
-    breakdown[key].trades++
-    breakdown[key].total_pnl += Number(t.pnl ?? 0)
-    if (Number(t.pnl ?? 0) >= 0) breakdown[key].wins++
-    else breakdown[key].losses++
-  }
-  for (const key of Object.keys(breakdown)) {
-    const b = breakdown[key]
-    b.win_rate = b.trades > 0 ? b.wins / b.trades : 0
-  }
-  return breakdown
-}
-
-function setTab(strategyId, tab) {
-  activeTab.value[strategyId] = tab
-}
-
-function onBuilderSaved() {
-  showBuilder.value = false
-  refreshCustom()
-}
-
 function fmt(val, decimals = 2) {
-  return val != null ? Number(val).toFixed(decimals) : 'N/A'
+  if (val == null) return '-'
+  return Number(val).toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
 }
 
-function fmtPct(val) {
-  return val != null ? (Number(val) * 100).toFixed(1) + '%' : 'N/A'
-}
-
-function fmtDate(val) {
-  if (!val) return '-'
-  return new Date(val).toLocaleString()
-}
-
-usePolling(async () => { await refresh(); await refreshCustom() }, 15000)
+usePolling(refresh, 15000)
 </script>
 
 <template>
   <SectionNav :links="cryptoLinks" />
   <div class="tp-page strat-page">
-    <!-- Page Header -->
-    <div class="page-header">
+
+    <!-- Header -->
+    <div class="strat-header">
       <div>
-        <h1>Crypto Strategies</h1>
-        <p>Manage and backtest your cryptocurrency trading strategies.</p>
+        <h1 class="strat-title">Strategy Engine</h1>
+        <p class="strat-subtitle">{{ activeStrategies.length }} active strategies &middot; {{ disabledStrategies.length }} disabled</p>
       </div>
-      <div class="header-actions">
-        <button class="tp-btn tp-btn-outline" @click="showBuilder = !showBuilder">
-          <span class="material-symbols-outlined" style="font-size:18px">{{ showBuilder ? 'close' : 'history' }}</span>
-          {{ showBuilder ? 'Cancel' : 'Create Strategy' }}
-        </button>
+      <div class="header-controls">
+        <label class="toggle-label">
+          <input v-model="showDisabled" type="checkbox" role="switch" />
+          Show disabled
+        </label>
         <button
-          class="tp-btn"
-          :class="botPaused ? 'tp-btn-primary' : 'tp-btn-dark'"
+          class="bot-toggle-btn"
+          :class="botPaused ? 'bot-paused' : 'bot-running'"
           :aria-busy="botStatusLoading"
           @click="toggleBot"
         >
           <span class="material-symbols-outlined" style="font-size:18px">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
-          {{ botPaused ? 'Resume Bot' : 'Pause Bot' }}
+          {{ botPaused ? 'Resume' : 'Pause' }}
         </button>
       </div>
     </div>
 
-    <!-- Bot Status Banner -->
-    <div class="status-banner" :class="botPaused ? 'status-paused' : 'status-running'" style="margin-bottom: 1.5rem;">
-      <span class="material-symbols-outlined" style="font-size:16px">{{ botPaused ? 'pause_circle' : 'play_circle' }}</span>
-      <span class="status-text">Bot is {{ botPaused ? 'PAUSED' : 'RUNNING' }}</span>
+    <!-- Bot Status Indicator -->
+    <div class="bot-status-strip" :class="botPaused ? 'strip-paused' : 'strip-running'">
+      <div class="strip-dot" :class="botPaused ? 'dot-paused' : 'dot-running'"></div>
+      <span>{{ botPaused ? 'Entry algorithms paused — exit & reconciliation still active' : 'All strategies operational' }}</span>
     </div>
 
-    <!-- Stats Overview -->
-    <div class="tp-stats-grid" style="margin-bottom: 2rem;">
-      <div class="tp-stat-card">
-        <div class="stat-label">Latest Win Rate</div>
-        <div class="stat-value">{{ latestBacktest ? fmtPct(latestBacktest.win_rate) : 'N/A' }}</div>
+    <!-- Aggregate Stats -->
+    <div class="agg-stats">
+      <div class="agg-stat">
+        <div class="agg-value">{{ totalStats.trades }}</div>
+        <div class="agg-label">Total Trades</div>
       </div>
-      <div class="tp-stat-card">
-        <div class="stat-label">Total Trades</div>
-        <div class="stat-value">{{ latestBacktest?.total_trades ?? 0 }}</div>
-      </div>
-      <div class="tp-stat-card">
-        <div class="stat-label">Custom Strategies</div>
-        <div class="stat-value">{{ customStrategies.length }}</div>
-      </div>
-      <div class="tp-stat-card">
-        <div class="stat-label">Bot Status</div>
-        <div>
-          <span class="tp-badge" :class="botPaused ? 'tp-badge-warning' : 'tp-badge-success'" style="font-size:0.75rem">
-            <span class="pulse-dot" v-if="!botPaused"></span>
-            {{ botPaused ? 'Paused' : 'Running' }}
-          </span>
+      <div class="agg-divider"></div>
+      <div class="agg-stat">
+        <div class="agg-value" :class="totalStats.winRate >= 60 ? 'val-green' : totalStats.winRate >= 40 ? 'val-amber' : 'val-red'">
+          {{ fmt(totalStats.winRate, 1) }}%
         </div>
+        <div class="agg-label">Win Rate</div>
       </div>
-    </div>
-
-    <!-- Strategy Builder -->
-    <StrategyBuilder v-if="showBuilder" domain="CRYPTO" @saved="onBuilderSaved" @cancel="showBuilder = false" />
-
-    <!-- Tabs -->
-    <div class="tp-tabs">
-      <button :class="{ active: pageTab === 'active' }" @click="pageTab = 'active'">Active Strategies</button>
-      <button :class="{ active: pageTab === 'custom' }" @click="pageTab = 'custom'">Custom Strategies</button>
-      <button :class="{ active: pageTab === 'library' }" @click="pageTab = 'library'">Strategy Library</button>
-    </div>
-
-    <!-- ==================== ACTIVE STRATEGIES TAB ==================== -->
-    <div v-if="pageTab === 'active'">
-
-      <!-- Run All Backtests Button -->
-      <div v-if="strategyResults.length" class="run-all-bar">
-        <span class="run-all-label">{{ strategyResults.length }} advanced strategies &middot; {{ strategyResults.reduce((s, r) => s + r.totalResults, 0) }} backtests</span>
-        <button
-          class="tp-btn tp-btn-primary"
-          :aria-busy="runningAllBacktests"
-          @click="runAllBacktests"
-        >
-          <span class="material-symbols-outlined" style="font-size:16px">rocket_launch</span>
-          Run All Backtests
-        </button>
-      </div>
-
-      <!-- Advanced Strategy Cards -->
-      <div v-if="strategyResults.length" class="strategy-grid" style="margin-bottom: 1.5rem;">
-        <div v-for="s in strategyResults" :key="s.key" class="tp-card strategy-card">
-          <div class="card-top">
-            <div class="card-title-row">
-              <div class="strat-icon" :style="{ background: s.color + '22', color: s.color }">
-                <span class="material-symbols-outlined" style="font-size:24px">{{ s.icon }}</span>
-              </div>
-              <div>
-                <h3 class="strat-name">{{ s.name }}</h3>
-                <p class="strat-desc">{{ s.desc }}</p>
-              </div>
-            </div>
-            <span class="tp-badge" :class="s.passedCount > 0 ? 'tp-badge-success' : 'tp-badge-danger'" style="font-size:0.65rem;">
-              {{ s.passedCount }}/{{ s.totalResults }} passed
-            </span>
-          </div>
-
-          <!-- Best result stats -->
-          <div class="card-stats">
-            <div class="stat-item">
-              <span class="stat-micro-label">Avg Win Rate</span>
-              <span class="stat-micro-value" :class="s.avgWinRate >= 0.5 ? 'positive' : 'negative'">
-                {{ (s.avgWinRate * 100).toFixed(1) }}%
-              </span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-micro-label">Total PnL</span>
-              <span class="stat-micro-value" :class="s.totalPnl >= 0 ? 'positive' : 'negative'">
-                {{ s.totalPnl >= 0 ? '+' : '' }}${{ s.totalPnl.toFixed(2) }}
-              </span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-micro-label">Symbols</span>
-              <span class="stat-micro-value" style="font-size:0.85rem;">{{ s.symbols.join(', ') }}</span>
-            </div>
-          </div>
-
-          <!-- Per-symbol breakdown -->
-          <div class="card-expandable">
-            <details>
-              <summary class="expand-summary">
-                <span class="material-symbols-outlined" style="font-size:16px">leaderboard</span>
-                Results by Symbol ({{ s.results.length }})
-              </summary>
-              <div class="expand-content" style="overflow-x: auto;">
-                <table class="detail-table">
-                  <thead>
-                    <tr><th>Symbol</th><th>Trades</th><th>Win Rate</th><th>PnL</th><th>PF</th><th>Max DD</th><th>Status</th></tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="r in s.results" :key="r.id || r.symbol">
-                      <td style="font-weight:700;">{{ r.symbol }}</td>
-                      <td>{{ r.total_trades }}</td>
-                      <td :style="{ color: (r.win_rate || 0) >= 0.5 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
-                        {{ ((r.win_rate || 0) * 100).toFixed(1) }}%
-                      </td>
-                      <td :style="{ color: r.total_pnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)', fontWeight: 700 }">
-                        {{ r.total_pnl >= 0 ? '+' : '' }}${{ Number(r.total_pnl).toFixed(2) }}
-                      </td>
-                      <td>{{ r.profit_factor != null ? Number(r.profit_factor).toFixed(2) : '-' }}</td>
-                      <td>{{ r.max_drawdown != null ? ((r.max_drawdown * 100).toFixed(2) + '%') : '-' }}</td>
-                      <td>
-                        <span class="tp-badge" :class="r.passed ? 'tp-badge-success' : 'tp-badge-danger'" style="font-size:0.6rem;">
-                          {{ r.passed ? 'PASS' : 'FAIL' }}
-                        </span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </details>
-          </div>
+      <div class="agg-divider"></div>
+      <div class="agg-stat">
+        <div class="agg-value" :class="totalStats.pnl >= 0 ? 'val-green' : 'val-red'">
+          {{ totalStats.pnl >= 0 ? '+' : '' }}${{ fmt(totalStats.pnl) }}
         </div>
+        <div class="agg-label">Net P&L</div>
       </div>
+      <div class="agg-divider"></div>
+      <div class="agg-stat">
+        <div class="agg-value">{{ totalStats.wins }}<span class="agg-sep">/</span>{{ totalStats.trades - totalStats.wins }}</div>
+        <div class="agg-label">W / L</div>
+      </div>
+    </div>
 
-      <!-- Legacy Momentum Strategy Card -->
-      <h4 v-if="strategyResults.length" style="color:var(--tp-text-dim);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.75rem;">Legacy Strategy</h4>
-      <div class="strategy-grid">
-      <div class="tp-card strategy-card">
+    <!-- Strategy Cards -->
+    <div class="strat-grid">
+      <div
+        v-for="s in displayStrategies"
+        :key="s.key"
+        class="strat-card"
+        :class="{ 'card-disabled': s.disabled }"
+      >
         <!-- Card Header -->
-        <div class="card-top">
-          <div class="card-title-row">
-            <div class="strat-icon" style="background:rgba(245,158,11,0.15);color:#f59e0b;">
-              <span class="material-symbols-outlined" style="font-size:24px">trending_up</span>
+        <div class="card-head">
+          <div class="card-icon" :style="{ background: s.color + '18', color: s.color }">
+            <span class="material-symbols-outlined">{{ s.icon }}</span>
+          </div>
+          <div class="card-meta">
+            <h3 class="card-name">{{ s.name }}</h3>
+            <div class="card-badges">
+              <span class="badge-interval">{{ s.interval }}</span>
+              <span class="badge-type" :class="'type-' + s.type">{{ s.type }}</span>
+              <span v-if="s.disabled" class="badge-disabled">disabled</span>
+              <span v-else class="badge-active">
+                <span class="live-dot"></span>live
+              </span>
             </div>
-            <div>
-              <h3 class="strat-name">Momentum MA Crossover</h3>
-              <p class="strat-desc">Moving average crossover strategy for crypto</p>
-            </div>
-          </div>
-          <span class="tp-badge tp-badge-success">
-            <span class="pulse-dot"></span>
-            Active
-          </span>
-        </div>
-
-        <!-- Config Summary -->
-        <div class="card-stats">
-          <div class="stat-item">
-            <span class="stat-micro-label">Fast MA</span>
-            <span class="stat-micro-value">{{ config.fast_ma }}</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-micro-label">Slow MA</span>
-            <span class="stat-micro-value">{{ config.slow_ma }}</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-micro-label">Leverage</span>
-            <span class="stat-micro-value">{{ config.leverage }}x</span>
           </div>
         </div>
 
-        <!-- Backtest Stats -->
-        <div v-if="latestBacktest" class="card-stats">
-          <div class="stat-item">
-            <span class="stat-micro-label">Win Rate</span>
-            <span class="stat-micro-value" :class="(latestBacktest.win_rate * 100) >= 50 ? 'positive' : 'negative'">
-              {{ fmtPct(latestBacktest.win_rate) }}
-            </span>
+        <!-- Description -->
+        <p class="card-desc">{{ s.desc }}</p>
+
+        <!-- Performance Stats (only for strategies with signal data) -->
+        <div v-if="!s.disabled && s.signals.length" class="card-perf">
+          <div class="perf-stat">
+            <div class="perf-value">{{ strategyStats(s).trades }}</div>
+            <div class="perf-label">trades</div>
           </div>
-          <div class="stat-item">
-            <span class="stat-micro-label">Trades</span>
-            <span class="stat-micro-value">{{ latestBacktest.total_trades }}</span>
+          <div class="perf-stat">
+            <div class="perf-value" :class="strategyStats(s).winRate >= 60 ? 'val-green' : strategyStats(s).winRate >= 40 ? 'val-amber' : strategyStats(s).trades ? 'val-red' : ''">
+              {{ strategyStats(s).trades ? fmt(strategyStats(s).winRate, 1) + '%' : '-' }}
+            </div>
+            <div class="perf-label">win rate</div>
           </div>
-          <div class="stat-item">
-            <span class="stat-micro-label">Total PnL</span>
-            <span class="stat-micro-value" :class="Number(latestBacktest.total_pnl ?? 0) >= 0 ? 'positive' : 'negative'">
-              {{ Number(latestBacktest.total_pnl ?? 0) >= 0 ? '+' : '' }}${{ fmt(latestBacktest.total_pnl) }}
-            </span>
+          <div class="perf-stat">
+            <div class="perf-value" :class="strategyStats(s).pnl >= 0 ? 'val-green' : 'val-red'">
+              {{ strategyStats(s).trades ? (strategyStats(s).pnl >= 0 ? '+' : '') + '$' + fmt(strategyStats(s).pnl) : '-' }}
+            </div>
+            <div class="perf-label">P&L</div>
           </div>
-        </div>
-        <div v-else class="card-stats card-stats-empty">
-          <span class="stat-micro-label">No backtest results yet</span>
-        </div>
-
-        <!-- Expandable Sections -->
-        <div class="card-expandable">
-          <!-- Backtest Details -->
-          <details v-if="latestBacktest">
-            <summary class="expand-summary">
-              <span class="material-symbols-outlined" style="font-size:16px">bar_chart</span>
-              Latest Backtest Details
-            </summary>
-            <div class="expand-content">
-              <table class="detail-table">
-                <tbody>
-                  <tr><td>Symbol</td><td>{{ latestBacktest.symbol }}</td></tr>
-                  <tr><td>Status</td><td><span class="tp-badge" :class="latestBacktest.passed ? 'tp-badge-success' : 'tp-badge-danger'">{{ latestBacktest.passed ? 'PASS' : 'FAIL' }}</span></td></tr>
-                  <tr><td>Wins / Losses</td><td>{{ latestBacktest.winning_trades ?? '-' }} / {{ latestBacktest.losing_trades ?? '-' }}</td></tr>
-                  <tr><td>Profit Factor</td><td>{{ latestBacktest.profit_factor != null ? Number(latestBacktest.profit_factor).toFixed(2) : 'N/A' }}</td></tr>
-                  <tr><td>Max Drawdown</td><td>{{ fmtPct(latestBacktest.max_drawdown) }}</td></tr>
-                  <tr><td>Run Time</td><td>{{ fmtDate(latestBacktest.run_time) }}</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </details>
-
-          <!-- Trade Details -->
-          <details v-if="latestBacktest && latestBacktest.trades && latestBacktest.trades.length">
-            <summary class="expand-summary">
-              <span class="material-symbols-outlined" style="font-size:16px">receipt_long</span>
-              Trade Details ({{ latestBacktest.trades.length }})
-            </summary>
-            <div class="expand-content" style="overflow-x: auto;">
-              <table class="detail-table">
-                <thead>
-                  <tr><th>#</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>PnL</th><th>Reason</th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(t, i) in latestBacktest.trades" :key="i">
-                    <td>{{ i + 1 }}</td>
-                    <td>{{ t.symbol ?? '-' }}</td>
-                    <td>
-                      <span class="tp-badge" :class="t.side === 'LONG' ? 'tp-badge-success' : 'tp-badge-danger'" style="font-size:0.65rem;">
-                        {{ t.side ?? '-' }}
-                      </span>
-                    </td>
-                    <td>${{ fmt(t.entry_price) }}</td>
-                    <td>${{ fmt(t.exit_price) }}</td>
-                    <td>{{ fmt(t.size) }}</td>
-                    <td :style="{ color: Number(t.pnl ?? 0) >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)', fontWeight: 700 }">
-                      {{ Number(t.pnl ?? 0) >= 0 ? '+' : '' }}${{ fmt(t.pnl) }}
-                    </td>
-                    <td style="font-size:0.8rem;color:var(--tp-text-dim);">{{ t.reason ?? '-' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </details>
-
-          <!-- Charts (Equity Curve + Trade Markers + Symbol Breakdown) -->
-          <details v-if="latestBacktest">
-            <summary class="expand-summary">
-              <span class="material-symbols-outlined" style="font-size:16px">ssid_chart</span>
-              Backtest Charts
-            </summary>
-            <div class="expand-content">
-              <div class="chart-tabs">
-                <button class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeChartTab === 'equity' }" @click="activeChartTab = 'equity'">Equity Curve</button>
-                <button v-if="latestBacktest.trades?.length" class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeChartTab === 'trades' }" @click="activeChartTab = 'trades'">Trade Markers</button>
-                <button v-if="latestBacktest.trades?.length" class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeChartTab === 'breakdown' }" @click="activeChartTab = 'breakdown'">Symbol Breakdown</button>
-              </div>
-              <EquityCurveChart v-if="activeChartTab === 'equity'" :equity-curve="latestBacktest.equity_curve || []" />
-              <TradeMarkersChart v-if="activeChartTab === 'trades' && latestBacktest.trades?.length" :trades="latestBacktest.trades" strategy="momentum" symbol-suffix="-USD" />
-              <SymbolBreakdownTable v-if="activeChartTab === 'breakdown' && latestBacktest.trades?.length" :breakdown="computeBreakdown(latestBacktest.trades)" />
-            </div>
-          </details>
-
-          <!-- Backtest History -->
-          <details v-if="backtests.length > 1">
-            <summary class="expand-summary">
-              <span class="material-symbols-outlined" style="font-size:16px">history</span>
-              Backtest History
-            </summary>
-            <div class="expand-content">
-              <BacktestHistoryChart :results="backtests" />
-            </div>
-          </details>
-
-          <!-- Config Form -->
-          <details>
-            <summary class="expand-summary">
-              <span class="material-symbols-outlined" style="font-size:16px">settings</span>
-              Strategy Configuration
-            </summary>
-            <div class="expand-content">
-              <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                <label class="tp-label">
-                  Pairs (comma-separated)
-                  <input class="tp-input" v-model="config.pairs" type="text" />
-                </label>
-                <label class="tp-label">
-                  Capital (USD)
-                  <input class="tp-input" v-model.number="config.capital_usd" type="number" step="1" min="0" />
-                </label>
-                <label class="tp-label">
-                  Max Positions
-                  <input class="tp-input" v-model.number="config.max_positions" type="number" step="1" min="1" />
-                </label>
-                <label class="tp-label">
-                  Leverage
-                  <input class="tp-input" v-model.number="config.leverage" type="number" step="1" min="1" max="20" />
-                </label>
-                <label class="tp-label">
-                  Fast MA
-                  <input class="tp-input" v-model.number="config.fast_ma" type="number" step="1" min="5" />
-                </label>
-                <label class="tp-label">
-                  Slow MA
-                  <input class="tp-input" v-model.number="config.slow_ma" type="number" step="1" min="10" />
-                </label>
-                <label class="tp-label">
-                  Max Position %
-                  <input class="tp-input" v-model.number="config.max_position_pct" type="number" step="0.01" min="0.01" max="1" />
-                </label>
-              </div>
-            </div>
-          </details>
-        </div>
-
-        <!-- Card Footer Actions -->
-        <div class="card-actions">
-          <button
-            class="tp-btn tp-btn-outline"
-            style="flex:1;"
-            :aria-busy="configLoading"
-            @click="saveConfig"
-          >
-            <span class="material-symbols-outlined" style="font-size:16px">save</span>
-            Save Config
-          </button>
-          <button
-            class="tp-btn tp-btn-primary"
-            style="flex:1;"
-            :aria-busy="loadingBtn['active-backtest']"
-            @click="runBacktest"
-          >
-            <span class="material-symbols-outlined" style="font-size:16px">science</span>
-            Run Backtest
-          </button>
-        </div>
-      </div>
-      </div>
-    </div>
-
-    <!-- ==================== CUSTOM STRATEGIES TAB ==================== -->
-    <div v-if="pageTab === 'custom'">
-      <div v-if="customStrategies.length === 0" class="empty-state">
-        <span class="material-symbols-outlined" style="font-size:3rem;color:var(--tp-text-dim)">inventory_2</span>
-        <p style="font-weight:600;font-size:1rem;color:var(--tp-text);margin-top:0.5rem;">No Custom Strategies</p>
-        <p style="font-size:0.85rem;">Create one using the Strategy Builder above.</p>
-      </div>
-      <div v-else class="strategy-grid">
-        <div v-for="(cs, idx) in customStrategies" :key="'c'+cs.id" class="tp-card strategy-card">
-          <div class="card-top">
-            <div class="card-title-row">
-              <div class="strat-icon" style="background:rgba(139,92,246,0.15);color:#8b5cf6;">
-                <span class="material-symbols-outlined" style="font-size:24px">code</span>
-              </div>
-              <div>
-                <h3 class="strat-name">{{ cs.name }}</h3>
-                <p class="strat-desc">{{ cs.description || 'Custom strategy' }}</p>
-              </div>
-            </div>
-            <span class="tp-badge tp-badge-primary">Custom</span>
-          </div>
-
-          <!-- Backtest Stats -->
-          <template v-if="cs.latest_backtest">
-            <div class="card-stats">
-              <div class="stat-item">
-                <span class="stat-micro-label">Win Rate</span>
-                <span class="stat-micro-value" :class="(cs.latest_backtest.win_rate * 100) >= 50 ? 'positive' : 'negative'">
-                  {{ fmtPct(cs.latest_backtest.win_rate) }}
-                </span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-micro-label">Trades</span>
-                <span class="stat-micro-value">{{ cs.latest_backtest.total_trades }}</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-micro-label">Total PnL</span>
-                <span class="stat-micro-value" :class="Number(cs.latest_backtest.total_pnl ?? 0) >= 0 ? 'positive' : 'negative'">
-                  {{ cs.latest_backtest.total_pnl != null ? (Number(cs.latest_backtest.total_pnl) >= 0 ? '+' : '') + '$' + fmt(cs.latest_backtest.total_pnl) : 'N/A' }}
-                </span>
-              </div>
-            </div>
-          </template>
-          <div v-else class="card-stats card-stats-empty">
-            <span class="stat-micro-label">No backtest results yet</span>
-          </div>
-
-          <!-- Expandable Sections -->
-          <div class="card-expandable">
-            <!-- Definition -->
-            <details>
-              <summary class="expand-summary">
-                <span class="material-symbols-outlined" style="font-size:16px">code</span>
-                Definition
-              </summary>
-              <div class="expand-content">
-                <pre class="result-pre">{{ JSON.stringify(cs.definition, null, 2) }}</pre>
-              </div>
-            </details>
-
-            <!-- Charts (Equity Curve + Trade Markers + Breakdown) -->
-            <template v-if="cs.latest_backtest">
-              <details>
-                <summary class="expand-summary">
-                  <span class="material-symbols-outlined" style="font-size:16px">ssid_chart</span>
-                  Backtest Charts
-                </summary>
-                <div class="expand-content">
-                  <div class="chart-tabs">
-                    <button class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': !activeTab[cs.id] || activeTab[cs.id] === 'equity' }" @click="setTab(cs.id, 'equity')">Equity Curve</button>
-                    <button v-if="cs.latest_backtest.trades?.length" class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeTab[cs.id] === 'trades' }" @click="setTab(cs.id, 'trades')">Trade Markers</button>
-                    <button v-if="cs.latest_backtest.trades?.length" class="tp-btn tp-btn-outline" :class="{ 'tp-btn-primary': activeTab[cs.id] === 'breakdown' }" @click="setTab(cs.id, 'breakdown')">Symbol Breakdown</button>
-                  </div>
-                  <EquityCurveChart v-if="!activeTab[cs.id] || activeTab[cs.id] === 'equity'" :equity-curve="cs.latest_backtest.equity_curve || []" />
-                  <TradeMarkersChart v-if="activeTab[cs.id] === 'trades' && cs.latest_backtest.trades?.length" :trades="cs.latest_backtest.trades" :strategy="cs.name" symbol-suffix="-USD" />
-                  <SymbolBreakdownTable v-if="activeTab[cs.id] === 'breakdown' && cs.latest_backtest.trades?.length" :breakdown="computeBreakdown(cs.latest_backtest.trades)" />
-                </div>
-              </details>
-            </template>
-          </div>
-
-          <div class="card-actions">
-            <button
-              class="tp-btn tp-btn-primary"
-              style="flex:1;"
-              :aria-busy="loadingBtn[`activate-${cs.id}`]"
-              @click="activateCustom(cs.id)"
-            >Activate</button>
-            <button
-              class="tp-btn tp-btn-outline"
-              style="flex:1;"
-              :aria-busy="loadingBtn[`cbacktest-${cs.id}`]"
-              @click="runCustomBacktest(cs.id)"
-            >
-              <span class="material-symbols-outlined" style="font-size:16px">science</span>
-              Run Backtest
-            </button>
-            <button class="tp-btn tp-btn-danger" style="flex:0 0 auto;" @click="deleteCustom(cs.id)">
-              <span class="material-symbols-outlined" style="font-size:16px">delete</span>
-            </button>
+          <div class="perf-stat">
+            <div class="perf-value">{{ strategyStats(s).trades ? fmt(strategyStats(s).avgDuration, 0) + 'm' : '-' }}</div>
+            <div class="perf-label">avg hold</div>
           </div>
         </div>
 
-        <!-- Add New Strategy Card -->
-        <div class="tp-add-card" @click="showBuilder = true">
-          <div class="icon-circle">
-            <span class="material-symbols-outlined" style="font-size:2rem">add</span>
+        <!-- Win/Loss Bar -->
+        <div v-if="!s.disabled && strategyStats(s).trades > 0" class="wl-bar-container">
+          <div class="wl-bar">
+            <div class="wl-wins" :style="{ width: strategyStats(s).winRate + '%' }"></div>
           </div>
-          <p style="font-weight:700;font-size:1.1rem;color:var(--tp-text);margin-bottom:0.25rem;">Create Custom Strategy</p>
-          <p style="font-size:0.85rem;text-align:center;max-width:220px;">Use the visual builder to create and backtest crypto strategies.</p>
+          <div class="wl-labels">
+            <span class="wl-w">{{ strategyStats(s).wins }}W</span>
+            <span class="wl-l">{{ strategyStats(s).losses }}L</span>
+          </div>
+        </div>
+
+        <!-- No data state -->
+        <div v-else-if="!s.disabled && !strategyStats(s).trades" class="card-nodata">
+          <span class="material-symbols-outlined" style="font-size:16px;opacity:0.4">hourglass_empty</span>
+          <span>Collecting data</span>
         </div>
       </div>
     </div>
 
-    <!-- ==================== STRATEGY LIBRARY TAB ==================== -->
-    <div v-if="pageTab === 'library'" style="margin-top: 1rem;">
-      <StrategyLibrary domain="CRYPTO" />
+    <!-- Infrastructure Section -->
+    <div class="infra-section">
+      <h2 class="infra-title">Infrastructure</h2>
+      <div class="infra-grid">
+        <div class="infra-card">
+          <div class="infra-icon">
+            <span class="material-symbols-outlined">shield</span>
+          </div>
+          <div>
+            <h4>Exit Manager</h4>
+            <p>SL/TP + trailing every 15s. Runs when paused.</p>
+          </div>
+          <span class="badge-active"><span class="live-dot"></span>live</span>
+        </div>
+        <div class="infra-card">
+          <div class="infra-icon">
+            <span class="material-symbols-outlined">sync</span>
+          </div>
+          <div>
+            <h4>Reconciler</h4>
+            <p>DB ↔ exchange sync every 60s. Runs when paused.</p>
+          </div>
+          <span class="badge-active"><span class="live-dot"></span>live</span>
+        </div>
+        <div class="infra-card">
+          <div class="infra-icon">
+            <span class="material-symbols-outlined">cell_tower</span>
+          </div>
+          <div>
+            <h4>WS Streamer</h4>
+            <p>Real-time orderbook + trades for BTC, ETH, SOL, XAU.</p>
+          </div>
+          <span class="badge-active"><span class="live-dot"></span>live</span>
+        </div>
+      </div>
     </div>
+
   </div>
 </template>
 
 <style scoped>
 .strat-page {
-  padding: 2rem 1rem;
+  padding: 1.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
 }
-.page-header {
+
+/* ── Header ── */
+.strat-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 1.5rem;
-  flex-wrap: wrap;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
-.page-header h1 {
-  font-size: 2rem;
-  font-weight: 900;
-  letter-spacing: -0.02em;
-  margin-bottom: 0.35rem;
+.strat-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin: 0 0 0.2rem;
 }
-.header-actions {
+.strat-subtitle {
+  font-size: 0.8rem;
+  color: var(--tp-text-dim);
+  margin: 0;
+}
+.header-controls {
   display: flex;
-  gap: 0.75rem;
-  flex-shrink: 0;
+  align-items: center;
+  gap: 1rem;
 }
-
-/* Status banner */
-.status-banner {
+.toggle-label {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.6rem 1rem;
-  border-radius: var(--tp-radius-sm);
-  font-size: 0.8rem;
-  font-weight: 700;
-}
-.status-running {
-  background: rgba(34,197,94,0.08);
-  border: 1px solid rgba(34,197,94,0.2);
-  color: var(--tp-success);
-}
-.status-paused {
-  background: rgba(245,158,11,0.08);
-  border: 1px solid rgba(245,158,11,0.2);
-  color: var(--tp-warning);
-}
-
-/* Strategy Grid */
-.strategy-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-  gap: 1.5rem;
-}
-
-/* Strategy Card */
-.strategy-card {
-  display: flex;
-  flex-direction: column;
-}
-.card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 1.25rem;
-  border-bottom: 1px solid var(--tp-border);
-}
-.card-title-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-.strat-icon {
-  width: 3rem; height: 3rem;
-  border-radius: var(--tp-radius);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.strat-name {
-  font-size: 1.05rem;
-  font-weight: 700;
-  line-height: 1.2;
-  margin-bottom: 0.15rem;
-}
-.strat-desc {
-  font-size: 0.75rem;
-  color: var(--tp-text-dim) !important;
-}
-
-/* Card Stats */
-.card-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-  background: rgba(30,41,59,0.2);
-}
-.card-stats-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
-}
-.stat-item {
-  display: flex;
-  flex-direction: column;
-}
-.stat-micro-label {
-  font-size: 0.6rem;
-  text-transform: uppercase;
-  font-weight: 700;
   color: var(--tp-text-dim);
-  letter-spacing: 0.06em;
+  font-size: 0.8rem;
+  cursor: pointer;
 }
-.stat-micro-value {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: var(--tp-text);
-}
-.stat-micro-value.positive { color: var(--tp-success); }
-.stat-micro-value.negative { color: var(--tp-danger); }
+.toggle-label input { margin: 0; }
 
-/* Expandable sections */
-.card-expandable {
-  padding: 0 1.25rem;
-}
-.expand-summary {
+.bot-toggle-btn {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.75rem 0;
+  padding: 0.45rem 1rem;
+  border-radius: 8px;
   font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--tp-text-muted);
-  cursor: pointer;
-  border-bottom: 1px solid var(--tp-border);
-  list-style: none;
-}
-.expand-summary::-webkit-details-marker { display: none; }
-.expand-summary::after {
-  content: '';
-  margin-left: auto;
-  width: 0; height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 5px solid var(--tp-text-dim);
-  transition: transform 0.2s;
-}
-details[open] > .expand-summary::after {
-  transform: rotate(180deg);
-}
-.expand-content {
-  padding: 0.75rem 0;
-}
-
-/* Detail Table */
-.detail-table {
-  width: 100%;
-  font-size: 0.8rem;
-}
-.detail-table td, .detail-table th {
-  padding: 0.4rem 0;
+  font-weight: 700;
   border: none;
+  cursor: pointer;
+  transition: all 0.2s;
 }
-.detail-table td:first-child {
-  color: var(--tp-text-dim);
-  width: 40%;
+.bot-paused {
+  background: #22c55e;
+  color: #fff;
 }
-.detail-table td:last-child {
-  font-weight: 600;
-  color: var(--tp-text);
+.bot-paused:hover { background: #16a34a; }
+.bot-running {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
 }
+.bot-running:hover { background: rgba(239, 68, 68, 0.25); }
 
-/* Chart tabs */
-.chart-tabs {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-}
-.chart-tabs .tp-btn {
-  font-size: 0.7rem;
-  padding: 0.3rem 0.75rem;
-}
-
-/* Card Actions */
-.card-actions {
-  display: flex;
-  gap: 0.75rem;
-  padding: 1.25rem;
-  margin-top: auto;
-}
-
-/* Result Pre */
-.result-pre {
-  background: var(--tp-bg-surface);
-  border: 1px solid var(--tp-border);
-  border-radius: var(--tp-radius-sm);
-  padding: 1rem;
-  font-size: 0.75rem;
-  color: var(--tp-text-muted);
-  overflow-x: auto;
-  margin: 0;
-}
-
-/* Run All Bar */
-.run-all-bar {
+/* ── Status Strip ── */
+.bot-status-strip {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0.75rem 1rem;
+  gap: 0.6rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 500;
   margin-bottom: 1.25rem;
+}
+.strip-paused {
+  background: rgba(251, 191, 36, 0.08);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
+.strip-running {
+  background: rgba(34, 197, 94, 0.06);
+  color: #34d399;
+  border: 1px solid rgba(34, 197, 94, 0.15);
+}
+.strip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot-paused { background: #fbbf24; }
+.dot-running {
+  background: #22c55e;
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+}
+
+/* ── Aggregate Stats ── */
+.agg-stats {
+  display: flex;
+  align-items: center;
+  gap: 0;
   background: var(--tp-bg-glass);
-  backdrop-filter: var(--tp-glass-blur);
-  -webkit-backdrop-filter: var(--tp-glass-blur);
   border: var(--tp-glass-border);
   border-radius: var(--tp-radius);
+  padding: 0.75rem 0;
+  margin-bottom: 1.5rem;
+  backdrop-filter: var(--tp-glass-blur);
 }
-.run-all-label {
-  font-size: 0.8rem;
+.agg-stat {
+  flex: 1;
+  text-align: center;
+}
+.agg-value {
+  font-size: 1.3rem;
+  font-weight: 800;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: -0.02em;
+}
+.agg-sep {
+  font-weight: 400;
+  opacity: 0.4;
+  margin: 0 0.1rem;
+}
+.agg-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  color: var(--tp-text-dim);
+  margin-top: 0.1rem;
+}
+.agg-divider {
+  width: 1px;
+  height: 2.2rem;
+  background: var(--tp-border);
+  flex-shrink: 0;
+}
+
+/* ── Strategy Grid ── */
+.strat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.strat-card {
+  background: var(--tp-bg-glass);
+  border: var(--tp-glass-border);
+  border-radius: var(--tp-radius);
+  padding: 1.25rem;
+  backdrop-filter: var(--tp-glass-blur);
+  transition: border-color 0.2s, transform 0.15s;
+}
+.strat-card:hover {
+  border-color: var(--tp-border-light);
+  transform: translateY(-1px);
+}
+.card-disabled {
+  opacity: 0.45;
+}
+.card-disabled:hover {
+  opacity: 0.55;
+  transform: none;
+}
+
+/* Card header */
+.card-head {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.card-icon .material-symbols-outlined {
+  font-size: 22px;
+}
+.card-meta {
+  min-width: 0;
+}
+.card-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.01em;
+}
+.card-badges {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.badge-interval,
+.badge-type,
+.badge-disabled,
+.badge-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.badge-interval {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--tp-text-dim);
+}
+.type-entry {
+  background: rgba(139, 92, 246, 0.12);
+  color: #a78bfa;
+}
+.type-monitor {
+  background: rgba(6, 182, 212, 0.12);
+  color: #22d3ee;
+}
+.badge-disabled {
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+}
+.badge-active {
+  background: rgba(34, 197, 94, 0.1);
+  color: #34d399;
+}
+.live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Description */
+.card-desc {
+  font-size: 0.76rem;
+  color: var(--tp-text-muted);
+  line-height: 1.5;
+  margin: 0 0 1rem;
+}
+
+/* Performance stats */
+.card-perf {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.25rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--tp-border);
+}
+.perf-stat {
+  text-align: center;
+}
+.perf-value {
+  font-size: 0.9rem;
+  font-weight: 800;
+  font-feature-settings: 'tnum' 1;
+}
+.perf-label {
+  font-size: 0.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tp-text-dim);
   font-weight: 600;
+  margin-top: 0.1rem;
+}
+
+/* Win/Loss bar */
+.wl-bar-container {
+  margin-top: 0.6rem;
+}
+.wl-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(239, 68, 68, 0.3);
+  overflow: hidden;
+}
+.wl-wins {
+  height: 100%;
+  background: #22c55e;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+.wl-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.6rem;
+  font-weight: 700;
+  margin-top: 0.2rem;
+}
+.wl-w { color: #22c55e; }
+.wl-l { color: #ef4444; }
+
+/* No data */
+.card-nodata {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--tp-border);
+  font-size: 0.75rem;
   color: var(--tp-text-dim);
 }
 
-/* Empty state */
-.empty-state {
+/* ── Infrastructure ── */
+.infra-section {
+  margin-top: 1rem;
+}
+.infra-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--tp-text-dim);
+  margin: 0 0 0.75rem;
+}
+.infra-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+.infra-card {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--tp-bg-glass);
+  border: var(--tp-glass-border);
+  border-radius: var(--tp-radius-sm);
+  padding: 0.85rem 1rem;
+  backdrop-filter: var(--tp-glass-blur);
+}
+.infra-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4rem 2rem;
-  text-align: center;
+  flex-shrink: 0;
+  color: var(--tp-text-dim);
+}
+.infra-icon .material-symbols-outlined {
+  font-size: 18px;
+}
+.infra-card h4 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin: 0;
+}
+.infra-card p {
+  font-size: 0.68rem;
+  color: var(--tp-text-dim);
+  margin: 0.15rem 0 0;
+  line-height: 1.4;
+}
+.infra-card .badge-active {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ── Color utilities ── */
+.val-green { color: #22c55e; }
+.val-amber { color: #fbbf24; }
+.val-red { color: #ef4444; }
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .strat-header { flex-direction: column; gap: 1rem; }
+  .strat-grid { grid-template-columns: 1fr; }
+  .infra-grid { grid-template-columns: 1fr; }
+  .agg-stats { flex-wrap: wrap; }
+  .agg-divider { display: none; }
+  .agg-stat { min-width: 50%; padding: 0.5rem 0; }
 }
 </style>

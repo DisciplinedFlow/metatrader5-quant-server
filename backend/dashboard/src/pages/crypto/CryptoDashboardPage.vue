@@ -1971,7 +1971,13 @@ usePolling(checkProxyDirect, 10000)  // 10s — lightweight direct ping to macOS
   border-color: var(--tp-success);
 }
 .venue-disabled {
-  opacity: 0.5;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.2);
+  opacity: 1;
+}
+.venue-disabled .venue-chip-icon {
+  color: #f59e0b;
 }
 
 /* Lighter Proxy Toggle (venue block) */

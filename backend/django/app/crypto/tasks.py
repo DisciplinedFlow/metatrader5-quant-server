@@ -141,9 +141,7 @@ def run_lighter_rsi_scalper():
 
 @shared_task(name='crypto.tasks.run_lighter_reconcile', max_retries=1, soft_time_limit=20)
 def run_lighter_reconcile():
-    """Sync DB positions with actual Lighter exchange state."""
-    if is_crypto_bot_paused():
-        return
+    """Sync DB positions with actual Lighter exchange state. Runs even when paused."""
     try:
         from app.quant.algorithms.lighter.reconcile import reconcile_positions
         reconcile_positions()
@@ -155,8 +153,7 @@ def run_lighter_reconcile():
 
 @shared_task(name='crypto.tasks.run_lighter_exit', max_retries=3, soft_time_limit=20)
 def run_lighter_exit():
-    if is_crypto_bot_paused():
-        return
+    """Manage SL/TP and trailing stops for open positions. Runs even when paused."""
     try:
         from app.quant.algorithms.lighter.exit import exit_algorithm
         exit_algorithm()
