@@ -75,14 +75,15 @@ services:
       traefik.http.routers.django-https.tls.certresolver: ""
 
   dashboard:
+    profiles: ["forex", "crypto", "all"]
     build:
       context: backend/dashboard
       dockerfile: Dockerfile
     ports:
       - 3080:80
     depends_on:
-      - mt5
-      - django
+      django:
+        condition: service_started
     networks:
       - default
       - traefik-public

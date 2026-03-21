@@ -71,6 +71,7 @@ services:
     logging: *default-logging
 
   mt5:
+    profiles: ["forex", "all"]
     build:
       context: backend/mt5
       dockerfile: Dockerfile
@@ -220,6 +221,7 @@ services:
       retries: 3
 
   celery:
+    profiles: ["forex", "all"]
     build:
       context: backend/django
       dockerfile: Dockerfile
@@ -253,12 +255,15 @@ services:
     mem_limit: 3g
     cpus: 2
 
-  celery-beat:
+  celery-beat-forex:
+    profiles: ["forex", "all"]
     build:
       context: backend/django
       dockerfile: Dockerfile
-    container_name: celery-beat
+    container_name: celery-beat-forex
     command: celery -A app beat --loglevel=info
+    environment:
+      DJANGO_SETTINGS_MODULE: app.settings_forex
     volumes:
       - static_volume:/app/staticfiles
     env_file:
@@ -271,16 +276,35 @@ services:
     labels:
       <<: *default-labels
     logging: *default-logging
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os, sys; sys.exit(0 if any('celery' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore') and 'beat' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore') for p in os.listdir('/proc') if p.isdigit()) else 1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    mem_limit: 512m
-    cpus: 0.5
+    mem_limit: 256m
+    cpus: 0.3
+
+  celery-beat-crypto:
+    profiles: ["crypto", "all"]
+    build:
+      context: backend/django
+      dockerfile: Dockerfile
+    container_name: celery-beat-crypto
+    command: celery -A app beat --loglevel=info
+    environment:
+      DJANGO_SETTINGS_MODULE: app.settings_crypto
+    volumes:
+      - static_volume:/app/staticfiles
+    env_file:
+      - .env
+    depends_on:
+      - celery-crypto
+      - redis
+    networks:
+      - default
+    labels:
+      <<: *default-labels
+    logging: *default-logging
+    mem_limit: 256m
+    cpus: 0.3
 
   celery-crypto:
+    profiles: ["crypto", "all"]
     build:
       context: backend/django
       dockerfile: Dockerfile
