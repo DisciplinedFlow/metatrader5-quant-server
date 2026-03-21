@@ -11,7 +11,7 @@ Where combined_sizing includes session, symbol, and Kelly multipliers
 """
 
 
-def calculate_position_usd(symbol: str, sl_pct: float, risk_per_trade: float = 1.50) -> float:
+def calculate_position_usd(symbol: str, sl_pct: float, risk_per_trade: float = 4.00) -> float:
     """Unified position sizing: risk_usd / sl_distance x combined_sizing.
 
     This is the ONLY sizing function. All entry algorithms must use this.
