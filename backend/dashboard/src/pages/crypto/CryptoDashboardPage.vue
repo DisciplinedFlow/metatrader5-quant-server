@@ -1232,6 +1232,8 @@ usePolling(checkProxyDirect, 10000)  // 10s — lightweight direct ping to macOS
 .sys-stat {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  text-align: center;
   gap: 1px;
   padding: 0.35rem 1rem;
   border-left: 1px solid var(--tp-border);
@@ -1241,15 +1243,15 @@ usePolling(checkProxyDirect, 10000)  // 10s — lightweight direct ping to macOS
   border-left: none;
 }
 .sys-stat-label {
-  font-size: 0.5rem;
+  font-size: 0.45rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   color: var(--tp-text-dim);
   text-transform: uppercase;
   white-space: nowrap;
 }
 .sys-stat-value {
-  font-size: 1.1rem;
+  font-size: 0.85rem;
   font-weight: 800;
   color: var(--tp-text);
   font-feature-settings: 'tnum' 1;
