@@ -36,7 +36,7 @@ async function refresh() {
   }
 }
 
-usePolling(refresh, 5000)
+usePolling(refresh, 30000)  // was 5s — bot gets API priority
 
 // WebSocket: auto-refresh on position events
 const { connected: wsConnected, on: wsOn } = useWebSocket()

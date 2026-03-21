@@ -162,7 +162,7 @@ async function toggleBot() {
   botStatusLoading.value = false
 }
 
-usePolling(refresh, 15000)
+usePolling(refresh, 60000)  // was 15s — bot gets API priority
 </script>
 
 <template>

@@ -40,7 +40,7 @@ PLATFORM_PREFIX = 'lighter:'
 MOM_MAX_POSITIONS = 3       # Own budget — doesn't block CVD or RSI2
 
 # ── Risk sizing ──────────────────────────────────────────────────────────
-RISK_PER_TRADE_USD = 1.50   # Risk-normalised: position_usd = RISK / sl_pct
+# Risk per trade: dynamic 20% of live balance (see sizing.py).
 MIN_FREE_COLLATERAL = 8.0   # Skip entries if collateral below this
 
 # ── Cooldown: prevent churning in and out of same symbol ─────────────────
@@ -73,7 +73,7 @@ TP_PCT = {True: 0.030, False: 0.040}   # metals: 3%,   crypto: 4%
 # Keep to 6 to stay well within CloudFront rate limits.
 # OB pairs first — they get both EMA + DOM confirmation (highest conviction).
 # BTC/ETH removed: outsized losses tank the account
-MOM_PAIRS = ['XAU', 'AVAX', 'DOGE']  # SOL removed: 50% WR, net negative PnL
+MOM_PAIRS = ['XAU', 'XAG']  # Commodities only — war economy focus
 
 
 # ── EMA calculation ───────────────────────────────────────────────────────
@@ -278,7 +278,7 @@ def _scan_symbol(symbol: str, hour_utc: int) -> bool:
     tp_pct = TP_PCT[is_metal]
 
     # News removed — permanently EXTREME, irrelevant for crypto
-    position_usd = calculate_position_usd(symbol, sl_pct, risk_per_trade=RISK_PER_TRADE_USD)
+    position_usd = calculate_position_usd(symbol, sl_pct)
 
     meta = LIGHTER_MARKETS[symbol]
     if position_usd < meta['min_quote']:

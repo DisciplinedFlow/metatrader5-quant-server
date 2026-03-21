@@ -41,7 +41,7 @@ async function refresh() {
   }
 }
 
-usePolling(refresh, 5000)
+usePolling(refresh, 30000)  // was 5s — bot gets API priority
 
 watch(logs, async () => {
   if (autoScroll.value && viewerEl.value) {

@@ -199,6 +199,59 @@ def run_lighter_cvd():
         logger.error("run_lighter_cvd error: %s", e)
 
 
+# ── Custom Asset Strategies (WTI, NEAR, TSLA) ────────────
+
+@shared_task(name='crypto.tasks.run_lighter_wti', max_retries=2, soft_time_limit=55)
+def run_lighter_wti():
+    """WTI war volatility strategy — news-driven directional entries."""
+    if is_crypto_bot_paused():
+        return
+    if _check_global_daily_halt():
+        logger.debug("Daily halt — skipping WTI entry.")
+        return
+    try:
+        from app.quant.algorithms.lighter.wti_entry import run_wti_entry
+        run_wti_entry()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_wti timed out.")
+    except Exception as e:
+        logger.error("run_lighter_wti error: %s", e)
+
+
+@shared_task(name='crypto.tasks.run_lighter_near', max_retries=2, soft_time_limit=55)
+def run_lighter_near():
+    """NEAR Bollinger breakout + social sentiment strategy."""
+    if is_crypto_bot_paused():
+        return
+    if _check_global_daily_halt():
+        logger.debug("Daily halt — skipping NEAR entry.")
+        return
+    try:
+        from app.quant.algorithms.lighter.near_entry import run_near_entry
+        run_near_entry()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_near timed out.")
+    except Exception as e:
+        logger.error("run_lighter_near error: %s", e)
+
+
+@shared_task(name='crypto.tasks.run_lighter_tsla', max_retries=2, soft_time_limit=55)
+def run_lighter_tsla():
+    """TSLA US session momentum strategy."""
+    if is_crypto_bot_paused():
+        return
+    if _check_global_daily_halt():
+        logger.debug("Daily halt — skipping TSLA entry.")
+        return
+    try:
+        from app.quant.algorithms.lighter.tsla_entry import run_tsla_entry
+        run_tsla_entry()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_tsla timed out.")
+    except Exception as e:
+        logger.error("run_lighter_tsla error: %s", e)
+
+
 # ── Funding Rate Arbitrage Monitor ────────────────────────
 
 @shared_task(name='crypto.tasks.train_crypto_ml', max_retries=1, soft_time_limit=120)

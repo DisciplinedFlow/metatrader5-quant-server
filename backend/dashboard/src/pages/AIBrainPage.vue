@@ -68,7 +68,7 @@ function regimeIcon(regime) {
   return map[regime] || 'help'
 }
 
-usePolling(refresh, 15000)
+usePolling(refresh, 60000)  // was 15s
 </script>
 
 <template>

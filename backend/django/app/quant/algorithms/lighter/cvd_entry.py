@@ -49,10 +49,8 @@ CVD_PREFIX = 'lighter:cvd_'
 # Maximum simultaneous CVD positions
 CVD_MAX_POSITIONS = 2
 
-# Dollar risk per trade — controls notional via risk-normalised sizing.
-# At 2.00 risk, 2% SL → $100 notional, $6.67 margin at 15x. 2 positions = $13.33 margin.
-# Session multiplier (0.6-1.2x) further scales: Asian=$1.20 min, US overlap=$2.40 max.
-RISK_PER_TRADE_USD = 2.00
+# Risk per trade: dynamic 20% of live balance (see sizing.py).
+# Session multiplier (0.6-1.2x) further scales sizing.
 
 # Minimum free collateral before any new CVD entry is attempted.
 # With $29.47 account and 2 max positions ($13.33 margin), $5 is the safe floor.
@@ -317,7 +315,7 @@ def _scan_symbol(symbol, cvd_type, sl_pct, tp_pct, strategy_name, hour_utc):
         logger.debug("CVD OB gate unavailable for %s: %s", symbol, e)
 
     # ── Risk-normalised sizing ─────────────────────────────────────────
-    position_usd = calculate_position_usd(symbol, sl_pct, risk_per_trade=RISK_PER_TRADE_USD)
+    position_usd = calculate_position_usd(symbol, sl_pct)
 
     meta = LIGHTER_MARKETS[symbol]
     if position_usd < meta['min_quote']:

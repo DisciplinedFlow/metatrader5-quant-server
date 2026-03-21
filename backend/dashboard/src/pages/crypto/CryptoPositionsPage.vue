@@ -56,7 +56,7 @@ async function refresh() {
   }
 }
 
-usePolling(refresh, 10000)
+usePolling(refresh, 60000)  // was 10s — bot gets API priority
 </script>
 
 <template>

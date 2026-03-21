@@ -446,7 +446,7 @@ onMounted(() => {
 })
 usePolling(refresh, 30000)  // 30s — Lighter API is slow + rate limited
 usePolling(fetchNews, 300000)  // 5 min — news doesn't need real-time polling
-usePolling(checkProxyDirect, 10000)  // 10s — lightweight direct ping to macOS proxy
+usePolling(checkProxyDirect, 60000)  // was 10s — bot gets API priority
 </script>
 
 <template>

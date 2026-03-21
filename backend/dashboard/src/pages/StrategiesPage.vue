@@ -87,7 +87,7 @@ async function loadDetailForConfig(configId, cs) {
   }
 }
 
-usePolling(async () => { await refresh(); await refreshCustom() }, 10000)
+usePolling(async () => { await refresh(); await refreshCustom() }, 60000)  // was 10s
 
 async function activate(id) {
   loadingBtn.value[`activate-${id}`] = true

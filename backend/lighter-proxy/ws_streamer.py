@@ -57,10 +57,9 @@ REDIS_KEY_TTL = 60  # seconds — downstream treats data stale after this
 
 # Markets to subscribe (symbol → market_id)
 SUBSCRIBE_MARKETS = {
-    'ETH': 0,
-    'BTC': 1,
-    'SOL': 2,
     'XAU': 92,
+    'XAG': 93,
+    'WTI': 145,
 }
 
 # Reverse map: market_id (str) → symbol

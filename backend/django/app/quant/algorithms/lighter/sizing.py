@@ -6,12 +6,61 @@ This ensures consistent risk-normalised sizing across all strategies:
 
     position_usd = risk_per_trade / sl_pct * combined_sizing(symbol)
 
-Where combined_sizing includes session, symbol, and Kelly multipliers
-(see session_sizing.py).
+Where:
+  - risk_per_trade = 20% of live Lighter account balance (cached 60s)
+  - combined_sizing includes session, symbol, and Kelly multipliers
+    (see session_sizing.py).
 """
+import logging
+import time
+
+logger = logging.getLogger('app.lighter')
+
+# ── Configuration ─────────────────────────────────────────
+RISK_PCT = 0.10          # 10% of account balance per trade
+BALANCE_CACHE_TTL = 60   # seconds between balance refreshes
+MIN_RISK = 1.00          # floor: never risk less than $1
+MAX_RISK = 500.00        # ceiling: safety cap
+
+# ── In-memory cache (avoids API call every sizing request) ─
+_cached_balance: float | None = None
+_cached_at: float = 0.0
 
 
-def calculate_position_usd(symbol: str, sl_pct: float, risk_per_trade: float = 4.00) -> float:
+def _fetch_balance() -> float:
+    """Fetch live account balance from Lighter API with 60s cache."""
+    global _cached_balance, _cached_at
+
+    now = time.monotonic()
+    if _cached_balance is not None and (now - _cached_at) < BALANCE_CACHE_TTL:
+        return _cached_balance
+
+    try:
+        from .client import get_account_info
+        acct = get_account_info()
+        balance = float(acct.accounts[0].available_balance)
+        _cached_balance = balance
+        _cached_at = now
+        logger.debug("Sizing: fetched live balance $%.2f", balance)
+        return balance
+    except Exception as e:
+        logger.warning("Sizing: balance fetch failed (%s), using cached $%.2f",
+                       e, _cached_balance or 0)
+        return _cached_balance or 0.0
+
+
+def get_risk_per_trade() -> float:
+    """Return dynamic risk per trade = 20% of live Lighter balance.
+
+    Clamped between MIN_RISK ($1) and MAX_RISK ($500).
+    """
+    balance = _fetch_balance()
+    risk = balance * RISK_PCT
+    risk = max(MIN_RISK, min(MAX_RISK, risk))
+    return risk
+
+
+def calculate_position_usd(symbol: str, sl_pct: float, risk_per_trade: float | None = None) -> float:
     """Unified position sizing: risk_usd / sl_distance x combined_sizing.
 
     This is the ONLY sizing function. All entry algorithms must use this.
@@ -19,12 +68,16 @@ def calculate_position_usd(symbol: str, sl_pct: float, risk_per_trade: float = 4
     Args:
         symbol: Trading pair (e.g. 'SOL', 'XAU', 'EURUSD')
         sl_pct: Stop-loss distance as a fraction (e.g. 0.02 for 2%)
-        risk_per_trade: Dollar risk per trade (default $1.50)
+        risk_per_trade: Dollar risk per trade. If None, uses dynamic
+                        20% of live Lighter account balance.
 
     Returns:
         Position size in USD (notional value).
     """
     from .session_sizing import get_combined_sizing
+
+    if risk_per_trade is None:
+        risk_per_trade = get_risk_per_trade()
 
     base = risk_per_trade / sl_pct
     combined = get_combined_sizing(symbol)
