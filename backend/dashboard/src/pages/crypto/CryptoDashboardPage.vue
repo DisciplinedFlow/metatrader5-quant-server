@@ -76,7 +76,7 @@ wsOn('position_update', () => {
 })
 
 wsOn('price_update', () => {
-  fetchWalletData()
+  refresh()
 })
 
 wsOn('news_alert', (data) => {
@@ -299,23 +299,6 @@ async function fetchFundingRates() {
   }
 }
 
-async function fetchWalletData() {
-  try {
-    const w = await api.getCryptoWallet()
-    walletAddress.value = w.wallet_address ?? ''
-    accountValue.value = w.account_value ?? 0
-    totalMarginUsed.value = w.total_margin_used ?? 0
-    totalNtlPos.value = w.total_ntl_pos ?? 0
-    withdrawable.value = w.withdrawable ?? 0
-    livePositions.value = w.positions ?? []
-    prices.value = w.prices ?? []
-    walletError.value = ''
-    walletLoaded.value = true
-  } catch (err) {
-    walletError.value = err.message || 'Failed to load wallet'
-  }
-}
-
 async function fetchNews() {
   newsLoading.value = true
   try {
@@ -339,11 +322,12 @@ function timeAgo(timestamp) {
 }
 
 async function refresh() {
-  const [botResult, dashResult, walletResult, closedResult] = await Promise.allSettled([
+  const [botResult, dashResult, walletResult, closedResult, openResult] = await Promise.allSettled([
     api.getCryptoBotStatus(),
     api.getCryptoDashboard(),
     api.getCryptoWallet(),
-    api.getCryptoPositions('closed'),
+    api.getCryptoPositions('CLOSED'),
+    api.getCryptoPositions('OPEN'),
   ])
 
   if (botResult.status === 'fulfilled') {
@@ -353,6 +337,9 @@ async function refresh() {
     openPositionsCount.value = dashResult.value.open_positions ?? 0
     totalPnl.value = dashResult.value.total_pnl ?? 0
   }
+
+  // Build price map from wallet for live mark prices
+  let priceMap = {}
   if (walletResult.status === 'fulfilled') {
     const w = walletResult.value
     walletAddress.value = w.wallet_address ?? ''
@@ -360,14 +347,37 @@ async function refresh() {
     totalMarginUsed.value = w.total_margin_used ?? 0
     totalNtlPos.value = w.total_ntl_pos ?? 0
     withdrawable.value = w.withdrawable ?? 0
-    livePositions.value = w.positions ?? []
     prices.value = w.prices ?? []
     walletError.value = ''
     walletLoaded.value = true
+    for (const p of (w.prices ?? [])) priceMap[p.coin] = p.price
   } else if (walletResult.status === 'rejected') {
     walletError.value = walletResult.reason?.message || 'Failed to load wallet'
     walletLoaded.value = true
   }
+
+  // Build livePositions from DB open positions (Lighter reconciler keeps these in sync)
+  if (openResult.status === 'fulfilled') {
+    const dbOpen = openResult.value.results ?? openResult.value ?? []
+    livePositions.value = dbOpen.map(p => {
+      const mark = priceMap[p.symbol] ?? null
+      const uPnl = mark && p.entry_price
+        ? (p.side === 'LONG' ? (mark - p.entry_price) * p.size : (p.entry_price - mark) * p.size)
+        : 0
+      return {
+        coin: p.symbol,
+        side: p.side,
+        size: p.size,
+        entry_price: p.entry_price,
+        mark_price: mark,
+        leverage: p.leverage,
+        margin_used: p.entry_price * p.size / p.leverage,
+        unrealized_pnl: uPnl,
+        venue: 'lighter',
+      }
+    })
+  }
+
   if (closedResult.status === 'fulfilled') {
     closedPositions.value = closedResult.value.results ?? closedResult.value ?? []
   }
