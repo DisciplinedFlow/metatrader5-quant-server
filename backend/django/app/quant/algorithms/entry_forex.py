@@ -370,6 +370,33 @@ def _execute(symbol, direction, df, sl_mult, tp_mult, strategy_name, timeframe):
             trade_obj.entry_atr = atr_val
             trade_obj.entry_timeframe = timeframe
             trade_obj.save(update_fields=['entry_atr', 'entry_timeframe'])
+
+            # Create ML training record
+            try:
+                from app.nexus.models import TradeFeature
+                now = datetime.now(timezone.utc)
+                features_dict = {
+                    'symbol': symbol,
+                    'direction': direction,
+                    'strategy': strategy_name,
+                    'hour_utc': now.hour,
+                    'day_of_week': now.weekday(),
+                    'atr': float(atr_val),
+                    'sl_distance': float(sl_dist),
+                    'tp_distance': float(tp_dist),
+                    'entry_price': float(fill_ref),
+                    'volume': float(volume),
+                    'timeframe': timeframe,
+                }
+                TradeFeature.objects.create(
+                    trade=trade_obj,
+                    features_json=features_dict,
+                    ml_score=0.0,
+                    ml_accepted=True,
+                )
+                logger.info('[fx] TradeFeature created for %s %s', symbol, direction)
+            except Exception as e:
+                logger.debug('[fx] TradeFeature creation failed: %s', e)
     except Exception as e:
         logger.error('[fx] Trade record failed %s: %s', symbol, e)
 

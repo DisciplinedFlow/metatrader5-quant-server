@@ -46,7 +46,7 @@ logger = logging.getLogger('lighter')
 # Config
 # ---------------------------------------------------------------------------
 
-SYMBOLS           = ['BTC', 'ETH', 'SOL', 'AVAX', 'XAG']
+SYMBOLS           = ['ETH', 'SOL', 'AVAX', 'XAG']
 
 SL_ATR_MULT       = 1.5
 TP_ATR_MULT       = 3.0
@@ -346,7 +346,7 @@ def _get_balance() -> float | None:
     try:
         info = get_account_info()
         if hasattr(info, 'accounts') and info.accounts:
-            return float(getattr(info.accounts[0], 'total_collateral', 0) or 0)
+            return float(getattr(info.accounts[0], 'available_balance', 0) or 0)
         return None
     except Exception as e:
         logger.warning('[entry_crypto] Balance fetch failed: %s', e)

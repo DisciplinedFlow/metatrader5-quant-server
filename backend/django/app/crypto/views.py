@@ -466,6 +466,215 @@ class CryptoMLStatsView(views.APIView):
         })
 
 
+class CryptoMLStatusView(views.APIView):
+    """Crypto ML pipeline status — mirrors forex MLStatusView structure."""
+
+    FEATURES = ['rsi2', 'ema50', 'trend', 'funding_mult', 'flow_mult',
+                'session_hour', 'day_of_week', 'leverage', 'position_usd']
+    ML_FILE = '/app/ml_models/crypto_training_data/trades.jsonl'
+    MODEL_FILE = '/app/ml_models/crypto_model.joblib'
+
+    @staticmethod
+    def _safe_float(val):
+        if val is None:
+            return None
+        import math
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+
+    def get(self, request):
+        import json as _json
+
+        # ── Active model info ──
+        model_info = None
+        try:
+            import joblib
+            meta_path = self.MODEL_FILE.replace('.joblib', '_meta.json')
+            model_exists = os.path.exists(self.MODEL_FILE)
+            if model_exists:
+                sf = self._safe_float
+                meta = {}
+                if os.path.exists(meta_path):
+                    with open(meta_path) as f:
+                        meta = _json.load(f)
+
+                # Try to extract feature importance from the model itself
+                feature_importance = {}
+                try:
+                    model = joblib.load(self.MODEL_FILE)
+                    importances = getattr(model, 'feature_importances_', None)
+                    if importances is not None:
+                        feature_importance = {
+                            name: sf(float(imp))
+                            for name, imp in zip(self.FEATURES, importances)
+                        }
+                except Exception:
+                    feature_importance = meta.get('feature_importance', {})
+
+                model_info = {
+                    'version': meta.get('version', 'v1'),
+                    'model_type': meta.get('model_type', 'XGBoost'),
+                    'trade_count': meta.get('trade_count', 0),
+                    'accuracy': sf(meta.get('accuracy')),
+                    'cv_accuracy': sf(meta.get('cv_accuracy')),
+                    'cv_std': sf(meta.get('cv_std')),
+                    'walk_forward_accuracy': sf(meta.get('walk_forward_accuracy')),
+                    'precision': sf(meta.get('precision')),
+                    'recall': sf(meta.get('recall')),
+                    'f1_score': sf(meta.get('f1_score')),
+                    'feature_importance': feature_importance,
+                    'shap_summary': meta.get('shap_summary', []),
+                    'learning_curve': meta.get('learning_curve'),
+                    'win_rate_baseline': sf(meta.get('win_rate_baseline')),
+                    'trained_at': meta.get('trained_at'),
+                }
+        except Exception:
+            pass
+
+        # ── Training data stats (from JSONL) ──
+        training_trades = []
+        try:
+            with open(self.ML_FILE) as f:
+                for line in f:
+                    training_trades.append(_json.loads(line))
+        except FileNotFoundError:
+            pass
+
+        total = len(training_trades)
+        wins = sum(1 for t in training_trades if t.get('won'))
+        losses = total - wins
+        win_rate = round(wins / total * 100, 1) if total else 0
+        net_pnl = round(sum(t.get('pnl', 0) for t in training_trades), 4)
+        avg_duration = round(
+            sum(t.get('duration_min', 0) for t in training_trades) / total, 1
+        ) if total else 0
+
+        by_symbol = {}
+        by_strategy = {}
+        for t in training_trades:
+            sym = t.get('symbol', '?')
+            strat = t.get('strategy', '?')
+            for group, key in [(by_symbol, sym), (by_strategy, strat)]:
+                if key not in group:
+                    group[key] = {'wins': 0, 'losses': 0, 'pnl': 0}
+                group[key]['pnl'] += t.get('pnl', 0)
+                if t.get('won'):
+                    group[key]['wins'] += 1
+                else:
+                    group[key]['losses'] += 1
+
+        best_symbol = max(by_symbol, key=lambda s: by_symbol[s]['pnl']) if by_symbol else '-'
+        best_strategy = max(
+            by_strategy,
+            key=lambda s: by_strategy[s]['wins'] / max(by_strategy[s]['wins'] + by_strategy[s]['losses'], 1)
+        ) if by_strategy else '-'
+
+        # ── Feature stats (count labeled / unlabeled from JSONL) ──
+        labeled = sum(1 for t in training_trades if t.get('won') is not None)
+        ml_rejected = sum(1 for t in training_trades if not t.get('ml_accepted', True))
+
+        # ── Predictions from recent closed positions ──
+        from .models import CryptoPosition
+        predictions = []
+        recent = CryptoPosition.objects.filter(status='CLOSED').order_by('-closed_at')[:50]
+        for pos in recent:
+            predictions.append({
+                'symbol': pos.symbol,
+                'direction': pos.side,
+                'score': None,  # no per-trade ML score stored yet
+                'actual_win': pos.pnl_usd > 0 if pos.pnl_usd is not None else None,
+                'pnl': round(pos.pnl_usd, 4) if pos.pnl_usd else 0,
+                'close_reason': pos.close_reason,
+                'timestamp': pos.closed_at.isoformat() if pos.closed_at else None,
+            })
+
+        # ── Model history (none yet — placeholder) ──
+        model_history = []
+        if model_info:
+            model_history.append({
+                'version': model_info['version'],
+                'model_type': model_info['model_type'],
+                'trade_count': model_info['trade_count'],
+                'accuracy': model_info['accuracy'],
+                'cv_accuracy': model_info['cv_accuracy'],
+                'walk_forward_accuracy': model_info['walk_forward_accuracy'],
+                'trained_at': model_info['trained_at'],
+                'is_active': True,
+            })
+
+        # ── DB session stats ──
+        from django.db.models import Sum
+        db_closed = CryptoPosition.objects.filter(status='CLOSED')
+        db_total = db_closed.count()
+        db_wins = db_closed.filter(pnl_usd__gt=0).count()
+        db_pnl = db_closed.aggregate(s=Sum('pnl_usd'))['s'] or 0
+
+        return Response({
+            'active_model': model_info,
+            'features': {
+                'total': total,
+                'labeled': labeled,
+                'wins': wins,
+                'losses': losses,
+                'ml_rejected': ml_rejected,
+                'unlabeled': total - labeled,
+            },
+            'predictions': predictions,
+            'model_history': model_history,
+            'training': {
+                'total': total,
+                'wins': wins,
+                'losses': losses,
+                'win_rate': win_rate,
+                'net_pnl': net_pnl,
+                'avg_duration_min': avg_duration,
+                'by_symbol': {k: {sk: round(sv, 4) if isinstance(sv, float) else sv
+                                  for sk, sv in v.items()} for k, v in by_symbol.items()},
+                'by_strategy': {k: {sk: round(sv, 4) if isinstance(sv, float) else sv
+                                    for sk, sv in v.items()} for k, v in by_strategy.items()},
+                'best_symbol': best_symbol,
+                'best_strategy': best_strategy,
+                'target': 200,
+                'progress_pct': round(total / 200 * 100, 1),
+            },
+            'session': {
+                'total': db_total,
+                'wins': db_wins,
+                'losses': db_total - db_wins,
+                'win_rate': round(db_wins / db_total * 100, 1) if db_total else 0,
+                'net_pnl': round(float(db_pnl), 4),
+            },
+        })
+
+
+class CryptoMLPredictionsView(views.APIView):
+    """Recent crypto ML predictions with outcomes."""
+
+    def get(self, request):
+        from .models import CryptoPosition
+        limit = int(request.query_params.get('limit', 50))
+
+        positions = CryptoPosition.objects.filter(status='CLOSED').order_by('-closed_at')[:limit]
+        data = []
+        for pos in positions:
+            data.append({
+                'trade_id': pos.id,
+                'symbol': pos.symbol,
+                'type': pos.side,
+                'ml_score': None,  # crypto doesn't store per-trade ML score yet
+                'ml_accepted': True,
+                'actual_win': pos.pnl_usd > 0 if pos.pnl_usd is not None else None,
+                'pnl': round(pos.pnl_usd, 4) if pos.pnl_usd else 0,
+                'entry_time': pos.opened_at.isoformat() if pos.opened_at else None,
+                'close_time': pos.closed_at.isoformat() if pos.closed_at else None,
+                'strategy': pos.entry_signal,
+            })
+
+        return Response(data)
+
+
 class LighterAPITradesView(views.APIView):
     """Trade history pulled directly from the Lighter API — source of truth."""
 

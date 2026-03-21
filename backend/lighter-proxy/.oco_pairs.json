@@ -1,1 +1,20 @@
-[]
+[
+  {
+    "symbol": "BTC",
+    "sl_tx": "08c3ac7fa664d67bc0a7f630a7d4eeaeeee40fbac9cee1f5fbee14a8bf64d275e3c8afd021bee293",
+    "tp_tx": "86ce4628157a25b3b2a141be121d5c42cf51e7afd3ccaac6184d1147bf3796758cd569ccf3991ea8",
+    "created_at": 1774080533.242962
+  },
+  {
+    "symbol": "AVAX",
+    "sl_tx": "70f6090244e1c701b01a510f602f606da7b590dbbbf7563dc7bac0d9114cd6a78454f11ede92973a",
+    "tp_tx": "05e760f9634069869fd17f2564d3e1062d0270868cab59f8486e59fa8b153f3b2572f7feaff8d776",
+    "created_at": 1774080537.367906
+  },
+  {
+    "symbol": "ETH",
+    "sl_tx": "261b507260b054c441a61aefaa20fa04778a7e55d203487a3380e95b362894b3b6d2581f1da3c773",
+    "tp_tx": "0f4d16f534d21cf51d35767c9c365844d66c87d6b4ff028f2db7839b44e809e364f0ffa6f6f2e242",
+    "created_at": 1774085992.1868181
+  }
+]

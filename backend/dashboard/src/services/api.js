@@ -297,6 +297,14 @@ const api = {
     return this.django('v1/crypto/ml/stats/')
   },
 
+  getCryptoMLStatus() {
+    return this.django('v1/crypto/ml/status/')
+  },
+
+  getCryptoMLPredictions(limit = 50) {
+    return this.django(`v1/crypto/ml/predictions/?limit=${limit}`)
+  },
+
   setLighterEnabled(enabled) {
     return this.django('v1/crypto/lighter/proxy/', {
       method: 'POST',

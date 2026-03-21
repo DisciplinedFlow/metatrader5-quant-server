@@ -224,7 +224,7 @@ services:
       context: backend/django
       dockerfile: Dockerfile
     container_name: celery
-    command: bash -c "python -m app.ws.server & python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=6 -Q default,critical,analysis,graph"
+    command: bash -c "python -m app.ws.server & python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=6 -Q default,critical,analysis -n celery-forex@%h"
     extra_hosts:
       - "raspberrypi:172.28.55.86"
     ports:
@@ -279,6 +279,34 @@ services:
       start_period: 15s
     mem_limit: 512m
     cpus: 0.5
+
+  celery-crypto:
+    build:
+      context: backend/django
+      dockerfile: Dockerfile
+    container_name: celery-crypto
+    command: celery -A app worker --loglevel=info --concurrency=3 -Q crypto-critical,crypto-analysis -n celery-crypto@%h
+    volumes:
+      - quant-logs:/app/logs
+      - ./ml_models:/app/ml_models
+    env_file:
+      - .env
+    depends_on:
+      - django
+      - redis
+    networks:
+      - default
+    labels:
+      <<: *default-labels
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app", "inspect", "ping", "--timeout", "5", "-d", "celery-crypto@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    mem_limit: 1g
+    cpus: 1.5
 
   # --- Monitoring stack (disabled — not needed for trading) ---
   # grafana, prometheus, cadvisor, node-exporter, alertmanager,

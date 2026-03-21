@@ -374,220 +374,30 @@ def run_multi_source_backtest(strategy_config_id, period_days=90, data_source='a
 # Knowledge Graph Tasks
 # ========================================================================
 
-@shared_task(name='quant.tasks.record_to_graph', max_retries=3,
-             soft_time_limit=10, time_limit=20)
+@shared_task(name='quant.tasks.record_to_graph', max_retries=0,
+             soft_time_limit=5, time_limit=10)
 def record_to_graph(payload):
-    """Async fire-and-forget write to Neo4j knowledge graph."""
-    if not payload:
-        return
-
-    try:
-        from app.quant.knowledge.connection import get_graph
-        graph = get_graph()
-        if graph is None:
-            return
-
-        record_type = payload.get('type')
-
-        if record_type == 'trade':
-            from app.nexus.models import Trade
-            trade = Trade.objects.get(id=payload['trade_id'])
-            features = payload.get('features', {})
-
-            # Entry context cached at trade open time (regime, MTF, confluence, etc.)
-            brain_meta = payload.get('brain_meta', {})
-
-            trade_data = {
-                'trade_id': f"trade_{trade.id}",
-                'django_id': trade.id,
-                'symbol': trade.symbol,
-                'direction': trade.type,
-                'entry_time': trade.entry_time,
-                'close_time': trade.close_time,
-                'entry_price': trade.entry_price,
-                'close_price': trade.close_price,
-                'pnl': trade.pnl,
-                'entry_atr': trade.entry_atr,
-                'strategy': trade.strategy or (trade.strategy_config.name if trade.strategy_config else 'unknown'),
-                'closing_reason': trade.closing_reason or '',
-                'confluence_score': brain_meta.get('confluence_score') or features.get('confluence_score', 0),
-                'regime_at_entry': brain_meta.get('regime_at_entry', 'UNKNOWN'),
-                'regime_confidence': brain_meta.get('regime_confidence', 0),
-                'hour_utc': trade.entry_time.hour if trade.entry_time else 0,
-                'day_of_week': trade.entry_time.weekday() if trade.entry_time else 0,
-            }
-            # Only include brain-era fields if we have real data (not defaults)
-            if brain_meta:
-                trade_data.update({
-                    'mtf_bias': brain_meta.get('mtf_bias', 'UNKNOWN'),
-                    'mtf_confidence': brain_meta.get('mtf_confidence', 0),
-                    'mtf_alignment': brain_meta.get('mtf_alignment', 'UNKNOWN'),
-                    'graph_confidence': brain_meta.get('graph_confidence', 0.5),
-                    'graph_recommendation': brain_meta.get('graph_recommendation', 'NORMAL'),
-                    'sl_source': brain_meta.get('sl_source', 'ATR'),
-                    'tp_source': brain_meta.get('tp_source', 'ATR'),
-                })
-            graph.record_trade(trade_data)
-
-        elif record_type == 'lighter_trade':
-            # Lighter/crypto trades — payload already has all fields, pass through
-            graph.record_trade(payload)
-
-        elif record_type == 'lighter_trade_open':
-            # Record a Lighter position open (no close data yet)
-            graph.record_trade_open(payload)
-
-        elif record_type == 'lighter_trade_close':
-            # Update an existing open Lighter trade with close data
-            graph.update_trade_close(payload)
-
-        elif record_type == 'trade_open':
-            # Record an MT5 trade open (no close data yet)
-            graph.record_trade_open(payload)
-
-        elif record_type == 'market_condition':
-            graph.record_market_condition(
-                payload['symbol'], payload['condition']
-            )
-
-        elif record_type == 'regime_transition':
-            graph.record_regime_transition(
-                payload['symbol'],
-                payload['from_regime'],
-                payload['to_regime'],
-                payload.get('meta', {}),
-            )
-
-        elif record_type == 'news':
-            graph.record_news(payload.get('articles', []))
-
-        elif record_type == 'rejection':
-            graph.record_rejected_signal(payload)
-
-        elif record_type == 'exit_event':
-            graph.record_exit_event(payload)
-
-        elif record_type == 'confluence':
-            graph.record_confluence_breakdown(payload)
-
-        elif record_type == 'ict_partial':
-            graph.record_ict_partial(payload)
-
-        elif record_type == 'htf_bias':
-            graph.record_htf_bias(payload)
-
-        elif record_type == 'causal_chains':
-            graph.record_causal_chain(payload)
-
-        elif record_type == 'performance_snapshot':
-            graph.record_performance_snapshot(payload)
-
-        elif record_type == 'trade_reasoning':
-            graph.record_trade_reasoning(payload.get('reasoning', payload))
-
-        elif record_type == 'era_transition':
-            graph.record_era_transition(payload)
-
-        elif record_type == 'era_backfill':
-            updated = graph.backfill_trading_era()
-            logger.info("Backfilled %d trades as RULE_BASED", updated)
-
-    except Exception as e:
-        logger.error(f"Graph recording error: {e}")
+    """Neo4j removed — task is now a no-op."""
+    return
 
 
-@shared_task(name='quant.tasks.run_graph_enrichment', max_retries=0,
-             soft_time_limit=30, time_limit=45)
+@shared_task(name='quant.tasks.run_graph_enrichment', max_retries=0)
 def run_graph_enrichment():
-    """Pre-compute graph-derived features into Redis for ML consumption."""
-    try:
-        from django.core.cache import cache
-        from app.quant.knowledge.enricher import compute_and_cache_features
-
-        scanned_symbols = [
-            'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD',
-            'USDCAD', 'USDCHF', 'EURGBP', 'XAUUSD', 'XAGUSD',
-            'USOUSD', 'UKOUSDft',
-        ]
-
-        for symbol in scanned_symbols:
-            regime_detail = cache.get(f':1:hmm_regime_detail:{symbol}') or {}
-            if regime_detail:
-                compute_and_cache_features(symbol, regime_detail)
-
-    except Exception as e:
-        logger.error(f"Graph enrichment error: {e}")
+    """Neo4j removed — task is now a no-op."""
+    return
 
 
 @shared_task(name='quant.tasks.check_graph_health', max_retries=0)
 def check_graph_health():
-    """Health check for Neo4j knowledge graph."""
-    try:
-        from django.core.cache import cache
-        from app.quant.knowledge.connection import get_graph
-
-        graph = get_graph()
-        if graph is None:
-            cache.set('graph:status', {'connected': False}, timeout=600)
-            return
-
-        health = graph.health_check()
-        summary = graph.get_graph_summary()
-        cache.set('graph:status', {**health, **summary}, timeout=600)
-        logger.info(
-            f"Graph health: {health.get('status')} | "
-            f"trades={summary.get('trades', 0)} | "
-            f"conditions={summary.get('conditions', 0)}"
-        )
-
-    except Exception as e:
-        logger.error(f"Graph health check error: {e}")
+    """Neo4j removed — task is now a no-op."""
+    return
 
 
 @shared_task(name='quant.tasks.record_daily_performance', max_retries=1,
              soft_time_limit=30, time_limit=45)
 def record_daily_performance():
-    """Record daily performance snapshot to knowledge graph."""
-    try:
-        from app.nexus.models import Trade
-        from datetime import date, timedelta
-        from django.db.models import Sum, Count, Q, Max, Min
-
-        today = date.today()
-        trades_today = Trade.objects.filter(
-            close_time__date=today,
-            close_time__isnull=False
-        )
-
-        total = trades_today.count()
-        if total == 0:
-            return
-
-        wins = trades_today.filter(pnl__gt=0).count()
-        losses = trades_today.filter(pnl__lte=0).count()
-        agg = trades_today.aggregate(
-            total_pnl=Sum('pnl'),
-            best=Max('pnl'),
-            worst=Min('pnl'),
-        )
-
-        record_to_graph.delay({
-            'type': 'performance_snapshot',
-            'id': today.isoformat(),
-            'date': today.isoformat(),
-            'total_trades': total,
-            'wins': wins,
-            'losses': losses,
-            'win_rate': round(wins / total, 4) if total > 0 else 0,
-            'total_pnl': float(agg['total_pnl'] or 0),
-            'best_trade_pnl': float(agg['best'] or 0),
-            'worst_trade_pnl': float(agg['worst'] or 0),
-            'sharpe': 0,  # computed in Phase 2
-            'max_drawdown': 0,  # computed in Phase 2
-        })
-
-    except Exception as e:
-        logger.error(f"Daily performance snapshot error: {e}")
+    """Record daily performance snapshot — Neo4j removed, task is now a no-op."""
+    return
 
 
 @shared_task(name='quant.tasks.check_news_sentiment', soft_time_limit=30, time_limit=45)
@@ -632,6 +442,9 @@ def run_crypto_entry():
     KISS crypto entry — CVD LoP + CVD Absorption on Lighter.xyz.
     Runs every 5 minutes from Celery beat.
     """
+    from app.crypto.bot_control import is_crypto_bot_paused
+    if is_crypto_bot_paused():
+        return
     try:
         from app.quant.algorithms.entry_crypto import entry_crypto_algorithm
         entry_crypto_algorithm()
@@ -641,97 +454,14 @@ def run_crypto_entry():
         logger.error(f"[entry_crypto] Task error: {e}")
 
 
-@shared_task(name='quant.tasks.update_brain_pattern', max_retries=2)
-def update_brain_pattern(fingerprint: str, won: bool, pnl_r: float,
+@shared_task(name='quant.tasks.update_brain_pattern', max_retries=0)
+def update_brain_pattern(fingerprint: str = '', won: bool = False, pnl_r: float = 0.0,
                          symbol: str = '', closing_reason: str = ''):
-    """
-    Update StrategyPattern WR after a live trade closes.
-    Then async: call Haiku to label/describe the pattern.
-    Fire-and-forget — trading continues regardless of outcome.
-    """
-    if not fingerprint:
-        return
-
-    try:
-        from app.quant.knowledge.connection import get_graph
-        graph = get_graph()
-        if graph:
-            graph.update_pattern_outcome(fingerprint, won, pnl_r)
-
-        # Async Haiku label — only if we have a real API key
-        from app.quant.intelligence.claude_analyst import label_trade_pattern
-        conditions = [c for c in fingerprint.split('_', 2)[-1].split('+') if c]
-        session = next((c.replace('session_', '') for c in conditions if c.startswith('session_')), '')
-        htf = 'bullish' if 'htf_aligned' in conditions and '_bullish_' in fingerprint else 'bearish'
-        direction = fingerprint.split('_')[1] if '_' in fingerprint else ''
-        outcome = 'WIN' if won else 'LOSS'
-
-        label = label_trade_pattern(
-            symbol=symbol or fingerprint.split('_')[0],
-            direction=direction,
-            outcome=outcome,
-            pnl_r=pnl_r,
-            conditions=conditions,
-            session=session,
-            htf_bias=htf,
-            fingerprint=fingerprint,
-        )
-        if label and graph:
-            graph.set_pattern_label(fingerprint, label)
-
-    except Exception as e:
-        logger.debug(f"[brain] update_brain_pattern failed: {e}")
+    """Neo4j removed — task is now a no-op."""
+    return
 
 
 @shared_task(name='quant.tasks.run_weekly_edge_review')
 def run_weekly_edge_review():
-    """
-    Weekly Haiku review of all active StrategyPattern nodes.
-    Deactivates dead patterns. Logs emerging edges.
-    Scheduled: every Monday 06:00 UTC in CELERY_BEAT_SCHEDULE.
-    """
-    try:
-        from app.quant.knowledge.connection import get_graph
-        graph = get_graph()
-        if not graph:
-            return
-
-        with graph.driver.session(database=graph.database) as sess:
-            patterns = sess.run(
-                """
-                MATCH (p:StrategyPattern {active: true})
-                RETURN p {
-                    .fingerprint, .symbol, .direction,
-                    .win_rate, .total, .avg_r, .source, .label
-                } AS p
-                """
-            ).data()
-
-        patterns = [row['p'] for row in patterns]
-        if not patterns:
-            logger.info("[brain] Weekly review: no active patterns")
-            return
-
-        from app.quant.intelligence.claude_analyst import weekly_edge_review
-        review = weekly_edge_review(patterns)
-
-        # Deactivate patterns Haiku flagged
-        for fp in review.get('deactivate', []):
-            with graph.driver.session(database=graph.database) as sess:
-                sess.run(
-                    "MATCH (p:StrategyPattern {fingerprint: $fp}) SET p.active = false",
-                    fp=fp,
-                )
-            logger.info(f"[brain] Deactivated pattern: {fp}")
-
-        # Also run automatic WR-based deactivation
-        dead = graph.deactivate_dead_patterns(min_samples=8, max_wr=0.35)
-
-        logger.info(
-            f"[brain] Weekly review: {len(review.get('deactivate', []))} Haiku-deactivated, "
-            f"{dead} auto-deactivated, {len(review.get('promote', []))} promoted | "
-            f"Observations: {review.get('observations', '')}"
-        )
-
-    except Exception as e:
-        logger.error(f"[brain] Weekly review failed: {e}")
+    """Neo4j removed — task is now a no-op."""
+    return

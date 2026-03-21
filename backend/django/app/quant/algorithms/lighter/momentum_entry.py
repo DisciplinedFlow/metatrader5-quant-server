@@ -56,7 +56,7 @@ CANDLE_CACHE_TTL = 300          # 5min candle cache (1h bars don't need fresher)
 # Minimum EMA spread to avoid trading choppy/sideways markets.
 # OB pairs get a lower threshold because DOM data provides extra confirmation.
 # BTC/ETH removed: outsized losses tank the account
-OB_PAIRS = frozenset(['SOL', 'XAU'])
+OB_PAIRS = frozenset(['XAU'])  # SOL removed: 50% WR, net negative PnL
 EMA_MIN_SEP_OB = 0.003          # 0.3% spread for OB-confirmed pairs
 EMA_MIN_SEP_NOB = 0.005         # 0.5% spread for non-OB pairs (higher bar)
 
@@ -73,7 +73,7 @@ TP_PCT = {True: 0.030, False: 0.040}   # metals: 3%,   crypto: 4%
 # Keep to 6 to stay well within CloudFront rate limits.
 # OB pairs first — they get both EMA + DOM confirmation (highest conviction).
 # BTC/ETH removed: outsized losses tank the account
-MOM_PAIRS = ['SOL', 'XAU', 'AVAX', 'DOGE']
+MOM_PAIRS = ['XAU', 'AVAX', 'DOGE']  # SOL removed: 50% WR, net negative PnL
 
 
 # ── EMA calculation ───────────────────────────────────────────────────────

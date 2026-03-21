@@ -73,7 +73,7 @@ RSI2_CONFIG = {
 
 # Symbols to scan every 10 seconds
 # BTC removed: 50% WR, -$4.08 net PnL | ETH removed: 60% WR, -$8.32 net PnL
-RSI2_SYMBOLS = ['SOL', 'XAU']
+RSI2_SYMBOLS = ['XAU']  # SOL removed: 50% WR, net negative PnL
 
 # Cooldown between trades on same symbol (seconds)
 # 600s = 10 min: prevents re-entering same downtrend on 15m bars (knife-catching)

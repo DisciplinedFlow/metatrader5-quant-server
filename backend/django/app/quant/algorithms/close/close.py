@@ -237,46 +237,9 @@ def _on_trade_closed(closed_trade, ticket, close_price, pnl, closing_reason):
     except Exception as e:
         logger.debug(f"ML feature update skipped: {e}")
 
-    # Record to knowledge graph (async)
-    try:
-        from app.quant.tasks import record_to_graph
-        from app.nexus.models import TradeFeature
-        from django.core.cache import cache as _cache
+    # Neo4j knowledge graph removed — container no longer running
 
-        tf = TradeFeature.objects.filter(trade=closed_trade).first()
-        features = tf.features_json if tf and isinstance(tf.features_json, dict) else {}
-        entry_ctx = _cache.get(f'entry_context:{ticket}') or {}
-        record_to_graph.delay({
-            'type': 'trade',
-            'trade_id': closed_trade.id,
-            'features': features,
-            'brain_meta': entry_ctx,
-        })
-        if entry_ctx:
-            _cache.delete(f'entry_context:{ticket}')
-    except Exception:
-        pass
-
-    # Update StrategyPattern + trigger Haiku label (async)
-    try:
-        from app.quant.tasks import update_brain_pattern
-        from django.core.cache import cache as _cache
-
-        fingerprint = _cache.get(f'brain_pattern:{ticket}', '')
-        if fingerprint:
-            # Compute R-multiple from entry_atr (SL = 1.8x ATR)
-            entry_atr = float(getattr(closed_trade, 'entry_atr', 0) or 0)
-            sl_distance = entry_atr * 1.8 if entry_atr > 0 else 0
-            update_brain_pattern.delay(
-                fingerprint=fingerprint,
-                won=(pnl > 0),
-                pnl_r=float(pnl / sl_distance) if sl_distance > 0 else 0.0,
-                symbol=closed_trade.symbol,
-                closing_reason=closing_reason,
-            )
-            _cache.delete(f'brain_pattern:{ticket}')
-    except Exception:
-        pass
+    # Neo4j brain pattern tracking removed — container no longer running
 
 
 def _update_ml_features(closed_trade):

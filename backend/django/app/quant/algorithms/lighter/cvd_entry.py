@@ -128,7 +128,7 @@ def _load_active_cvd_strategies():
     # PAXGUSDT proxy (gold-backed token) whose volume dynamics differ entirely from
     # Lighter's XAU perpetual. Signal is noise during the current gold ATH regime.
     # BTC/ETH removed: outsized losses tank the account
-    all_pairs = ['SOL']
+    all_pairs = []  # SOL removed: 50% WR, net negative PnL. Re-enable after recalibration
 
     try:
         from app.nexus.models import CustomStrategy

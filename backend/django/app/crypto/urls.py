@@ -16,6 +16,8 @@ from .views import (
     LighterProxyView,
     LighterAPITradesView,
     CryptoMLStatsView,
+    CryptoMLStatusView,
+    CryptoMLPredictionsView,
 )
 
 router = DefaultRouter()
@@ -36,4 +38,6 @@ urlpatterns = [
     path('hyperliquid/control/', HyperliquidControlView.as_view(), name='hyperliquid-control'),
     path('lighter/trades/', LighterAPITradesView.as_view(), name='lighter-api-trades'),
     path('ml/stats/', CryptoMLStatsView.as_view(), name='crypto-ml-stats'),
+    path('ml/status/', CryptoMLStatusView.as_view(), name='crypto-ml-status'),
+    path('ml/predictions/', CryptoMLPredictionsView.as_view(), name='crypto-ml-predictions'),
 ]

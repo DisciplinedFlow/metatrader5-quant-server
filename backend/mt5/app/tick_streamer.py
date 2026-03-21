@@ -25,9 +25,15 @@ logging.basicConfig(
 logger = logging.getLogger('tick_streamer')
 
 DEFAULT_SYMBOLS = [
+    # Forex majors
     'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD',
     'USDCAD', 'USDCHF', 'EURGBP', 'USDCNH', 'USDSEK',
-    'XAUUSD', 'XAGUSD', 'USOUSD', 'UKOUSDft',
+    # Metals
+    'XAUUSD', 'XAUEUR', 'XAUAUD', 'XAUJPY', 'XAGUSD',
+    # Energy
+    'USOUSD', 'UKOUSDft', 'NG-C',
+    # US stocks
+    'AMD', 'MSFT',
 ]
 
 FLASK_API_URL = 'http://localhost:5001'

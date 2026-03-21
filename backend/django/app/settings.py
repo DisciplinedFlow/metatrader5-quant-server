@@ -262,14 +262,12 @@ CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
 CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_ROUTES = {
+    # ── Forex (celery-forex worker: queues critical, analysis, default) ──
     'quant.tasks.run_quant_trailing_stop_algorithm': {'queue': 'critical'},
     'quant.tasks.run_quant_close_algorithm': {'queue': 'critical'},
     'quant.tasks.run_position_reconciliation': {'queue': 'critical'},
     'quant.tasks.run_forex_entry': {'queue': 'critical'},
-    'quant.tasks.run_crypto_entry': {'queue': 'critical'},
-    'quant.tasks.update_brain_pattern': {'queue': 'default'},
-    'quant.tasks.run_weekly_edge_review': {'queue': 'default'},
-    'quant.tasks.run_quant_entry_algorithm': {'queue': 'critical'},  # kept for reference
+    'quant.tasks.run_quant_entry_algorithm': {'queue': 'critical'},
     'quant.tasks.run_structure_scanner': {'queue': 'critical'},
     'quant.tasks.run_ict_scanner': {'queue': 'analysis'},
     'quant.tasks.run_regime_scan': {'queue': 'analysis'},
@@ -278,21 +276,31 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.run_strategy_rotation': {'queue': 'analysis'},
     'quant.tasks.run_ml_retrain': {'queue': 'analysis'},
     'quant.tasks.run_llm_retrain': {'queue': 'analysis'},
-    'quant.tasks.record_to_graph': {'queue': 'graph'},
-    'quant.tasks.run_graph_enrichment': {'queue': 'analysis'},
-    'quant.tasks.check_graph_health': {'queue': 'default'},
     'quant.tasks.check_news_sentiment': {'queue': 'default'},
-    'crypto.tasks.run_lighter_cvd': {'queue': 'analysis'},
-    'crypto.tasks.run_lighter_momentum': {'queue': 'analysis'},
+    # ── Crypto (celery-crypto worker: queues crypto-critical, crypto-analysis) ──
+    'quant.tasks.run_crypto_entry': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_exit': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_reconcile': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_rsi_scalper': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_entry': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_mean_reversion': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_cvd': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_momentum': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_funding_arb_scan': {'queue': 'crypto-analysis'},
+    'crypto.tasks.sync_crypto_prices': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_crypto_exit': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_crypto_backtest': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_crypto_backtest_all': {'queue': 'crypto-analysis'},
+    'crypto.tasks.train_crypto_ml': {'queue': 'crypto-analysis'},
 }
 
-# --- Neo4j Knowledge Graph ---
-NEO4J_URI = os.getenv('NEO4J_URI', 'bolt://neo4j:7687')
-NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
-NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', '')
-GRAPH_FEATURES_ACTIVE = os.getenv('GRAPH_FEATURES_ACTIVE', 'false').lower() == 'true'
+# --- Neo4j Knowledge Graph (DISABLED — container removed) ---
+# NEO4J_URI = os.getenv('NEO4J_URI', 'bolt://neo4j:7687')
+# NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
+# NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', '')
+GRAPH_FEATURES_ACTIVE = False
 GRAPH_FEATURES_LIVE_FALLBACK = False
-GRAPH_ROUTER_SIGNAL_ACTIVE = os.getenv('GRAPH_ROUTER_SIGNAL_ACTIVE', 'false').lower() == 'true'
+GRAPH_ROUTER_SIGNAL_ACTIVE = False
 
 # --- Anthropic Claude API (Haiku for trading intelligence) ---
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
@@ -330,7 +338,6 @@ CELERY_BEAT_SCHEDULE = {
         # Price cache (20s TTL) absorbs bursts — real API calls stay ≤3/min per symbol.
         # On-chain OCO is the backstop for sub-15s flash crashes.
         'schedule': 15.0,
-        'options': {'queue': 'critical'},
     },
     'run-lighter-rsi-scalper': {
         'task': 'crypto.tasks.run_lighter_rsi_scalper',
@@ -366,10 +373,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.check_news_sentiment',
         'schedule': 300.0,
     },
-    'check-graph-health': {
-        'task': 'quant.tasks.check_graph_health',
-        'schedule': 300.0,
-    },
+    # Neo4j removed — container no longer running
+    # 'check-graph-health': {
+    #     'task': 'quant.tasks.check_graph_health',
+    #     'schedule': 300.0,
+    # },
     'run-funding-arb-scan': {
         'task': 'crypto.tasks.run_funding_arb_scan',
         'schedule': 300.0,

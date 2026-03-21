@@ -84,19 +84,7 @@ def get_market_risk_level() -> dict:
         claude_result = get_smart_news_sentiment(headlines)
         if claude_result and claude_result.get('impacts'):
             cache.set(NEWS_CACHE_KEY, claude_result, timeout=NEWS_CACHE_TTL)
-            # Store causal chains in Neo4j knowledge graph
-            if claude_result.get('causal_chains'):
-                try:
-                    from app.quant.tasks import record_to_graph
-                    record_to_graph.delay({
-                        'type': 'causal_chains',
-                        'chains': claude_result['causal_chains'],
-                        'impacts': claude_result.get('impacts', {}),
-                        'risk_level': claude_result.get('risk_level', 'NORMAL'),
-                        'overall_sentiment': claude_result.get('overall_sentiment', 'MIXED'),
-                    })
-                except Exception as e_graph:
-                    logger.debug(f"Causal chain graph recording failed: {e_graph}")
+            # Neo4j causal chain recording removed
             return claude_result
     except Exception as e:
         logger.debug(f"Claude sentiment unavailable: {e}")

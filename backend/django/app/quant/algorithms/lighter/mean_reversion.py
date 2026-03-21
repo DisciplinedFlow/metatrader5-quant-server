@@ -38,15 +38,16 @@ MR_CONFIGS = {
         'tp_fixed_pct': None,
         'timeframe': '15m',
     },
-    'SOL': {
-        'bb_period': 20, 'bb_std': 2.5,
-        'rsi_period': 14, 'rsi_oversold': 30, 'rsi_overbought': 70,
-        'adx_max': 35,
-        'sl_pct': 0.02,
-        'tp_mode': 'fixed',         # fixed: TP = 1% from entry
-        'tp_fixed_pct': 0.01,
-        'timeframe': '1h',
-    },
+    # SOL removed: 50% WR, net negative PnL. Re-enable after recalibration
+    # 'SOL': {
+    #     'bb_period': 20, 'bb_std': 2.5,
+    #     'rsi_period': 14, 'rsi_oversold': 30, 'rsi_overbought': 70,
+    #     'adx_max': 35,
+    #     'sl_pct': 0.02,
+    #     'tp_mode': 'fixed',
+    #     'tp_fixed_pct': 0.01,
+    #     'timeframe': '1h',
+    # },
 }
 
 MR_SYMBOLS = list(MR_CONFIGS.keys())
