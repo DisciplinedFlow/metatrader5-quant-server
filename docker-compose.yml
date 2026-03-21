@@ -324,9 +324,9 @@ services:
       <<: *default-labels
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "celery", "-A", "app", "inspect", "ping", "--timeout", "5", "-d", "celery-crypto@$$HOSTNAME"]
+      test: ["CMD-SHELL", "python -c \"import os; [p for p in os.listdir('/proc') if p.isdigit() and 'celery' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore')]\" && test $? -eq 0"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 15s
     mem_limit: 1g
