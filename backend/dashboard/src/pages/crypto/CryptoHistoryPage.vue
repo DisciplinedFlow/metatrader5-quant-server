@@ -2,15 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
-
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
+import { cryptoLinks, fmtTime, fmtPrice, duration } from '@/utils/cryptoConstants'
 
 const positions = ref([])
 const loading = ref(true)
@@ -40,32 +32,10 @@ async function fetchHistory() {
   loading.value = false
 }
 
-function formatTime(iso) {
-  if (!iso) return '-'
-  const d = new Date(iso)
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-}
-
 function formatPnl(val) {
   if (val == null) return '-'
   const n = Number(val)
   return (n >= 0 ? '+' : '') + n.toFixed(2)
-}
-
-function fmtPrice(val) {
-  if (val == null) return '-'
-  return Number(val).toFixed(2)
-}
-
-function duration(open, close) {
-  if (!open || !close) return '-'
-  const ms = new Date(close) - new Date(open)
-  const mins = Math.floor(ms / 60000)
-  if (mins < 60) return `${mins}m`
-  const hrs = Math.floor(mins / 60)
-  const rm = mins % 60
-  if (hrs < 24) return `${hrs}h ${rm}m`
-  return `${Math.floor(hrs / 24)}d ${hrs % 24}h`
 }
 
 onMounted(fetchHistory)
@@ -150,7 +120,7 @@ onMounted(fetchHistory)
             </thead>
             <tbody>
               <tr v-for="p in positions" :key="p.id">
-                <td class="td-time">{{ formatTime(p.opened_at) }}</td>
+                <td class="td-time">{{ fmtTime(p.opened_at) }}</td>
                 <td class="td-symbol">{{ p.symbol }}</td>
                 <td>
                   <span class="side-badge" :class="p.side === 'LONG' ? 'buy' : 'sell'">

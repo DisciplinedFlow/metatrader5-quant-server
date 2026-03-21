@@ -1,3 +1,5 @@
+import time
+
 from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
 import logging
@@ -26,13 +28,13 @@ def sync_crypto_prices():
         sync_prices()
         try:
             from app.ws.publish import publish_prices
-            publish_prices({'source': 'sync', 'timestamp': __import__('time').time()})
+            publish_prices({'source': 'sync', 'timestamp': time.time()})
         except Exception:
             pass
     except SoftTimeLimitExceeded:
         logger.error("sync_crypto_prices timed out.")
     except Exception as e:
-        logger.error(f"sync_crypto_prices error: {e}")
+        logger.error("sync_crypto_prices error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_crypto_entry', max_retries=3, soft_time_limit=60)
@@ -49,7 +51,7 @@ def run_crypto_entry():
     except SoftTimeLimitExceeded:
         logger.error("run_crypto_entry timed out.")
     except Exception as e:
-        logger.error(f"run_crypto_entry error: {e}")
+        logger.error("run_crypto_entry error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_crypto_exit', max_retries=3, soft_time_limit=60)
@@ -63,7 +65,7 @@ def run_crypto_exit():
     except SoftTimeLimitExceeded:
         logger.error("run_crypto_exit timed out.")
     except Exception as e:
-        logger.error(f"run_crypto_exit error: {e}")
+        logger.error("run_crypto_exit error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_crypto_backtest', max_retries=1, soft_time_limit=120)
@@ -72,11 +74,12 @@ def run_crypto_backtest():
         from app.quant.algorithms.crypto.backtester import run_and_store_backtest
         result = run_and_store_backtest()
         if result:
-            logger.info(f"Crypto backtest complete: passed={result.passed}, win_rate={result.win_rate:.2%}")
+            logger.info("Crypto backtest complete: passed=%s, win_rate=%.2f%%",
+                        result.passed, result.win_rate * 100)
     except SoftTimeLimitExceeded:
         logger.error("run_crypto_backtest timed out.")
     except Exception as e:
-        logger.error(f"run_crypto_backtest error: {e}")
+        logger.error("run_crypto_backtest error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_crypto_backtest_all', max_retries=1, soft_time_limit=600)
@@ -86,12 +89,12 @@ def run_crypto_backtest_all(symbols=None):
         from app.quant.algorithms.crypto.backtester import run_and_store_all_backtests
         records = run_and_store_all_backtests(symbols)
         passed = sum(1 for r in records if r.passed)
-        logger.info(f"Multi-strategy backtest complete: {len(records)} results, {passed} passed")
+        logger.info("Multi-strategy backtest complete: %d results, %d passed", len(records), passed)
         return {'total': len(records), 'passed': passed}
     except SoftTimeLimitExceeded:
         logger.error("run_crypto_backtest_all timed out (600s limit).")
     except Exception as e:
-        logger.error(f"run_crypto_backtest_all error: {e}")
+        logger.error("run_crypto_backtest_all error: %s", e)
 
 
 # ── Lighter.xyz DEX tasks ────────────────────────────────
@@ -109,7 +112,7 @@ def run_lighter_entry():
     except SoftTimeLimitExceeded:
         logger.error("run_lighter_entry timed out.")
     except Exception as e:
-        logger.error(f"run_lighter_entry error: {e}")
+        logger.error("run_lighter_entry error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_lighter_mean_reversion', max_retries=2, soft_time_limit=60)
@@ -122,8 +125,7 @@ def run_lighter_mean_reversion():
     except SoftTimeLimitExceeded:
         logger.error("run_lighter_mean_reversion timed out.")
     except Exception as e:
-        logger.error(f"run_lighter_mean_reversion error: {e}")
-
+        logger.error("run_lighter_mean_reversion error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_lighter_rsi_scalper', max_retries=2, soft_time_limit=45)
@@ -136,7 +138,7 @@ def run_lighter_rsi_scalper():
     except SoftTimeLimitExceeded:
         logger.error("run_lighter_rsi_scalper timed out.")
     except Exception as e:
-        logger.error(f"run_lighter_rsi_scalper error: {e}")
+        logger.error("run_lighter_rsi_scalper error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_lighter_reconcile', max_retries=1, soft_time_limit=20)
@@ -148,10 +150,10 @@ def run_lighter_reconcile():
     except SoftTimeLimitExceeded:
         logger.error("run_lighter_reconcile timed out.")
     except Exception as e:
-        logger.error(f"run_lighter_reconcile error: {e}")
+        logger.error("run_lighter_reconcile error: %s", e)
 
 
-@shared_task(name='crypto.tasks.run_lighter_exit', max_retries=3, soft_time_limit=20)
+@shared_task(name='crypto.tasks.run_lighter_exit', max_retries=3, soft_time_limit=30)
 def run_lighter_exit():
     """Manage SL/TP and trailing stops for open positions. Runs even when paused."""
     try:
@@ -160,7 +162,7 @@ def run_lighter_exit():
     except SoftTimeLimitExceeded:
         logger.error("run_lighter_exit timed out.")
     except Exception as e:
-        logger.error(f"run_lighter_exit error: {e}")
+        logger.error("run_lighter_exit error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_lighter_momentum', max_retries=2, soft_time_limit=55)
@@ -177,7 +179,7 @@ def run_lighter_momentum():
     except SoftTimeLimitExceeded:
         logger.error("run_lighter_momentum timed out.")
     except Exception as e:
-        logger.error(f"run_lighter_momentum error: {e}")
+        logger.error("run_lighter_momentum error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_lighter_cvd', max_retries=2, soft_time_limit=55)
@@ -194,7 +196,7 @@ def run_lighter_cvd():
     except SoftTimeLimitExceeded:
         logger.error("run_lighter_cvd timed out.")
     except Exception as e:
-        logger.error(f"run_lighter_cvd error: {e}")
+        logger.error("run_lighter_cvd error: %s", e)
 
 
 # ── Funding Rate Arbitrage Monitor ────────────────────────
@@ -206,11 +208,12 @@ def train_crypto_ml():
         from app.quant.ml.crypto_trainer import train_crypto_model
         result = train_crypto_model()
         if result:
-            logger.info(f"Crypto ML trained: accuracy={result.get('accuracy', 0):.1%}, trades={result.get('train_size', 0)}")
+            logger.info("Crypto ML trained: accuracy=%.1f%%, trades=%d",
+                        result.get('accuracy', 0) * 100, result.get('train_size', 0))
         else:
             logger.info("Crypto ML: insufficient data for training")
     except Exception as e:
-        logger.error(f"Crypto ML training error: {e}")
+        logger.error("Crypto ML training error: %s", e)
 
 
 @shared_task(name='crypto.tasks.run_funding_arb_scan', max_retries=2, soft_time_limit=120)
@@ -230,4 +233,4 @@ def run_funding_arb_scan():
     except SoftTimeLimitExceeded:
         logger.error("run_funding_arb_scan timed out.")
     except Exception as e:
-        logger.error(f"run_funding_arb_scan error: {e}")
+        logger.error("run_funding_arb_scan error: %s", e)

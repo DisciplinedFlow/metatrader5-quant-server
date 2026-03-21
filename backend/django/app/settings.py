@@ -334,10 +334,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     'run-lighter-exit': {
         'task': 'crypto.tasks.run_lighter_exit',
-        # 15s cycle: trailing stop ratchets 4x faster than before.
+        # 20s cycle: matches soft_time_limit=30s, prevents task pile-up.
         # Price cache (20s TTL) absorbs bursts — real API calls stay ≤3/min per symbol.
-        # On-chain OCO is the backstop for sub-15s flash crashes.
-        'schedule': 15.0,
+        # On-chain OCO is the backstop for sub-20s flash crashes.
+        'schedule': 20.0,
     },
     'run-lighter-rsi-scalper': {
         'task': 'crypto.tasks.run_lighter_rsi_scalper',
@@ -351,19 +351,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'crypto.tasks.run_lighter_entry',
         'schedule': 60.0,
     },
-'run-lighter-mean-reversion': {
+    'run-lighter-mean-reversion': {
         'task': 'crypto.tasks.run_lighter_mean_reversion',
         'schedule': 300.0,
     },
-    # DISABLED: CVD and momentum strategies did not pass backtest validation (2026-03-20)
-    # 'run-lighter-cvd': {
-    #     'task': 'crypto.tasks.run_lighter_cvd',
-    #     'schedule': 60.0,
-    # },
-    # 'run-lighter-momentum': {
-    #     'task': 'crypto.tasks.run_lighter_momentum',
-    #     'schedule': 60.0,
-    # },
     # ── Monitoring ──────────────────────────────────────────
     'fetch-market-pulse': {
         'task': 'quant.tasks.fetch_market_pulse',
@@ -373,11 +364,6 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.check_news_sentiment',
         'schedule': 300.0,
     },
-    # Neo4j removed — container no longer running
-    # 'check-graph-health': {
-    #     'task': 'quant.tasks.check_graph_health',
-    #     'schedule': 300.0,
-    # },
     'run-funding-arb-scan': {
         'task': 'crypto.tasks.run_funding_arb_scan',
         'schedule': 300.0,

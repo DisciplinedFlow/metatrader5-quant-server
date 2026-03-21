@@ -5,17 +5,9 @@ import { usePolling } from '@/composables/usePolling'
 import { useWebSocket } from '@/composables/useWebSocket'
 import api from '@/services/api'
 import SectionNav from '@/components/SectionNav.vue'
+import { cryptoLinks, COIN_COLORS, fmt, fmtPrice } from '@/utils/cryptoConstants'
 
 const router = useRouter()
-
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
 
 // Bot state
 const botPaused = ref(false)
@@ -214,13 +206,6 @@ const positionsByVenue = computed(() => {
   return { hyperliquid: hl, lighter: lt }
 })
 
-// Coin colors
-const COIN_COLORS = {
-  BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', AVAX: '#e84142',
-  DOGE: '#c2a633', ARB: '#28a0f0', MATIC: '#8247e5', LINK: '#2a5ada',
-  OP: '#ff0420', SUI: '#4da2ff',
-}
-
 function getCoinColor(coin) {
   return COIN_COLORS[coin] || 'var(--tp-primary)'
 }
@@ -401,22 +386,6 @@ async function toggleBot() {
     console.error('Bot toggle error:', err)
   }
   botStatusLoading.value = false
-}
-
-function fmt(val, decimals = 2) {
-  if (val == null) return '-'
-  return Number(val).toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
-
-function fmtPrice(val) {
-  if (val == null) return '-'
-  const n = Number(val)
-  if (n >= 1000) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  if (n >= 1) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-  return n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })
 }
 
 function fmtPct(val) {

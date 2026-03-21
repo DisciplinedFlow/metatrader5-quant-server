@@ -1,19 +1,11 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { createChart, CandlestickSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from 'lightweight-charts'
 import { useTheme, getChartThemeColors } from '@/composables/useTheme'
 import { useToast } from '@/composables/useToast'
 import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
-
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
+import { cryptoLinks, fmt, fmtPrice, fmtTime, duration } from '@/utils/cryptoConstants'
 
 const toast = useToast()
 const { theme } = useTheme()
@@ -231,38 +223,7 @@ async function fetchTrades() {
   }
 }
 
-function fmt(val, decimals = 2) {
-  if (val == null) return '-'
-  return Number(val).toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
-
-function fmtPrice(val) {
-  if (val == null) return '-'
-  const n = Number(val)
-  if (n >= 1000) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  if (n >= 1) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-  return n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })
-}
-
-function fmtTime(val) {
-  if (!val) return '-'
-  const d = new Date(val)
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' +
-    d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-}
-
-function duration(opened, closed) {
-  if (!opened || !closed) return '-'
-  const mins = Math.round((new Date(closed) - new Date(opened)) / 60000)
-  if (mins < 60) return `${mins}m`
-  const hrs = Math.floor(mins / 60)
-  return `${hrs}h ${mins % 60}m`
-}
-
-watch(theme, () => setTimeout(applyThemeToChart, 50))
+watch(theme, async () => { await nextTick(); applyThemeToChart() })
 onMounted(async () => {
   initChart()
   await fetchTrades()

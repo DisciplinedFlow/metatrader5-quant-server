@@ -20,6 +20,12 @@ LIGHTER_LEVERAGE = int(os.getenv('LIGHTER_LEVERAGE', '15'))  # 3x scale-up (was 
 LIGHTER_MAX_SLIPPAGE = float(os.getenv('LIGHTER_MAX_SLIPPAGE', '0.005'))  # 0.5%
 LIGHTER_POSITION_SIZE_PCT = float(os.getenv('LIGHTER_POSITION_SIZE_PCT', '0.50'))  # 50% of capital per trade (up from 40%, justified by 65% WR / PF 2.01)
 
+PLATFORM_PREFIX = 'lighter:'
+
+# Asset-class classification (used by entry, exit, reconcile, rsi_scalper)
+FOREX_SYMBOLS = frozenset({'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'})
+METALS_SYMBOLS = frozenset({'XAU', 'XAG', 'PAXG', 'WTI'})
+
 # Trading pairs (Lighter perp symbols)
 # Backtest-validated only: XAU 1h EMA(5/100) 61.5% WR PF 2.88,
 # AVAX 1h EMA(8/21) 57.1% WR PF 2.53. All others removed.

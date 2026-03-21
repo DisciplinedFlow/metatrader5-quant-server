@@ -4,15 +4,7 @@ import { usePolling } from '@/composables/usePolling'
 import { useToast } from '@/composables/useToast'
 import api from '@/services/api'
 import SectionNav from '@/components/SectionNav.vue'
-
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
+import { cryptoLinks, fmt } from '@/utils/cryptoConstants'
 
 const toast = useToast()
 
@@ -168,14 +160,6 @@ async function toggleBot() {
     toast.error(`Bot toggle failed: ${err.message}`)
   }
   botStatusLoading.value = false
-}
-
-function fmt(val, decimals = 2) {
-  if (val == null) return '-'
-  return Number(val).toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
 }
 
 usePolling(refresh, 15000)

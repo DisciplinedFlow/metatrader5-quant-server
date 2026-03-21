@@ -27,6 +27,9 @@ from .config import (
 
 logger = logging.getLogger('app.lighter')
 
+# Reuse a single Configuration object — avoids recreating it on every API call
+_API_CONFIGURATION = lighter.Configuration(host=LIGHTER_API_URL)
+
 
 def _run(coro):
     """Run an async coroutine from sync Django/Celery code."""
@@ -47,7 +50,7 @@ def _run(coro):
 
 def get_account_info() -> dict:
     async def _fetch():
-        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        api = lighter.ApiClient(configuration=_API_CONFIGURATION)
         try:
             account_api = lighter.AccountApi(api)
             return await account_api.account(by="index", value=str(LIGHTER_ACCOUNT_INDEX))
@@ -58,7 +61,7 @@ def get_account_info() -> dict:
 
 def get_orderbook_detail(market_id: int = 0) -> dict:
     async def _fetch():
-        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        api = lighter.ApiClient(configuration=_API_CONFIGURATION)
         try:
             order_api = lighter.OrderApi(api)
             return await order_api.order_book_details(market_id=market_id)
@@ -69,7 +72,7 @@ def get_orderbook_detail(market_id: int = 0) -> dict:
 
 def get_recent_trades(market_id: int = 0, limit: int = 20) -> dict:
     async def _fetch():
-        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        api = lighter.ApiClient(configuration=_API_CONFIGURATION)
         try:
             order_api = lighter.OrderApi(api)
             return await order_api.recent_trades(market_id=market_id, limit=limit)
@@ -88,7 +91,7 @@ def get_candles(symbol: str, resolution: str = '1h', count_back: int = 100) -> l
     market_id = get_market_id(symbol)
 
     async def _fetch():
-        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        api = lighter.ApiClient(configuration=_API_CONFIGURATION)
         try:
             candle_api = lighter.CandlestickApi(api)
             now = int(datetime.datetime.now().timestamp())
@@ -134,7 +137,7 @@ def get_best_bid_ask(symbol: str) -> dict:
     market_id = get_market_id(symbol)
 
     async def _fetch():
-        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        api = lighter.ApiClient(configuration=_API_CONFIGURATION)
         try:
             order_api = lighter.OrderApi(api)
             ob = await order_api.order_book_orders(market_id=market_id, limit=1)
@@ -153,7 +156,7 @@ def get_best_bid_ask(symbol: str) -> dict:
 
 def get_exchange_stats() -> dict:
     async def _fetch():
-        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        api = lighter.ApiClient(configuration=_API_CONFIGURATION)
         try:
             order_api = lighter.OrderApi(api)
             return await order_api.exchange_stats()
@@ -174,7 +177,7 @@ def get_recent_liquidations(market_id: int = 0, limit: int = 100) -> list:
     import json
 
     async def _fetch():
-        api = lighter.ApiClient(configuration=lighter.Configuration(host=LIGHTER_API_URL))
+        api = lighter.ApiClient(configuration=_API_CONFIGURATION)
         try:
             order_api = lighter.OrderApi(api)
             # Use raw response to avoid SDK parsing issues (same pattern as candles)
@@ -458,7 +461,7 @@ def get_trade_fill(tx_hash: str) -> dict:
     via the signer proxy.
     """
     try:
-        url = f"{LIGHTER_SIGNER_PROXY_URL}/trades?limit=10"
+        url = f"{LIGHTER_SIGNER_PROXY_URL}/trades?limit=50"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()

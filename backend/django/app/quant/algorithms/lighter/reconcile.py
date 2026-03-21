@@ -12,15 +12,14 @@ Also:
 This ensures trailing stops, SL/TP, and exit phases always have accurate data.
 """
 import logging
+from django.db.models import Q
 from django.utils import timezone
 from django.core.cache import cache
 
-from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
+from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE, PLATFORM_PREFIX, FOREX_SYMBOLS, METALS_SYMBOLS
 from .client import get_account_info, get_best_bid_ask
 
 logger = logging.getLogger('app.lighter')
-
-PLATFORM_PREFIX = 'lighter:'
 
 # Reverse lookup: market_id -> symbol
 ID_TO_SYMBOL = {v['id']: k for k, v in LIGHTER_MARKETS.items()}
@@ -63,21 +62,13 @@ def reconcile_positions():
                     'entry_price': float(pos.avg_entry_price),
                 }
 
-    # Get all DB open positions for Lighter
+    # Get all DB open positions for Lighter — single query via Q()
     db_open = CryptoPosition.objects.filter(
         status='OPEN',
-        entry_signal__startswith=PLATFORM_PREFIX,
+    ).filter(
+        Q(entry_signal__startswith=PLATFORM_PREFIX) | Q(venue='LIGHTER')
     )
     db_symbols = {p.symbol: p for p in db_open}
-
-    # Also check by venue
-    db_open_venue = CryptoPosition.objects.filter(
-        status='OPEN',
-        venue='LIGHTER',
-    )
-    for p in db_open_venue:
-        if p.symbol not in db_symbols:
-            db_symbols[p.symbol] = p
 
     # ── Fix 1: Exchange has position, DB doesn't → create DB record ──
     for symbol, exch in exchange_positions.items():
@@ -90,9 +81,9 @@ def reconcile_positions():
                 current_price = exch['entry_price']
 
             # Calculate SL/TP based on asset class
-            if symbol in ('EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'):
+            if symbol in FOREX_SYMBOLS:
                 sl_pct, tp_pct = 0.005, 0.01
-            elif symbol in ('XAU', 'XAG', 'PAXG', 'WTI'):
+            elif symbol in METALS_SYMBOLS:
                 sl_pct, tp_pct = 0.015, 0.03
             else:
                 sl_pct, tp_pct = 0.03, 0.06

@@ -40,7 +40,7 @@ from app.quant.algorithms.lighter.config import LIGHTER_MARKETS
 from app.quant.engine import indicators as ind
 from app.quant.engine.bar_builder import Bar
 
-logger = logging.getLogger('lighter')
+logger = logging.getLogger('app.lighter')
 
 # ---------------------------------------------------------------------------
 # Config

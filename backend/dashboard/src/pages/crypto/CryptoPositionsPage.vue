@@ -3,15 +3,7 @@ import { ref, computed } from 'vue'
 import { usePolling } from '@/composables/usePolling'
 import api from '@/services/api'
 import SectionNav from '@/components/SectionNav.vue'
-
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
+import { cryptoLinks, COIN_COLORS, fmt, fmtPrice, fmtTime } from '@/utils/cryptoConstants'
 
 // DB positions
 const openPositions = ref([])
@@ -40,12 +32,6 @@ function markPrice(p) {
   return livePrices.value[p.symbol] ?? null
 }
 
-const COIN_COLORS = {
-  BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', AVAX: '#e84142',
-  DOGE: '#c2a633', ARB: '#28a0f0', MATIC: '#8247e5', LINK: '#2a5ada',
-  OP: '#ff0420', SUI: '#4da2ff', XAU: '#d4af37', XAG: '#c0c0c0',
-}
-
 function getCoinColor(coin) {
   return COIN_COLORS[coin] || 'var(--tp-primary)'
 }
@@ -68,28 +54,6 @@ async function refresh() {
     for (const p of prices) map[p.coin] = p.price
     livePrices.value = map
   }
-}
-
-function fmt(val, decimals = 2) {
-  if (val == null) return '-'
-  return Number(val).toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
-
-function fmtPrice(val) {
-  if (val == null) return '-'
-  const n = Number(val)
-  if (n >= 1000) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  if (n >= 1) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-  return n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })
-}
-
-function fmtDate(val) {
-  if (!val) return '-'
-  const d = new Date(val)
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
 }
 
 usePolling(refresh, 10000)
@@ -236,7 +200,7 @@ usePolling(refresh, 10000)
                   </span>
                 </td>
                 <td class="td-reason">{{ p.close_reason ?? '-' }}</td>
-                <td class="td-time">{{ fmtDate(p.opened_at) }}</td>
+                <td class="td-time">{{ fmtTime(p.opened_at) }}</td>
               </tr>
             </tbody>
           </table>

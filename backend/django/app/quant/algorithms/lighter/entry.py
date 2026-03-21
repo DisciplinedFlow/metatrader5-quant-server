@@ -14,19 +14,15 @@ Symbol performance filter prevents trading symbols with poor recent results.
 import logging
 from datetime import datetime, timezone
 import pandas as pd
-import numpy as np
 
 from .config import (
     LIGHTER_PAIRS, LIGHTER_MAX_POSITIONS,
-    LIGHTER_LEVERAGE, LIGHTER_MARKETS,
+    LIGHTER_LEVERAGE, LIGHTER_MARKETS, PLATFORM_PREFIX,
 )
 from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp, get_position_fill
 from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
-
-
-PLATFORM_PREFIX = 'lighter:'
 
 # Per-symbol EMA parameters — backtest-validated (2026-03-20)
 # XAU 1h: EMA(5/100), 61.5% WR, PF 2.88
@@ -198,11 +194,6 @@ def _get_open_positions():
     ).exclude(entry_signal__startswith=f'{PLATFORM_PREFIX}rsi2_')
 
 
-def _check_lighter_losing_streak():
-    """Losing streak cooldown disabled — brain collects data through all conditions."""
-    return True, "OK"
-
-
 def entry_algorithm():
     """Check signals on Lighter markets and enter positions.
 
@@ -217,12 +208,6 @@ def entry_algorithm():
     from django.core.cache import cache
     if cache.get('lighter:disabled'):
         logger.debug("Lighter: trading disabled via dashboard toggle")
-        return
-
-    # Losing streak cooldown (not a hard block — just a brief pause)
-    streak_ok, streak_reason = _check_lighter_losing_streak()
-    if not streak_ok:
-        logger.debug(streak_reason)
         return
 
     from app.crypto.models import CryptoPosition, CryptoTrade
@@ -251,11 +236,16 @@ def entry_algorithm():
             continue
 
         try:
-            # Fetch both timeframes
+            # Fetch both timeframes (with Redis caching to avoid repeat API calls)
             ema_cfg = EMA_PARAMS.get(symbol, DEFAULT_EMA)
             ema_slow_period = ema_cfg['slow']
 
-            candles_1h = get_candles(symbol, resolution='1h', count_back=CANDLE_COUNT)
+            cache_key_1h = f'lighter:candles:1h:{symbol}'
+            candles_1h = cache.get(cache_key_1h)
+            if candles_1h is None:
+                candles_1h = get_candles(symbol, resolution='1h', count_back=CANDLE_COUNT)
+                if candles_1h:
+                    cache.set(cache_key_1h, candles_1h, timeout=60)
             if not candles_1h or len(candles_1h) < ema_slow_period + 5:
                 logger.debug("Lighter: not enough 1h data for %s (%d bars)",
                              symbol, len(candles_1h) if candles_1h else 0)
@@ -264,7 +254,12 @@ def entry_algorithm():
             # 15m candles for timing confirmation
             candles_15m = None
             try:
-                candles_15m = get_candles(symbol, resolution='15m', count_back=CANDLE_COUNT)
+                cache_key_15m = f'lighter:candles:15m:{symbol}'
+                candles_15m = cache.get(cache_key_15m)
+                if candles_15m is None:
+                    candles_15m = get_candles(symbol, resolution='15m', count_back=CANDLE_COUNT)
+                    if candles_15m:
+                        cache.set(cache_key_15m, candles_15m, timeout=15)
             except Exception as e:
                 logger.debug("Lighter: 15m candles unavailable for %s: %s", symbol, e)
 

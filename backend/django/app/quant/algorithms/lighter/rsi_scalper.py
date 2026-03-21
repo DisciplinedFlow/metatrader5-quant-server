@@ -24,20 +24,11 @@ import logging
 import pandas as pd
 from django.core.cache import cache
 
-from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
+from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE, PLATFORM_PREFIX, FOREX_SYMBOLS, METALS_SYMBOLS
 from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
 from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
-
-
-
-PLATFORM_PREFIX = 'lighter:'
-
-# ── Asset-class classification ────────────────────────────
-
-FOREX_SYMBOLS = {'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'}
-METALS_SYMBOLS = {'XAU', 'XAG', 'PAXG', 'WTI'}
 
 # ── RSI(2) scalper configs per asset class ────────────────
 

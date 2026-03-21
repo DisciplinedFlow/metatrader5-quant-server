@@ -14,7 +14,7 @@ import logging
 from datetime import timedelta
 from django.utils import timezone
 
-from .config import LIGHTER_MARKETS
+from .config import LIGHTER_MARKETS, FOREX_SYMBOLS, METALS_SYMBOLS
 from .client import get_best_bid_ask, close_position, get_trade_fill
 from .entry import PLATFORM_PREFIX
 
@@ -31,9 +31,6 @@ PROFIT_TIERS = [
     (1.00, 0.50),   # $1.00+ peak → close if drops below 50% of peak (was 70%)
     (0.50, 0.40),   # $0.50+ peak → close if drops below 40% of peak (was 60% at $0.30)
 ]
-# Fallback for legacy references
-PROFIT_PROTECT_MIN_USD = 0.50
-PROFIT_PROTECT_GIVEBACK = 0.40
 TIME_EXIT_HOURS = 48               # Close stale positions after 48 hours
 TIME_EXIT_MIN_PROFIT_PCT = 0.01    # ...unless profit exceeds 1%
 
@@ -55,10 +52,6 @@ TRAIL_TIERS_FOREX = [
     (0.008, 0.004),  # Tier 3: at +0.8%, trail 0.4%
 ]
 
-FOREX_SYMBOLS = {'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'}
-METALS_SYMBOLS = {'XAU', 'XAG', 'PAXG', 'WTI'}
-
-
 def _get_trail_tiers(symbol):
     if symbol in FOREX_SYMBOLS:
         return TRAIL_TIERS_FOREX
@@ -79,6 +72,7 @@ def exit_algorithm():
     if not open_positions.exists():
         return
 
+    from django.core.cache import cache as _price_cache
     seen_symbols = set()  # track which symbols already had a price fetched this cycle
 
     for position in open_positions:
@@ -88,10 +82,11 @@ def exit_algorithm():
                 logger.warning("Lighter exit: unknown symbol %s", position.symbol)
                 continue
 
-            # Throttle: only sleep before a real API call (cache hits are free)
+            # Throttle: sleep only when a real API call is needed (cache hits are free)
             if position.symbol not in seen_symbols:
                 seen_symbols.add(position.symbol)
-                time.sleep(0.35)  # 350ms between unique-symbol fetches → ≤3 req/s
+                if not _price_cache.get(f'lighter:price:{position.symbol}'):
+                    time.sleep(0.1)  # 100ms between uncached symbol fetches → ≤10 req/s
 
             prices = get_best_bid_ask(position.symbol)
             current_price = prices.get('mid')
@@ -342,6 +337,7 @@ def _check_fib_extension_tp(position, current_price, profit_pct):
 
         from .fibonacci import get_fib_tp_targets
         from .client import get_candles
+        from django.core.cache import cache as _fib_cache
 
         # Select ZigZag params by asset class
         if position.symbol in FOREX_SYMBOLS:
@@ -353,8 +349,13 @@ def _check_fib_extension_tp(position, current_price, profit_pct):
 
         direction = 'up' if position.side == 'LONG' else 'down'
 
-        # Fetch 5m candles for swing detection (recent structure)
-        candles = get_candles(position.symbol, resolution='5m', count_back=100)
+        # Fetch 5m candles for swing detection — cached 60s (called every 15s per position)
+        _fib_key = f'lighter:candles:5m:{position.symbol}'
+        candles = _fib_cache.get(_fib_key)
+        if candles is None:
+            candles = get_candles(position.symbol, resolution='5m', count_back=100)
+            if candles:
+                _fib_cache.set(_fib_key, candles, timeout=60)
         if not candles or len(candles) < params['depth'] * 3:
             return None
 
