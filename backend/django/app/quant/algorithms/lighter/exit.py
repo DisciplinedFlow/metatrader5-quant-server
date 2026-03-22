@@ -53,9 +53,13 @@ TRAIL_TIERS_FOREX = [
     (0.008, 0.004),  # Tier 3: at +0.8%, trail 0.4%
 ]
 
+ENERGY_SYMBOLS = {'WTI'}
+
 def _get_trail_tiers(symbol):
     if symbol in FOREX_SYMBOLS:
         return TRAIL_TIERS_FOREX
+    elif symbol in ENERGY_SYMBOLS:
+        return TRAIL_TIERS_CRYPTO  # WTI uses crypto tiers (similar volatility)
     elif symbol in METALS_SYMBOLS:
         return TRAIL_TIERS_METALS
     return TRAIL_TIERS_CRYPTO

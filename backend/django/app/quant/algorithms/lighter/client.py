@@ -513,7 +513,6 @@ def get_trade_fill(tx_hash: str) -> dict:
                 elif is_our_bid:
                     pnl = t.get('bid_account_pnl')
                     fee = t.get('taker_fee') or t.get('maker_fee')
-                return {
                 logger.debug("get_trade_fill raw fee=%s pnl=%s price=%s tx=%s",
                              fee, pnl, t.get('price'), tx_hash[:16])
                 return {
