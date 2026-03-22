@@ -36,119 +36,66 @@ def _get_redis():
 
 # ── Data Fetchers ─────────────────────────────────────────
 
-def _fetch_hyperliquid_funding() -> dict:
-    """Fetch current predicted funding rates from Hyperliquid.
-
-    Uses info.meta_and_asset_ctxs() which returns:
-      [meta_dict, [asset_ctx, ...]]
-    where each asset_ctx has 'funding' (current 8h predicted rate).
-    """
-    from .client import get_info
-
-    info = get_info()
-    result = info.meta_and_asset_ctxs()
-
-    meta = result[0]       # {'universe': [{'name': 'BTC', ...}, ...]}
-    ctxs = result[1]       # [{'funding': '0.00001234', 'openInterest': ...}, ...]
-
-    universe = meta.get('universe', [])
-    rates = {}
-    for asset_meta, ctx in zip(universe, ctxs):
-        symbol = asset_meta.get('name', '')
-        if symbol in ARB_SYMBOLS:
-            try:
-                rate = float(ctx.get('funding', 0))
-                rates[symbol] = rate
-            except (ValueError, TypeError):
-                logger.warning("HL: could not parse funding for %s: %s", symbol, ctx.get('funding'))
-
-    return rates
+# def _fetch_hyperliquid_funding() -> dict:
+#     """Fetch current predicted funding rates from Hyperliquid."""
+#     from .client import get_info
+#
+#     info = get_info()
+#     result = info.meta_and_asset_ctxs()
+#
+#     meta = result[0]
+#     ctxs = result[1]
+#
+#     universe = meta.get('universe', [])
+#     rates = {}
+#     for asset_meta, ctx in zip(universe, ctxs):
+#         symbol = asset_meta.get('name', '')
+#         if symbol in ARB_SYMBOLS:
+#             try:
+#                 rate = float(ctx.get('funding', 0))
+#                 rates[symbol] = rate
+#             except (ValueError, TypeError):
+#                 logger.warning("HL: could not parse funding for %s: %s", symbol, ctx.get('funding'))
+#
+#     return rates
 
 
 def _fetch_lighter_funding() -> dict:
-    """Fetch current funding rates from Lighter.xyz exchange stats.
+    """Fetch current funding rates from Lighter.xyz via FundingApi.
 
-    get_exchange_stats() returns an object with order_book_details or similar
-    stats per market. The funding rate field varies by SDK version.
+    Returns rates keyed by exchange, e.g. {'lighter': {'BTC': 0.005, ...}, 'hyperliquid': {...}}.
+    The FundingApi returns rates for lighter + external exchanges (binance, bybit, hyperliquid).
     """
-    from ..lighter.client import get_exchange_stats
-    from ..lighter.config import LIGHTER_MARKETS
+    import asyncio
+    import json
+    import lighter as lighter_sdk
+    from ..lighter.client import _API_CONFIGURATION, _run
 
-    rates = {}
+    all_rates = {}
     try:
-        stats = get_exchange_stats()
-        # The Lighter SDK returns exchange stats with a list of market stats.
-        # Access the raw data — it may be a Pydantic model or dict.
-        stats_data = stats
-        if hasattr(stats, 'to_dict'):
-            stats_data = stats.to_dict()
-        elif hasattr(stats, 'model_dump'):
-            stats_data = stats.model_dump()
+        async def _fetch():
+            api = lighter_sdk.ApiClient(configuration=_API_CONFIGURATION)
+            try:
+                funding_api = lighter_sdk.FundingApi(api)
+                resp = await funding_api.funding_rates_without_preload_content()
+                body = await resp.read()
+                return json.loads(body.decode())
+            finally:
+                await api.close()
 
-        # Build market_id -> symbol lookup for our target symbols
-        id_to_symbol = {}
-        for sym in ARB_SYMBOLS:
-            if sym in LIGHTER_MARKETS:
-                id_to_symbol[LIGHTER_MARKETS[sym]['id']] = sym
-
-        # Parse the stats response — adapt to actual SDK response shape
-        market_stats = []
-        if isinstance(stats_data, dict):
-            # Try common keys the SDK might use
-            market_stats = (
-                stats_data.get('exchange_stats', []) or
-                stats_data.get('market_stats', []) or
-                stats_data.get('stats', []) or
-                stats_data.get('order_book_details', []) or
-                []
-            )
-            # If top-level dict has funding data directly
-            if not market_stats and 'funding_rate' in stats_data:
-                market_stats = [stats_data]
-        elif isinstance(stats_data, list):
-            market_stats = stats_data
-
-        for ms in market_stats:
-            if not isinstance(ms, dict):
-                if hasattr(ms, 'to_dict'):
-                    ms = ms.to_dict()
-                elif hasattr(ms, '__dict__'):
-                    ms = vars(ms)
-                else:
-                    continue
-
-            # Try to match this stat entry to one of our symbols
-            market_id = ms.get('market_id') or ms.get('marketId')
-            symbol = ms.get('symbol') or ms.get('name')
-
-            matched_sym = None
-            if market_id is not None:
-                matched_sym = id_to_symbol.get(int(market_id))
-            elif symbol and symbol in ARB_SYMBOLS:
-                matched_sym = symbol
-
-            if matched_sym is None:
-                continue
-
-            # Extract funding rate — try common field names
-            funding = (
-                ms.get('funding_rate') or
-                ms.get('fundingRate') or
-                ms.get('predicted_funding_rate') or
-                ms.get('next_funding_rate') or
-                ms.get('funding') or
-                None
-            )
-            if funding is not None:
-                try:
-                    rates[matched_sym] = float(funding)
-                except (ValueError, TypeError):
-                    logger.warning("Lighter: could not parse funding for %s: %s", matched_sym, funding)
+        data = _run(_fetch())
+        for entry in data.get('funding_rates', []):
+            exchange = entry.get('exchange', '')
+            symbol = entry.get('symbol', '')
+            if symbol in ARB_SYMBOLS:
+                rate = entry.get('rate')
+                if rate is not None:
+                    all_rates.setdefault(exchange, {})[symbol] = float(rate)
 
     except Exception as e:
-        logger.error("Failed to fetch Lighter exchange stats: %s", e)
+        logger.error("Failed to fetch Lighter funding rates: %s", e)
 
-    return rates
+    return all_rates
 
 
 # ── Arb Scanner ───────────────────────────────────────────
@@ -163,21 +110,19 @@ def scan_funding_arb() -> dict:
     opportunities = []
     all_rates = {}
 
-    # Fetch funding rates from both venues
-    hl_rates = {}
-    lighter_rates = {}
+    # Fetch all funding rates from Lighter FundingApi (includes lighter + external exchanges)
+    all_exchange_rates = {}
 
     try:
-        hl_rates = _fetch_hyperliquid_funding()
-        logger.info("Funding scan — Hyperliquid rates: %s", hl_rates)
+        all_exchange_rates = _fetch_lighter_funding()
+        for exchange, rates in all_exchange_rates.items():
+            logger.info("Funding scan — %s rates: %s", exchange, rates)
     except Exception as e:
-        logger.error("Funding scan — Hyperliquid fetch failed: %s", e)
+        logger.error("Funding scan — fetch failed: %s", e)
 
-    try:
-        lighter_rates = _fetch_lighter_funding()
-        logger.info("Funding scan — Lighter rates: %s", lighter_rates)
-    except Exception as e:
-        logger.error("Funding scan — Lighter fetch failed: %s", e)
+    lighter_rates = all_exchange_rates.get('lighter', {})
+    # Use Hyperliquid rates from same API (no separate SDK call needed)
+    hl_rates = all_exchange_rates.get('hyperliquid', {})
 
     # Compare overlapping symbols
     for symbol in ARB_SYMBOLS:

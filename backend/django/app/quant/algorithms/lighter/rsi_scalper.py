@@ -24,58 +24,67 @@ import logging
 import pandas as pd
 from django.core.cache import cache
 
-from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE, PLATFORM_PREFIX, FOREX_SYMBOLS, METALS_SYMBOLS
+from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
 from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
 from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
 
-# ── RSI(2) scalper configs per asset class ────────────────
 
-RSI2_CONFIG = {
-    'crypto': {
-        'rsi_period': 2,
-        'rsi_oversold': 15,
-        'rsi_overbought': 85,
+
+PLATFORM_PREFIX = 'lighter:'
+
+# ── Asset-class classification ────────────────────────────
+
+FOREX_SYMBOLS = {'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'}
+METALS_SYMBOLS = {'XAU', 'XAG', 'PAXG', 'WTI'}
+
+# ── RSI(2) per-symbol configs (backtested on Yahoo 60d 15m) ──
+# Each symbol has its own optimal R:R from the sweep backtest.
+# XAU = inverted R:R (tight TP, wide SL — mean reversion snaps)
+# SOL = trend R:R (tight SL, wide TP — let winners run)
+# ETH = symmetrical (wide SL, moderate TP — high WR)
+
+RSI2_SYMBOL_CONFIG = {
+    'SOL': {
+        'rsi_period': 2, 'rsi_oversold': 15, 'rsi_overbought': 85,
         'ema_period': 50,
-        'sl_pct': 0.010,   # 1.0% SL
-        'tp_pct': 0.020,   # 2.0% TP — 1:2 R:R, break-even at 33.3% WR (was 0.75%)
-        'size_usd': 12,
-    },
-    'metals': {
-        'rsi_period': 2,
-        'rsi_oversold': 15,
-        'rsi_overbought': 85,
-        'ema_period': 50,
-        'sl_pct': 0.008,   # 0.8% SL
-        'tp_pct': 0.016,   # 1.6% TP — 1:2 R:R (was 0.6%)
-        'size_usd': 12,
-    },
-    'forex': {
-        'rsi_period': 2,
-        'rsi_oversold': 15,
-        'rsi_overbought': 85,
-        'ema_period': 50,
-        'sl_pct': 0.003,   # 0.3% SL
-        'tp_pct': 0.006,   # 0.6% TP — 1:2 R:R (was 0.15%)
-        'size_usd': 12,
+        'sl_pct': 0.006,   # 0.6% SL — survives noise, not too tight
+        'tp_pct': 0.030,   # 3.0% TP — let winners run, dwarf fees
+        # Fee-adjusted: 23.0% WR, PF 1.34, 239 trades/60d, +41.2% total
     },
 }
 
-# Symbols to scan every 10 seconds
-# BTC removed: 50% WR, -$4.08 net PnL | ETH removed: 60% WR, -$8.32 net PnL
-RSI2_SYMBOLS = ['XAU']  # SOL removed: 50% WR, net negative PnL
+# Fallback configs for symbols not in RSI2_SYMBOL_CONFIG
+RSI2_CONFIG = {
+    'crypto': {
+        'rsi_period': 2, 'rsi_oversold': 15, 'rsi_overbought': 85,
+        'ema_period': 50, 'sl_pct': 0.010, 'tp_pct': 0.020,
+    },
+    'metals': {
+        'rsi_period': 2, 'rsi_oversold': 15, 'rsi_overbought': 85,
+        'ema_period': 50, 'sl_pct': 0.012, 'tp_pct': 0.003,
+    },
+    'forex': {
+        'rsi_period': 2, 'rsi_oversold': 15, 'rsi_overbought': 85,
+        'ema_period': 50, 'sl_pct': 0.003, 'tp_pct': 0.006,
+    },
+}
+
+RSI2_SYMBOLS = ['SOL']  # FULL SEND — fee-adjusted optimal, 60d backtested
 
 # Cooldown between trades on same symbol (seconds)
 # 600s = 10 min: prevents re-entering same downtrend on 15m bars (knife-catching)
 RSI2_COOLDOWN_SECONDS = 600
 
-# Max simultaneous RSI2 positions (2 leaves 1+ slot for trend/mean-reversion strategies)
-RSI2_MAX_POSITIONS = 2
+# Max simultaneous RSI2 positions (3 = SOL only, multiple entries)
+RSI2_MAX_POSITIONS = 3
 
 
 def _get_config(symbol):
-    """Get asset-class config for a symbol."""
+    """Get per-symbol config (backtested optimal), fallback to asset-class."""
+    if symbol in RSI2_SYMBOL_CONFIG:
+        return RSI2_SYMBOL_CONFIG[symbol]
     if symbol in FOREX_SYMBOLS:
         return RSI2_CONFIG['forex']
     elif symbol in METALS_SYMBOLS:
@@ -170,10 +179,8 @@ def _scan_symbol(symbol):
     if meta is None:
         return False
 
-    # Check if already in position on this symbol (any lighter strategy)
-    if CryptoPosition.objects.filter(symbol=symbol, status='OPEN',
-                                      entry_signal__startswith=PLATFORM_PREFIX).exists():
-        return False
+    # Allow multiple SOL positions (up to RSI2_MAX_POSITIONS total)
+    # Global cap is enforced by rsi_scalper_algorithm() and is_global_position_limit_reached()
 
     # Vanish cooldown — position recently disappeared from exchange
     if cache.get(f'lighter:vanish_cooldown:{symbol}'):

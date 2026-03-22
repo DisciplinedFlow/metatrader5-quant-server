@@ -29,7 +29,7 @@ METALS_SYMBOLS = frozenset({'XAU', 'XAG', 'PAXG', 'WTI'})
 # Trading pairs (Lighter perp symbols)
 # Backtest-validated only: XAU 1h EMA(5/100) 61.5% WR PF 2.88,
 # AVAX 1h EMA(8/21) 57.1% WR PF 2.53. All others removed.
-LIGHTER_PAIRS = os.getenv('LIGHTER_PAIRS', 'XAU,XAG,WTI').split(',')  # Commodities only — war economy focus
+LIGHTER_PAIRS = os.getenv('LIGHTER_PAIRS', 'XAU').split(',')  # XAU only — 91.7% WR proven edge
 
 # Market metadata: {symbol: (market_id, min_base, size_decimals, price_decimals)}
 # All markets enforce size_decimals + price_decimals = 6
