@@ -303,6 +303,40 @@ def place_limit_order_post_only(symbol: str, is_buy: bool, base_amount: float, p
     })
 
 
+def place_maker_order_usd(symbol: str, is_buy: bool, quote_amount_usd: float) -> dict:
+    """Place a post-only limit order at best bid/ask for zero fees.
+
+    BUY:  places at best bid (top of book, maker side)
+    SELL: places at best ask (top of book, maker side)
+
+    Falls back to market order if post-only is rejected.
+    """
+    prices = get_best_bid_ask(symbol)
+    if is_buy:
+        price = prices.get('bid')
+    else:
+        price = prices.get('ask')
+
+    if not price or price <= 0:
+        logger.warning("Maker order: no price for %s, falling back to market", symbol)
+        return place_market_order_usd(symbol, is_buy, quote_amount_usd)
+
+    base_amount = quote_amount_usd / price
+    action = 'BUY' if is_buy else 'SELL'
+
+    result = place_limit_order_post_only(symbol, is_buy, base_amount, price)
+
+    if result.get('error'):
+        # Post-only rejected (would cross spread) — fall back to market
+        logger.warning("Maker order rejected for %s %s, falling back to market: %s",
+                       symbol, action, result['error'])
+        return place_market_order_usd(symbol, is_buy, quote_amount_usd)
+
+    logger.info("Maker order placed: %s %s $%.2f @ %.4f (ZERO FEE) tx=%s",
+                symbol, action, quote_amount_usd, price, result.get('tx_hash', '?'))
+    return result
+
+
 def place_twap_order(symbol: str, is_buy: bool, quote_amount_usd: float, duration_seconds: int = 300) -> dict:
     """Place a TWAP order that executes over a duration. Routes through signer proxy."""
     return _proxy_post('/order/twap', {

@@ -162,15 +162,21 @@ class CryptoStrategyConfigView(views.APIView):
 class CryptoDashboardView(views.APIView):
     def get(self, request):
         open_positions = CryptoPosition.objects.filter(status='OPEN').count()
-        total_pnl = CryptoPosition.objects.filter(
+        # pnl_usd already includes exit fee deduction (exit.py line 148)
+        # Entry fees are tracked in CryptoTrade.fee for transparency
+        gross_pnl = CryptoPosition.objects.filter(
             status='CLOSED', pnl_usd__isnull=False
         ).aggregate(total=Sum('pnl_usd'))['total'] or 0.0
+        total_fees = CryptoTrade.objects.filter(fee__gt=0).aggregate(total=Sum('fee'))['total'] or 0.0
+        total_pnl = gross_pnl  # pnl_usd is already net (exit fee deducted)
         open_positions_data = CryptoPosition.objects.filter(status='OPEN').values(
             'symbol', 'side', 'entry_price', 'size', 'pnl_usd'
         )
         return Response({
             'open_positions': open_positions,
             'total_pnl': total_pnl,
+            'gross_pnl': gross_pnl,
+            'total_fees': total_fees,
             'positions': list(open_positions_data),
         })
 

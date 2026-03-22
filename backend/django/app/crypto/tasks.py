@@ -141,6 +141,19 @@ def run_lighter_rsi_scalper():
         logger.error("run_lighter_rsi_scalper error: %s", e)
 
 
+@shared_task(name='crypto.tasks.run_lighter_bb_scalper', max_retries=2, soft_time_limit=45)
+def run_lighter_bb_scalper():
+    if is_crypto_bot_paused():
+        return
+    try:
+        from app.quant.algorithms.lighter.bb_scalper import bb_scalper_algorithm
+        bb_scalper_algorithm()
+    except SoftTimeLimitExceeded:
+        logger.error("run_lighter_bb_scalper timed out.")
+    except Exception as e:
+        logger.error("run_lighter_bb_scalper error: %s", e)
+
+
 @shared_task(name='crypto.tasks.run_lighter_adx_entry', max_retries=2, soft_time_limit=45)
 def run_lighter_adx_entry():
     if is_crypto_bot_paused():

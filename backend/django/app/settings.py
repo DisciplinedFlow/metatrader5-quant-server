@@ -282,6 +282,7 @@ CELERY_TASK_ROUTES = {
     'crypto.tasks.run_lighter_exit': {'queue': 'crypto-critical'},
     'crypto.tasks.run_lighter_reconcile': {'queue': 'crypto-critical'},
     'crypto.tasks.run_lighter_rsi_scalper': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_bb_scalper': {'queue': 'crypto-analysis'},
     'crypto.tasks.run_lighter_adx_entry': {'queue': 'crypto-analysis'},
     'crypto.tasks.run_lighter_entry': {'queue': 'crypto-analysis'},
     'crypto.tasks.run_lighter_mean_reversion': {'queue': 'crypto-analysis'},
@@ -343,6 +344,10 @@ CELERY_BEAT_SCHEDULE = {
     'run-lighter-rsi-scalper': {
         'task': 'crypto.tasks.run_lighter_rsi_scalper',
         'schedule': 20.0,  # 3/min × 2 = 6 API/min — XAU scalp entries
+    },
+    'run-lighter-bb-scalper': {
+        'task': 'crypto.tasks.run_lighter_bb_scalper',
+        'schedule': 30.0,  # every 30s — WTI BB mean reversion
     },
     # DISABLED — ADX strategy unprofitable over 60d Yahoo backtest (PF<1 all pairs)
     # 'run-lighter-adx-entry': {

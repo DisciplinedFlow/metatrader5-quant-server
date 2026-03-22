@@ -127,6 +127,9 @@ const marginLevel = computed(() => {
   return (accountValue.value / totalMarginUsed.value) * 100
 })
 
+// Net PnL = gross pnl minus exchange fees
+const netPnl = (p) => Number(p.pnl_usd ?? 0) - Number(p.total_fees ?? 0)
+
 // P&L performance data from closed positions
 const sortedClosed = computed(() =>
   closedPositions.value
@@ -137,21 +140,21 @@ const sortedClosed = computed(() =>
 const equityCurve = computed(() => {
   let cumulative = 0
   return sortedClosed.value.map(p => {
-    cumulative += Number(p.pnl_usd)
-    return { pnl: Number(p.pnl_usd), cumulative, symbol: p.symbol, time: p.closed_at }
+    cumulative += netPnl(p)
+    return { pnl: netPnl(p), cumulative, symbol: p.symbol, time: p.closed_at }
   })
 })
 
 const pnlStats = computed(() => {
   const ct = sortedClosed.value
-  const wins = ct.filter(p => Number(p.pnl_usd) > 0)
-  const losses = ct.filter(p => Number(p.pnl_usd) < 0)
-  const total = ct.reduce((s, p) => s + Number(p.pnl_usd), 0)
+  const wins = ct.filter(p => netPnl(p) > 0)
+  const losses = ct.filter(p => netPnl(p) <= 0)
+  const total = ct.reduce((s, p) => s + netPnl(p), 0)
   const winRate = ct.length ? (wins.length / ct.length * 100) : 0
-  const bestTrade = ct.length ? Math.max(...ct.map(p => Number(p.pnl_usd))) : 0
-  const worstTrade = ct.length ? Math.min(...ct.map(p => Number(p.pnl_usd))) : 0
-  const avgWin = wins.length ? wins.reduce((s, p) => s + Number(p.pnl_usd), 0) / wins.length : 0
-  const avgLoss = losses.length ? losses.reduce((s, p) => s + Number(p.pnl_usd), 0) / losses.length : 0
+  const bestTrade = ct.length ? Math.max(...ct.map(p => netPnl(p))) : 0
+  const worstTrade = ct.length ? Math.min(...ct.map(p => netPnl(p))) : 0
+  const avgWin = wins.length ? wins.reduce((s, p) => s + netPnl(p), 0) / wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((s, p) => s + netPnl(p), 0) / losses.length : 0
   const profitFactor = avgLoss !== 0 ? Math.abs(avgWin * wins.length / (avgLoss * losses.length)) : 0
   return { total: ct.length, wins: wins.length, losses: losses.length, totalPnl: total, winRate, bestTrade, worstTrade, avgWin, avgLoss, profitFactor }
 })
@@ -736,9 +739,9 @@ usePolling(checkProxyDirect, 60000)  // was 10s — bot gets API priority
           <div class="trade-bars" v-if="sortedClosed.length">
             <div v-for="(t, i) in sortedClosed.slice(-30)" :key="i"
                  class="trade-bar"
-                 :class="Number(t.pnl_usd) >= 0 ? 'bar-win' : 'bar-loss'"
-                 :style="{ height: Math.min(100, Math.max(8, Math.abs(Number(t.pnl_usd)) * 3)) + '%' }"
-                 :title="`${t.symbol} ${Number(t.pnl_usd) >= 0 ? '+' : ''}$${Number(t.pnl_usd).toFixed(2)}`"
+                 :class="netPnl(t) >= 0 ? 'bar-win' : 'bar-loss'"
+                 :style="{ height: Math.min(100, Math.max(8, Math.abs(netPnl(t)) * 3)) + '%' }"
+                 :title="`${t.symbol} ${netPnl(t) >= 0 ? '+' : ''}$${netPnl(t).toFixed(2)}`"
             ></div>
           </div>
 

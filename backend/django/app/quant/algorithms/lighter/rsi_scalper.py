@@ -25,7 +25,7 @@ import pandas as pd
 from django.core.cache import cache
 
 from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
-from .client import get_candles, get_best_bid_ask, place_market_order_usd, update_leverage, place_oco_sltp
+from .client import get_candles, get_best_bid_ask, place_maker_order_usd, update_leverage, place_oco_sltp
 from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
@@ -53,6 +53,14 @@ RSI2_SYMBOL_CONFIG = {
         'tp_pct': 0.030,   # 3.0% TP — let winners run, dwarf fees
         # Fee-adjusted: 23.0% WR, PF 1.34, 239 trades/60d, +41.2% total
     },
+    'XAU': {
+        'rsi_period': 2, 'rsi_oversold': 15, 'rsi_overbought': 85,
+        'ema_period': 50,
+        'sl_pct': 0.020,   # 2.0% SL — wide, room to breathe
+        'tp_pct': 0.010,   # 1.0% TP — fee-adjusted optimal (0.5x R:R)
+        # Fee-adjusted: 75.0% WR, PF 1.38, 92 trades/60d, +17.8% total
+        # Live: 9/9 streak on original deploy (commit 8a1df84)
+    },
 }
 
 # Fallback configs for symbols not in RSI2_SYMBOL_CONFIG
@@ -71,7 +79,7 @@ RSI2_CONFIG = {
     },
 }
 
-RSI2_SYMBOLS = ['SOL']  # FULL SEND — fee-adjusted optimal, 60d backtested
+RSI2_SYMBOLS = ['SOL', 'XAU']  # SOL + XAU — both fee-adjusted, backtested
 
 # Cooldown between trades on same symbol (seconds)
 # 600s = 10 min: prevents re-entering same downtrend on 15m bars (knife-catching)
@@ -312,8 +320,8 @@ def _scan_symbol(symbol):
     except Exception:
         pass
 
-    # Place order
-    result = place_market_order_usd(symbol, is_buy, position_usd)
+    # Place order BEFORE creating DB record (avoid orphaned positions)
+    result = place_maker_order_usd(symbol, is_buy, position_usd)
     if result.get('error'):
         logger.error("RSI2 %s: order failed: %s", symbol, result['error'])
         return False
@@ -326,7 +334,7 @@ def _scan_symbol(symbol):
         take_profit = live_price * (1 - config['tp_pct'])
         stop_loss = live_price * (1 + config['sl_pct'])
 
-    # Record position
+    # Record position (only after successful order)
     base_size = position_usd / live_price
     position = CryptoPosition.objects.create(
         symbol=symbol,
@@ -341,16 +349,13 @@ def _scan_symbol(symbol):
         venue='LIGHTER',
     )
 
-    # Estimate taker fee (0.028% of notional = size × price)
-    entry_fee = base_size * live_price * 0.00028
-
     CryptoTrade.objects.create(
         position=position,
         order_id=result.get('tx_hash', ''),
         side='BUY' if is_buy else 'SELL',
         price=live_price,
         size=base_size,
-        fee=entry_fee,
+        fee=0.0,  # maker order = zero fee
         status='FILLED',
     )
 

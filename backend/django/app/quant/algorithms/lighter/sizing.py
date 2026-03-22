@@ -2,13 +2,12 @@
 Unified position sizing for all Lighter.xyz entry strategies.
 
 Every entry algorithm MUST use calculate_position_usd() for sizing.
-Dynamic compounding: risk = 5% of live account balance per trade.
+Dynamic compounding: risk = 10% of live account balance per trade.
 As balance grows, position sizes grow. As it shrinks, they shrink.
 
     position_usd = risk_per_trade / sl_pct * combined_sizing(symbol)
 """
 import logging
-import time
 
 logger = logging.getLogger('app.lighter')
 
@@ -18,35 +17,33 @@ BALANCE_CACHE_TTL = 60    # seconds between balance refreshes
 MIN_RISK = 0.50           # floor: never risk less than $0.50
 MAX_RISK = 500.00         # ceiling: safety cap
 
-# ── In-memory cache ──────────────────────────────────────
-_cached_balance = None
-_cached_at = 0.0
-
 
 def _fetch_balance():
-    """Fetch live account balance from Lighter API with 60s cache."""
-    global _cached_balance, _cached_at
+    """Fetch live account balance from Lighter API with 60s Redis cache.
 
-    now = time.monotonic()
-    if _cached_balance is not None and (now - _cached_at) < BALANCE_CACHE_TTL:
-        return _cached_balance
+    Uses Django's Redis-backed cache so all Celery workers share the same
+    cached value (avoids duplicate API calls and stale per-process state).
+    """
+    from django.core.cache import cache
+
+    cached = cache.get('lighter:balance')
+    if cached is not None:
+        return cached
 
     try:
         from .client import get_account_info
         acct = get_account_info()
         balance = float(acct.accounts[0].available_balance)
-        _cached_balance = balance
-        _cached_at = now
+        cache.set('lighter:balance', balance, timeout=BALANCE_CACHE_TTL)
         logger.debug("Sizing: live balance $%.2f", balance)
         return balance
     except Exception as e:
-        logger.warning("Sizing: balance fetch failed (%s), using cached $%.2f",
-                       e, _cached_balance or 0)
-        return _cached_balance or 0.0
+        logger.warning("Sizing: balance fetch failed (%s)", e)
+        return 0.0
 
 
 def get_risk_per_trade():
-    """Return dynamic risk = 5% of live Lighter balance, clamped."""
+    """Return dynamic risk = 10% of live Lighter balance, clamped."""
     balance = _fetch_balance()
     risk = balance * RISK_PCT
     risk = max(MIN_RISK, min(MAX_RISK, risk))
@@ -59,10 +56,10 @@ def calculate_position_usd(symbol, sl_pct, risk_per_trade=None):
     This is the ONLY sizing function. All entry algorithms must use this.
 
     Args:
-        symbol: Trading pair (e.g. 'SOL', 'XAU', 'EURUSD')
+        symbol: Trading pair (e.g. 'SOL', 'XAU', 'WTI')
         sl_pct: Stop-loss distance as a fraction (e.g. 0.02 for 2%)
         risk_per_trade: Dollar risk per trade. If None, uses dynamic
-                        5% of live Lighter account balance.
+                        10% of live Lighter account balance.
 
     Returns:
         Position size in USD (notional value).

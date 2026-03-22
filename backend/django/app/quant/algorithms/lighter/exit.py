@@ -27,9 +27,10 @@ BREAKEVEN_PROFIT_PCT = 0.02        # Move SL to entry after 2% unrealized profit
 # Higher peaks get tighter protection to lock in more profit.
 # Raised from 60/70/80 to 40/50/60 — let winners run, fees eat 37% of small exits.
 PROFIT_TIERS = [
-    (3.00, 0.60),   # $3.00+ peak → close if drops below 60% of peak (was 80%)
-    (1.00, 0.50),   # $1.00+ peak → close if drops below 50% of peak (was 70%)
-    (0.50, 0.40),   # $0.50+ peak → close if drops below 40% of peak (was 60% at $0.30)
+    (15.00, 0.70),  # $15+ peak → close if drops below 70% of peak
+    (8.00, 0.60),   # $8+ peak → close if drops below 60% of peak
+    (4.00, 0.50),   # $4+ peak → close if drops below 50% of peak
+    # Old tiers ($0.50/$1/$3) triggered on normal price noise at 10% sizing
 ]
 TIME_EXIT_HOURS = 48               # Close stale positions after 48 hours
 TIME_EXIT_MIN_PROFIT_PCT = 0.01    # ...unless profit exceeds 1%
@@ -37,9 +38,10 @@ TIME_EXIT_MIN_PROFIT_PCT = 0.01    # ...unless profit exceeds 1%
 # -- Trailing stop tiers (per asset class) --
 # Each tier: (activation_pct, trail_pct)
 TRAIL_TIERS_CRYPTO = [
-    (0.03, 0.015),   # Tier 1: at +3%, trail 1.5% below peak
-    (0.06, 0.02),    # Tier 2: at +6%, trail 2%
-    (0.10, 0.025),   # Tier 3: at +10%, trail 2.5% (wider for runners)
+    (0.003, 0.002),  # Tier 1: at +0.3%, trail 0.2% below peak — lock in early
+    (0.008, 0.003),  # Tier 2: at +0.8%, trail 0.3% — tighten as profit grows
+    (0.015, 0.005),  # Tier 3: at +1.5%, trail 0.5% — let runners breathe slightly
+    (0.030, 0.010),  # Tier 4: at +3.0%, trail 1.0% — near TP, wide trail for big moves
 ]
 TRAIL_TIERS_METALS = [
     (0.01, 0.006),   # Tier 1: at +1%, trail 0.6% below peak
@@ -407,9 +409,9 @@ def _check_profit_protection(position, current_pnl):
     """Tiered profit protection: higher peaks get tighter floors.
 
     PROFIT_TIERS checked top-down (highest threshold first):
-      $3.00+ peak → keep 80%
-      $1.00+ peak → keep 70%
-      $0.30+ peak → keep 60%
+      $15+ peak → keep 70%
+      $8+ peak → keep 60%
+      $4+ peak → keep 50%
 
     Returns close_reason string or None.
     """

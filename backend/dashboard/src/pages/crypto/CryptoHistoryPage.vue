@@ -8,16 +8,20 @@ const positions = ref([])
 const loading = ref(true)
 const error = ref('')
 
+// Net PnL = gross pnl_usd minus exchange fees (from total_fees field)
+const netPnl = (p) => Number(p.pnl_usd ?? 0) - Number(p.total_fees ?? 0)
+
 const stats = computed(() => {
   const closed = positions.value.filter(p => p.status === 'CLOSED')
-  const wins = closed.filter(p => Number(p.pnl_usd) > 0)
-  const losses = closed.filter(p => Number(p.pnl_usd) < 0)
-  const totalPnl = closed.reduce((sum, p) => sum + Number(p.pnl_usd ?? 0), 0)
-  const avgWin = wins.length ? wins.reduce((s, p) => s + Number(p.pnl_usd), 0) / wins.length : 0
-  const avgLoss = losses.length ? losses.reduce((s, p) => s + Number(p.pnl_usd), 0) / losses.length : 0
+  const wins = closed.filter(p => netPnl(p) > 0)
+  const losses = closed.filter(p => netPnl(p) <= 0)
+  const totalPnl = closed.reduce((sum, p) => sum + netPnl(p), 0)
+  const totalFees = closed.reduce((sum, p) => sum + Number(p.total_fees ?? 0), 0)
+  const avgWin = wins.length ? wins.reduce((s, p) => s + netPnl(p), 0) / wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((s, p) => s + netPnl(p), 0) / losses.length : 0
   const winRate = closed.length ? (wins.length / closed.length * 100) : 0
   const openCount = positions.value.filter(p => p.status === 'OPEN').length
-  return { total: closed.length, wins: wins.length, losses: losses.length, totalPnl, avgWin, avgLoss, winRate, openCount }
+  return { total: closed.length, wins: wins.length, losses: losses.length, totalPnl, totalFees, avgWin, avgLoss, winRate, openCount }
 })
 
 async function fetchHistory() {
@@ -132,8 +136,8 @@ onMounted(fetchHistory)
                 <td class="td-duration">{{ duration(p.opened_at, p.closed_at) }}</td>
                 <td style="font-weight:500">{{ Number(p.size).toFixed(4) }}</td>
                 <td>{{ p.leverage }}x</td>
-                <td class="td-pnl" :class="Number(p.pnl_usd ?? 0) > 0 ? 'pnl-pos' : Number(p.pnl_usd ?? 0) < 0 ? 'pnl-neg' : ''">
-                  {{ formatPnl(p.pnl_usd) }}
+                <td class="td-pnl" :class="netPnl(p) > 0 ? 'pnl-pos' : netPnl(p) < 0 ? 'pnl-neg' : ''">
+                  {{ formatPnl(netPnl(p)) }}
                 </td>
                 <td class="td-peak">
                   <span v-if="p.peak_profit_usd != null" class="pnl-pos">${{ Number(p.peak_profit_usd).toFixed(2) }}</span>
