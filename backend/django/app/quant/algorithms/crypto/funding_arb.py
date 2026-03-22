@@ -66,7 +66,6 @@ def _fetch_lighter_funding() -> dict:
     Returns rates keyed by exchange, e.g. {'lighter': {'BTC': 0.005, ...}, 'hyperliquid': {...}}.
     The FundingApi returns rates for lighter + external exchanges (binance, bybit, hyperliquid).
     """
-    import json
     import lighter as lighter_sdk
     from ..lighter.client import _API_CONFIGURATION, _run
 
