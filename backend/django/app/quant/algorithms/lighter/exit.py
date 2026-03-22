@@ -14,9 +14,8 @@ import logging
 from datetime import timedelta
 from django.utils import timezone
 
-from .config import LIGHTER_MARKETS, FOREX_SYMBOLS, METALS_SYMBOLS
+from .config import LIGHTER_MARKETS, FOREX_SYMBOLS, METALS_SYMBOLS, PLATFORM_PREFIX
 from .client import get_best_bid_ask, close_position, get_trade_fill
-from .entry import PLATFORM_PREFIX
 
 logger = logging.getLogger('app.lighter')
 
@@ -178,8 +177,8 @@ def exit_algorithm():
                 features = _cache.get(f'lighter:ml_features:{position.id}')
                 if features:
                     import json as _json, os as _os
-                    features['pnl'] = float(pnl_usd)
-                    features['won'] = pnl_usd > 0
+                    features['pnl'] = float(final_pnl)
+                    features['won'] = final_pnl > 0
                     features['close_price'] = float(current_price)
                     features['close_reason'] = close_reason
                     features['duration_min'] = round((position.closed_at - position.opened_at).total_seconds() / 60) if position.opened_at and position.closed_at else 0
@@ -190,7 +189,7 @@ def exit_algorithm():
                         f.write(_json.dumps(features, default=str) + '\n')
                     _cache.delete(f'lighter:ml_features:{position.id}')
                     logger.info("ML training data saved: %s %s pnl=$%.4f",
-                                position.symbol, 'WIN' if pnl_usd > 0 else 'LOSS', pnl_usd)
+                                position.symbol, 'WIN' if final_pnl > 0 else 'LOSS', final_pnl)
             except Exception as e:
                 logger.debug("ML feature recording failed: %s", e)
 

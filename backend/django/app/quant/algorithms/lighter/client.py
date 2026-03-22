@@ -514,10 +514,13 @@ def get_trade_fill(tx_hash: str) -> dict:
                     pnl = t.get('bid_account_pnl')
                     fee = t.get('taker_fee') or t.get('maker_fee')
                 return {
+                logger.debug("get_trade_fill raw fee=%s pnl=%s price=%s tx=%s",
+                             fee, pnl, t.get('price'), tx_hash[:16])
+                return {
                     'price': float(t['price']),
                     'size': float(t['size']),
                     'pnl': float(pnl) if pnl is not None else None,
-                    'fee': float(fee) / 10000 if fee is not None else None,
+                    'fee': float(fee) if fee is not None else None,
                 }
         return {}
     except Exception as e:

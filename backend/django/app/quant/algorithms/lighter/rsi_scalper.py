@@ -24,26 +24,16 @@ import logging
 import pandas as pd
 from django.core.cache import cache
 
-from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE
+from .config import LIGHTER_MARKETS, LIGHTER_LEVERAGE, PLATFORM_PREFIX, FOREX_SYMBOLS, METALS_SYMBOLS
 from .client import get_candles, get_best_bid_ask, place_maker_order_usd, update_leverage, place_oco_sltp
 from .sizing import calculate_position_usd
 
 logger = logging.getLogger('app.lighter')
 
-
-
-PLATFORM_PREFIX = 'lighter:'
-
-# ── Asset-class classification ────────────────────────────
-
-FOREX_SYMBOLS = {'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'}
-METALS_SYMBOLS = {'XAU', 'XAG', 'PAXG', 'WTI'}
-
 # ── RSI(2) per-symbol configs (backtested on Yahoo 60d 15m) ──
 # Each symbol has its own optimal R:R from the sweep backtest.
 # XAU = inverted R:R (tight TP, wide SL — mean reversion snaps)
 # SOL = trend R:R (tight SL, wide TP — let winners run)
-# ETH = symmetrical (wide SL, moderate TP — high WR)
 
 RSI2_SYMBOL_CONFIG = {
     'SOL': {
@@ -65,11 +55,11 @@ RSI2_SYMBOL_CONFIG = {
 
 # Fallback configs for symbols not in RSI2_SYMBOL_CONFIG
 RSI2_CONFIG = {
-    'crypto': {
+    'crypto': {  # trend R:R (wide TP, moderate SL — let winners run)
         'rsi_period': 2, 'rsi_oversold': 15, 'rsi_overbought': 85,
         'ema_period': 50, 'sl_pct': 0.010, 'tp_pct': 0.020,
     },
-    'metals': {
+    'metals': {  # inverted R:R (tight TP, wide SL — mean reversion snaps)
         'rsi_period': 2, 'rsi_oversold': 15, 'rsi_overbought': 85,
         'ema_period': 50, 'sl_pct': 0.012, 'tp_pct': 0.003,
     },
@@ -361,10 +351,9 @@ def _scan_symbol(symbol):
 
     # Record ML features at entry (cached in Redis, saved to JSONL on close)
     try:
-        from django.core.cache import cache as _cache
         from datetime import datetime, timezone as _tz
         now = datetime.now(_tz.utc)
-        _cache.set(f'lighter:ml_features:{position.id}', {
+        cache.set(f'lighter:ml_features:{position.id}', {
             'symbol': symbol,
             'side': side,
             'strategy': 'rsi2',
