@@ -166,7 +166,11 @@ def _scan_symbol(symbol):
     except Exception:
         pass
 
-    # Place order
+    # Guard: re-check DB right before order (prevents ghost orders on duplicate key)
+    from app.crypto.models import CryptoPosition
+    if CryptoPosition.objects.filter(symbol=symbol, venue='LIGHTER', status='OPEN').exists():
+        return False
+
     result = place_maker_order_usd(symbol, is_buy, position_usd)
     if result.get('error'):
         logger.error("BB %s: order failed: %s", symbol, result['error'])

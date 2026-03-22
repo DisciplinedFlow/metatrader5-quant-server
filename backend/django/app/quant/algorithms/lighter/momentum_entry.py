@@ -314,7 +314,10 @@ def _scan_symbol(symbol: str, hour_utc: int) -> bool:
     except Exception:
         pass
 
-    # ── Place market order ────────────────────────────────────────────
+    # Guard: re-check DB right before order (prevents ghost orders on duplicate key)
+    if CryptoPosition.objects.filter(symbol=symbol, venue='LIGHTER', status='OPEN').exists():
+        return False
+
     result = place_market_order_usd(symbol, is_buy, position_usd)
     if result.get('error'):
         logger.error("MOM %s: order failed: %s", symbol, result['error'])

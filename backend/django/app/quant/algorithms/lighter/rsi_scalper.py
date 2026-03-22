@@ -310,7 +310,11 @@ def _scan_symbol(symbol):
     except Exception:
         pass
 
-    # Place order BEFORE creating DB record (avoid orphaned positions)
+    # Guard: check DB for existing open position BEFORE placing exchange order
+    if CryptoPosition.objects.filter(symbol=symbol, venue='LIGHTER', status='OPEN').exists():
+        logger.debug("RSI2 %s: position already open, skipping", symbol)
+        return False
+
     result = place_maker_order_usd(symbol, is_buy, position_usd)
     if result.get('error'):
         logger.error("RSI2 %s: order failed: %s", symbol, result['error'])

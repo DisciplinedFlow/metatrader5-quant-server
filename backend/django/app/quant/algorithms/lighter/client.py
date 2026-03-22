@@ -509,17 +509,20 @@ def get_trade_fill(tx_hash: str) -> dict:
                 fee = None
                 if is_our_ask:
                     pnl = t.get('ask_account_pnl')
-                    fee = t.get('taker_fee') or t.get('maker_fee')
+                    fee_raw = t.get('taker_fee') if not t.get('is_maker_ask') else t.get('maker_fee')
                 elif is_our_bid:
                     pnl = t.get('bid_account_pnl')
-                    fee = t.get('taker_fee') or t.get('maker_fee')
-                logger.debug("get_trade_fill raw fee=%s pnl=%s price=%s tx=%s",
-                             fee, pnl, t.get('price'), tx_hash[:16])
+                    fee_raw = t.get('taker_fee') if t.get('is_maker_ask') else t.get('maker_fee')
+                # Convert fee from basis points to USD: fee_raw * quote_amount / 1_000_000
+                usd_amount = float(t.get('usd_amount', 0))
+                fee_usd = (float(fee_raw) * usd_amount / 1_000_000) if fee_raw else 0.0
+                logger.debug("get_trade_fill fee_raw=%s fee_usd=%.6f pnl=%s price=%s tx=%s",
+                             fee_raw, fee_usd, pnl, t.get('price'), tx_hash[:16])
                 return {
                     'price': float(t['price']),
                     'size': float(t['size']),
                     'pnl': float(pnl) if pnl is not None else None,
-                    'fee': float(fee) if fee is not None else None,
+                    'fee': fee_usd,
                 }
         return {}
     except Exception as e:

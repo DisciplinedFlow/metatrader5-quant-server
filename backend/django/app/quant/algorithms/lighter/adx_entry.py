@@ -330,7 +330,10 @@ def _scan_symbol(symbol):
     except Exception:
         pass
 
-    # Place order
+    # Guard: re-check DB right before order (prevents ghost orders on duplicate key)
+    if CryptoPosition.objects.filter(symbol=symbol, venue='LIGHTER', status='OPEN').exists():
+        return False
+
     result = place_market_order_usd(symbol, is_buy, position_usd)
     if result.get('error'):
         logger.error("ADX %s: order failed: %s", symbol, result['error'])

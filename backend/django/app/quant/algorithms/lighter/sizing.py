@@ -2,7 +2,7 @@
 Unified position sizing for all Lighter.xyz entry strategies.
 
 Every entry algorithm MUST use calculate_position_usd() for sizing.
-Dynamic compounding: risk = 10% of live account balance per trade.
+Dynamic compounding: risk = 5% of live account balance per trade.
 As balance grows, position sizes grow. As it shrinks, they shrink.
 
     position_usd = risk_per_trade / sl_pct * combined_sizing(symbol)
@@ -12,7 +12,7 @@ import logging
 logger = logging.getLogger('app.lighter')
 
 # ── Configuration ─────────────────────────────────────────
-RISK_PCT = 0.10           # 10% of account balance per trade
+RISK_PCT = 0.05           # 5% of account balance per trade
 BALANCE_CACHE_TTL = 60    # seconds between balance refreshes
 MIN_RISK = 0.50           # floor: never risk less than $0.50
 MAX_RISK = 500.00         # ceiling: safety cap
@@ -43,7 +43,7 @@ def _fetch_balance():
 
 
 def get_risk_per_trade():
-    """Return dynamic risk = 10% of live Lighter balance, clamped."""
+    """Return dynamic risk = 5% of live Lighter balance, clamped."""
     balance = _fetch_balance()
     risk = balance * RISK_PCT
     risk = max(MIN_RISK, min(MAX_RISK, risk))
@@ -59,7 +59,7 @@ def calculate_position_usd(symbol, sl_pct, risk_per_trade=None):
         symbol: Trading pair (e.g. 'SOL', 'XAU', 'WTI')
         sl_pct: Stop-loss distance as a fraction (e.g. 0.02 for 2%)
         risk_per_trade: Dollar risk per trade. If None, uses dynamic
-                        10% of live Lighter account balance.
+                        5% of live Lighter account balance.
 
     Returns:
         Position size in USD (notional value).

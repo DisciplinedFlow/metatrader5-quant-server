@@ -288,7 +288,11 @@ def run_wti_entry():
     except Exception:
         pass
 
-    # ── Place market order ────────────────────────────────────────────────────
+    # Guard: re-check DB right before order (prevents ghost orders on duplicate key)
+    from app.crypto.models import CryptoPosition
+    if CryptoPosition.objects.filter(symbol=SYMBOL, venue='LIGHTER', status='OPEN').exists():
+        return
+
     result = place_market_order_usd(SYMBOL, is_buy, position_usd)
     if result.get('error'):
         logger.error("WTI: order failed: %s", result['error'])

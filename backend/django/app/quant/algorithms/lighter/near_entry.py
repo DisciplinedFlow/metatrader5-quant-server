@@ -338,7 +338,11 @@ def run_near_entry():
     except Exception:
         pass
 
-    # ── Place market order ────────────────────────────────────────────
+    # Guard: re-check DB right before order (prevents ghost orders on duplicate key)
+    from app.crypto.models import CryptoPosition
+    if CryptoPosition.objects.filter(symbol='NEAR', venue='LIGHTER', status='OPEN').exists():
+        return
+
     result = place_market_order_usd('NEAR', is_buy, position_usd)
     if result.get('error'):
         logger.error("NEAR: order failed: %s", result['error'])
