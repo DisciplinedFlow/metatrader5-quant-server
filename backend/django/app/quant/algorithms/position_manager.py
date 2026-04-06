@@ -183,8 +183,7 @@ def _move_sl(position, new_sl):
     try:
         session = get_session()
         response = session.post(f'{BASE_URL}/modify_sl_tp', json={
-            'ticket': int(position.ticket),
-            'symbol': position.symbol,
+            'position': int(position.ticket),
             'sl': float(new_sl),
             'tp': float(position.tp),
         }, timeout=10)
