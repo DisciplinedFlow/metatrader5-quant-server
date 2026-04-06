@@ -42,10 +42,10 @@ logger = logging.getLogger('quant')
 # ---------------------------------------------------------------------------
 # Shared config
 # ---------------------------------------------------------------------------
-RISK_EUR = 50.0
-MAX_LOT = 0.50
-COOLDOWN_TTL = 3600
-MAX_DAILY_LOSS = -100.0
+RISK_EUR = 15.0
+MAX_LOT = 0.20
+COOLDOWN_TTL = 900
+MAX_DAILY_LOSS = -75.0
 DAILY_LOSS_KEY = 'fx:daily_loss'
 
 CB_KEY = 'fx:circuit_breaker'
@@ -57,24 +57,24 @@ CB_TTL = 7200
 # Strategy 1: TJR Asia Sweep — XAUUSD H1
 # ---------------------------------------------------------------------------
 XAU = 'XAUUSD'
-XAU_SL = 1.8
-XAU_TP = 3.6
+XAU_SL = 1.2
+XAU_TP = 2.4
 XAU_BARS = 250
 
 # ---------------------------------------------------------------------------
 # Strategy 2 & 4: Silver Sweep — XAGUSD M15
 # ---------------------------------------------------------------------------
 XAG = 'XAGUSD'
-XAG_SL = 2.5               # Silver needs wider SL
-XAG_TP = 5.0
+XAG_SL = 1.5               # Silver — tighter for faster resolution
+XAG_TP = 3.0
 XAG_BARS = 900
 
 # ---------------------------------------------------------------------------
 # Strategy 3: NY Sweep — EURUSD M15
 # ---------------------------------------------------------------------------
 EUR = 'EURUSD'
-EUR_SL = 1.8
-EUR_TP = 3.6
+EUR_SL = 1.2
+EUR_TP = 2.4
 EUR_BARS = 900
 
 # Swing lookback

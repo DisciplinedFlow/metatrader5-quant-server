@@ -28,7 +28,7 @@ from app.utils.db.get import get_trade_with_mutations
 logger = logging.getLogger('position_manager')
 
 # --- Configuration ---
-MAX_LOSS_PER_TRADE_EUR = 50.0
+MAX_LOSS_PER_TRADE_EUR = 20.0
 
 # Trailing stop thresholds (in multiples of initial risk)
 BREAKEVEN_TRIGGER_R = 1.0    # Move SL to entry when profit = 1x risk

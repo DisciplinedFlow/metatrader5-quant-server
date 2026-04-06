@@ -48,18 +48,18 @@ SYMBOLS = [
 ]
 
 # Risk
-RISK_EUR = 50.0          # Risk per trade in EUR
-MAX_LOT = 0.50           # Max lot size
-SL_ATR_MULT = 1.8        # SL distance as ATR multiple
-TP_ATR_MULT = 3.6        # TP distance (1:2 R:R)
+RISK_EUR = 15.0          # Risk per trade in EUR (small + frequent)
+MAX_LOT = 0.20           # Max lot size
+SL_ATR_MULT = 1.2        # SL distance as ATR multiple
+TP_ATR_MULT = 2.4        # TP distance (1:2 R:R)
 
 # Position limits
-MAX_OPEN = 3             # Max simultaneous positions
-MAX_PER_SYMBOL = 1       # Max 1 position per symbol
+MAX_OPEN = 5             # Max simultaneous positions
+MAX_PER_SYMBOL = 2       # Max 2 positions per symbol
 
 # Cooldowns
-COOLDOWN_SEC = 1800      # 30 min cooldown per symbol after entry
-GLOBAL_COOLDOWN = 60     # 60s global cooldown between any entries
+COOLDOWN_SEC = 600       # 10 min cooldown per symbol after entry
+GLOBAL_COOLDOWN = 30     # 30s global cooldown between any entries
 
 # Circuit breaker
 CB_LOSSES = 3            # Consecutive losses to trigger
