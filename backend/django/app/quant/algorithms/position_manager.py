@@ -31,9 +31,10 @@ logger = logging.getLogger('position_manager')
 MAX_LOSS_PER_TRADE_EUR = 20.0
 
 # Trailing stop thresholds (in multiples of initial risk)
-BREAKEVEN_TRIGGER_R = 1.0    # Move SL to entry when profit = 1x risk
-TRAIL_TRIGGER_R = 1.5        # Start trailing when profit = 1.5x risk
-TRAIL_GIVEBACK_PCT = 0.50    # Trail at 50% of max profit (keep 50%, give back 50%)
+# Aggressive protection — data showed trades peaking +€15-22 then reversing to SL
+BREAKEVEN_TRIGGER_R = 0.5    # Move SL to entry when profit = 0.5x risk (~€7.50)
+TRAIL_TRIGGER_R = 0.75       # Start trailing when profit = 0.75x risk (~€11)
+TRAIL_GIVEBACK_PCT = 0.40    # Trail at 40% giveback (keep 60% of max profit)
 
 
 def manage_positions():
