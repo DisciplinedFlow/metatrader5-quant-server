@@ -342,7 +342,7 @@ def _execute(symbol, direction, df, sl_mult, tp_mult, strategy_name, timeframe):
 
     result = send_market_order(
         symbol=symbol, volume=volume, order_type=direction,
-        sl=sl_r, tp=tp_r, comment=strategy_name, min_rr=1.9,
+        sl=sl_r, tp=tp_r, comment=strategy_name, min_rr=2.0,
     )
 
     ticket = result.get('order') or result.get('ticket') if result else None

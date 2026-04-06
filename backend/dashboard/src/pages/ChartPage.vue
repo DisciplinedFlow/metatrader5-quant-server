@@ -377,7 +377,7 @@ onBeforeUnmount(() => {
               <td class="td-mono td-tp">{{ formatPrice(t.tp) }}</td>
               <td class="td-mono">{{ formatPrice(t.exit) }}</td>
               <td class="td-pnl" :class="t.pnl > 0 ? 'pnl-pos' : t.pnl < 0 ? 'pnl-neg' : ''">
-                <template v-if="t.pnl != null">{{ t.pnl >= 0 ? '+' : '' }}${{ t.pnl.toFixed(2) }}</template>
+                <template v-if="t.pnl != null">{{ t.pnl >= 0 ? '+' : '' }}&euro;{{ t.pnl.toFixed(2) }}</template>
                 <span v-else class="open-badge">OPEN</span>
               </td>
               <td class="td-dim">{{ t.duration }}</td>

@@ -50,7 +50,8 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
             else:
                 logger.warning(f"R:R CHECK SKIPPED {symbol}: could not fetch tick data")
         elif tp is None:
-            logger.warning(f"R:R CHECK SKIPPED {symbol} {order_type}: no TP provided — allowing trade")
+            logger.warning(f"R:R REJECTED {symbol} {order_type}: no TP provided — algorithmic orders require TP")
+            return None
         # ─────────────────────────────────────────────────────────────
 
         request = {

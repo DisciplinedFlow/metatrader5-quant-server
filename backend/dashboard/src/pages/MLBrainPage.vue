@@ -689,10 +689,10 @@ function modelTypeClassFor(type) {
                       {{ t.winRate }}%
                     </td>
                     <td :style="pnlColor(parseFloat(t.pnl))">
-                      {{ parseFloat(t.pnl) >= 0 ? '+' : '' }}${{ t.pnl }}
+                      {{ parseFloat(t.pnl) >= 0 ? '+' : '' }}&euro;{{ t.pnl }}
                     </td>
                     <td :style="pnlColor(parseFloat(t.avgPnl))">
-                      {{ parseFloat(t.avgPnl) >= 0 ? '+' : '' }}${{ t.avgPnl }}
+                      {{ parseFloat(t.avgPnl) >= 0 ? '+' : '' }}&euro;{{ t.avgPnl }}
                     </td>
                   </tr>
                 </tbody>
@@ -1259,10 +1259,10 @@ function modelTypeClassFor(type) {
                       {{ t.winRate }}%
                     </td>
                     <td :style="pnlColor(parseFloat(t.pnl))">
-                      {{ parseFloat(t.pnl) >= 0 ? '+' : '' }}${{ t.pnl }}
+                      {{ parseFloat(t.pnl) >= 0 ? '+' : '' }}&euro;{{ t.pnl }}
                     </td>
                     <td :style="pnlColor(parseFloat(t.avgPnl))">
-                      {{ parseFloat(t.avgPnl) >= 0 ? '+' : '' }}${{ t.avgPnl }}
+                      {{ parseFloat(t.avgPnl) >= 0 ? '+' : '' }}&euro;{{ t.avgPnl }}
                     </td>
                   </tr>
                 </tbody>

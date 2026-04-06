@@ -52,7 +52,7 @@ function formatTime(iso) {
 
 function formatPnl(val) {
   if (val == null) return '—'
-  return (val >= 0 ? '+' : '') + val.toFixed(2)
+  return (val >= 0 ? '+' : '') + '€' + val.toFixed(2)
 }
 
 function duration(entry, close) {
@@ -100,7 +100,7 @@ onMounted(fetchTrades)
         <div class="stat-label">Closed Trades</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value" :class="stats.totalPnl >= 0 ? 'pnl-pos' : 'pnl-neg'">${{ stats.totalPnl.toFixed(2) }}</div>
+        <div class="stat-value" :class="stats.totalPnl >= 0 ? 'pnl-pos' : 'pnl-neg'">&euro;{{ stats.totalPnl.toFixed(2) }}</div>
         <div class="stat-label">Total P&L</div>
       </div>
       <div class="stat-card">
@@ -108,11 +108,11 @@ onMounted(fetchTrades)
         <div class="stat-label">Win Rate ({{ stats.wins }}W / {{ stats.losses }}L)</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value pnl-pos">${{ stats.avgWin.toFixed(2) }}</div>
+        <div class="stat-value pnl-pos">&euro;{{ stats.avgWin.toFixed(2) }}</div>
         <div class="stat-label">Avg Win</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value pnl-neg">${{ stats.avgLoss.toFixed(2) }}</div>
+        <div class="stat-value pnl-neg">&euro;{{ stats.avgLoss.toFixed(2) }}</div>
         <div class="stat-label">Avg Loss</div>
       </div>
       <div class="stat-card" v-if="stats.openCount">
@@ -178,7 +178,7 @@ onMounted(fetchTrades)
                   <span v-else class="open-badge">OPEN</span>
                 </td>
                 <td class="td-peak">
-                  <span v-if="t.max_profit != null" class="pnl-pos">${{ t.max_profit.toFixed(2) }}</span>
+                  <span v-if="t.max_profit != null" class="pnl-pos">&euro;{{ t.max_profit.toFixed(2) }}</span>
                   <span v-else>—</span>
                 </td>
                 <td class="td-reason">{{ t.closing_reason || '—' }}</td>

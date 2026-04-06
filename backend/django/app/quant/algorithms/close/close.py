@@ -237,9 +237,13 @@ def _on_trade_closed(closed_trade, ticket, close_price, pnl, closing_reason):
     except Exception as e:
         logger.debug(f"ML feature update skipped: {e}")
 
-    # Neo4j knowledge graph removed — container no longer running
-
-    # Neo4j brain pattern tracking removed — container no longer running
+    # Update circuit breaker + daily loss tracking
+    try:
+        from app.quant.algorithms.entry_forex import on_trade_closed as fx_on_trade_closed
+        won = pnl > 0 if pnl else False
+        fx_on_trade_closed(won=won, pnl=float(pnl) if pnl else 0)
+    except Exception as e:
+        logger.debug(f"Circuit breaker update skipped: {e}")
 
 
 def _update_ml_features(closed_trade):
