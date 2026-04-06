@@ -18,6 +18,8 @@ Design rationale (2026-04-06):
 import logging
 from datetime import datetime, timezone
 
+from django.core.cache import cache
+
 from app.utils.api.positions import get_positions
 from app.utils.api.order import close_full
 from app.utils.api.session import get_session, BASE_URL
@@ -91,16 +93,29 @@ def _check_position(position):
 
 def _manage_trail(position, trade, current_pnl):
     """Breakeven move + dynamic trailing stop based on R-multiples."""
-    # We need entry price and SL to calculate initial risk (1R)
     entry_price = trade.entry_price
-    initial_sl = trade.stop_loss
-    if not entry_price or not initial_sl:
+    if not entry_price:
         return
 
     is_buy = position.type == 0  # MT5: 0=BUY, 1=SELL
-    initial_risk_price = abs(entry_price - initial_sl)
-    if initial_risk_price <= 0:
-        return
+    ticket = int(position.ticket)
+
+    # Cache original risk on first encounter — survives SL moves
+    # Once we move SL to breakeven, position.sl changes and we'd lose the original risk
+    cache_key = f'pm:risk:{ticket}'
+    initial_risk_price = cache.get(cache_key)
+
+    if initial_risk_price is None:
+        # First time seeing this position — calculate and store original risk
+        current_sl = position.sl
+        if not current_sl or current_sl == 0:
+            return
+        initial_risk_price = abs(entry_price - current_sl)
+        if initial_risk_price <= 0:
+            return
+        # Cache for 48h (covers weekend + overnight holds)
+        cache.set(cache_key, initial_risk_price, timeout=172800)
+        logger.info('TRAIL INIT: %s ticket=%s initial_risk=%.5f', position.symbol, ticket, initial_risk_price)
 
     # Current distance from entry in price terms
     current_price = position.price_current
