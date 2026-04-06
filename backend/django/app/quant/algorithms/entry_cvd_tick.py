@@ -44,7 +44,8 @@ logger = logging.getLogger('quant')
 # Symbols to trade (must match tick_consumer symbols with enough liquidity)
 SYMBOLS = [
     'XAUUSD', 'XAGUSD', 'EURUSD', 'GBPUSD', 'USDJPY',
-    'AUDUSD', 'USDCAD', 'USOUSD', 'UKOUSDft',
+    'AUDUSD', 'USDCAD',
+    # USOUSD, UKOUSDft disabled — 0% WR across 7 trades, energy too volatile
 ]
 
 # Risk
@@ -67,10 +68,9 @@ CB_TTL = 3600            # 1h pause after circuit breaker
 
 # Signal filtering
 VALID_SIGNALS = {
-    'bullish_lack_of_participants',
-    'bearish_lack_of_participants',
     'bullish_absorption',
     'bearish_absorption',
+    # lack_of_participants disabled — 1W/11L (8.3% WR), -€104 total
 }
 
 # Session sizing (24/7 but adjust for liquidity)
