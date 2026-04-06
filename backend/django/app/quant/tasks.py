@@ -25,7 +25,7 @@ def run_quant_trailing_stop_algorithm():
         logger.error(f"Position manager error: {e}")
 
 
-@shared_task(name='quant.tasks.run_quant_close_algorithm', max_retries=3, soft_time_limit=15, time_limit=25)
+@shared_task(name='quant.tasks.run_quant_close_algorithm', max_retries=3, soft_time_limit=45, time_limit=60)
 def run_quant_close_algorithm():
     try:
         logger.info("Starting quant close algorithm...")

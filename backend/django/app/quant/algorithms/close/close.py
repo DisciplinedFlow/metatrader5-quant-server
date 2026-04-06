@@ -47,20 +47,19 @@ def close_algorithm():
 
         for ticket in closed_tickets:
             position = cached_positions.pop(ticket)
-            sleep(0.5)  # Brief delay to ensure the trade is fully processed
 
             try:
                 # Retrieve the closed order and deal details
                 closed_order = get_order_from_ticket(ticket)
 
-                # Retry up to 4 times — MT5 can take 1-3s to finalise deal history
+                # Retry up to 3 times — MT5 can take 1-2s to finalise deal history
                 closed_deal = None
-                for _attempt in range(4):
+                for _attempt in range(3):
                     now = datetime.now(TIMEZONE)
                     closed_deal = get_deal_from_ticket(ticket, now - timedelta(hours=24), now)
                     if closed_deal is not None:
                         break
-                    sleep(1)
+                    sleep(0.5)
 
                 if closed_deal is not None:
                     close_time = closed_deal.get('close_time', current_time)
