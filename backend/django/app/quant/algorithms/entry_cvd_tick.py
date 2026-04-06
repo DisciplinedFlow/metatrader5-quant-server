@@ -74,8 +74,14 @@ CB_TTL = 3600            # 1h pause after circuit breaker
 VALID_SIGNALS = {
     'bullish_absorption',
     'bearish_absorption',
-    # lack_of_participants disabled — 1W/11L (8.3% WR), -€104 total
+    'bullish_lack_of_participants',
+    'bearish_lack_of_participants',
 }
+
+# LoP only profitable on XAUUSD H1 with EMA50 (backtest: 52.6% WR, +€488)
+# Only allow LoP signals for these symbols during London+NY (07-17 UTC)
+LOP_ALLOWED_SYMBOLS = {'XAUUSD'}
+LOP_SESSION_HOURS = (7, 17)  # London + NY overlap only
 
 # Directional bias — safe-haven flows during extreme geopolitical vol
 DIRECTION_BIAS = {
@@ -163,6 +169,26 @@ def _get_m15_atr(symbol):
     except Exception as e:
         logger.debug("M15 ATR fetch failed for %s: %s", symbol, e)
         return None, None
+
+
+def _check_ema50_trend(symbol, direction):
+    """Check H1 EMA50 trend alignment for LoP signals.
+
+    Backtest showed LoP only works with EMA50 filter (WR 31% → 53%).
+    Returns True if trade direction aligns with EMA50 trend.
+    """
+    try:
+        bars = fetch_data_pos(symbol, MT5Timeframe.H1, 55)
+        if bars is None or len(bars) < 52:
+            return False
+        ema50 = bars['close'].ewm(span=50, adjust=False).mean()
+        close = bars['close'].iloc[-1]
+        if direction == 'BUY':
+            return close > ema50.iloc[-1]
+        else:
+            return close < ema50.iloc[-1]
+    except Exception:
+        return False
 
 
 def _check_m15_structure(symbol, direction, atr):
@@ -285,6 +311,18 @@ def entry_cvd_tick_algorithm():
 
         if direction not in ('BUY', 'SELL'):
             continue
+
+        # LoP signals restricted to XAUUSD during London+NY with EMA50 filter
+        # Backtest: 52.6% WR, +€488 on XAUUSD H1 with EMA50+London+NY
+        if 'lack_of_participants' in signal_type:
+            if symbol not in LOP_ALLOWED_SYMBOLS:
+                continue
+            hour = datetime.now(timezone.utc).hour
+            if not (LOP_SESSION_HOURS[0] <= hour < LOP_SESSION_HOURS[1]):
+                continue
+            if not _check_ema50_trend(symbol, direction):
+                logger.info("CVD TICK SKIP: %s %s LoP blocked — against EMA50 trend", symbol, direction)
+                continue
 
         # --- CONFIRMATION LAYER 1: M5 momentum ---
         if not _check_m5_momentum(symbol, direction):
