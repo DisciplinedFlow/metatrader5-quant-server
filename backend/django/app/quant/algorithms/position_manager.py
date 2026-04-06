@@ -2,17 +2,17 @@
 Position Manager — dynamic trailing stop + safety net.
 
 Three layers of protection:
-  1. Hard loss ceiling at €50 (catches gaps past broker SL)
-  2. Breakeven move: once trade reaches +1R profit, move SL to entry price
-  3. Dynamic trail: once trade reaches +1.5R, trail SL at 50% of max profit
+  1. Hard loss ceiling at €12 (catches gaps past broker SL)
+  2. Breakeven move: once trade reaches +1.5R profit, move SL to entry price
+  3. Dynamic trail: once trade reaches +2R, trail SL at 50% of max profit
 
 Called every 15 seconds by Celery beat.
 
 Design rationale (2026-04-06):
   Extreme vol environment (Hormuz crisis, VIX 24+). Pure SL/TP gives back
   too much profit on reversals. This trail protects gains without cutting
-  winners too early. The 1R/1.5R thresholds ensure the trade has proven
-  itself before we interfere.
+  winners too early. The 1.5R/2R thresholds ensure the trade has proven
+  itself before we interfere — wider for trend-following regime.
 """
 
 import logging
@@ -28,13 +28,12 @@ from app.utils.db.get import get_trade_with_mutations
 logger = logging.getLogger('position_manager')
 
 # --- Configuration ---
-MAX_LOSS_PER_TRADE_EUR = 20.0
+MAX_LOSS_PER_TRADE_EUR = 12.0     # Tighter ceiling matching €7.50 risk
 
-# Trailing stop thresholds (in multiples of initial risk)
-# Aggressive protection — data showed trades peaking +€15-22 then reversing to SL
-BREAKEVEN_TRIGGER_R = 0.5    # Move SL to entry when profit = 0.5x risk (~€7.50)
-TRAIL_TRIGGER_R = 0.75       # Start trailing when profit = 0.75x risk (~€11)
-TRAIL_GIVEBACK_PCT = 0.40    # Trail at 40% giveback (keep 60% of max profit)
+# Trailing stop thresholds — wider for trend-following
+BREAKEVEN_TRIGGER_R = 1.5    # Let trends develop before protecting
+TRAIL_TRIGGER_R = 2.0        # Start trailing at 2R profit
+TRAIL_GIVEBACK_PCT = 0.50    # Keep 50% of peak profit
 
 
 def manage_positions():
@@ -128,7 +127,7 @@ def _manage_trail(position, trade, current_pnl):
     # Current broker SL
     current_sl = position.sl
 
-    # --- Breakeven: move SL to entry when trade reaches +1R ---
+    # --- Breakeven: move SL to entry when trade reaches +1.5R ---
     if r_multiple >= BREAKEVEN_TRIGGER_R:
         # Target SL = entry price (+ tiny buffer for spread)
         buffer = initial_risk_price * 0.05  # 5% of risk as spread buffer
@@ -148,7 +147,7 @@ def _manage_trail(position, trade, current_pnl):
                     f'{current_sl:.5f}', f'{be_sl:.5f}',
                 )
 
-    # --- Dynamic trail: trail at 50% giveback once +1.5R ---
+    # --- Dynamic trail: trail at 50% giveback once +2R ---
     if r_multiple >= TRAIL_TRIGGER_R and trade.max_profit is not None and trade.max_profit > 0:
         # Trail level = entry + (max_profit * keep_pct) converted to price
         max_price_profit = (trade.max_profit / position.volume) if position.volume > 0 else 0

@@ -1,24 +1,33 @@
 """
-entry_forex.py — Four-Strategy Sweep System (07:00–22:00 UTC)
+entry_forex.py — Donchian Breakout System for Extreme Volatility
 
-Strategy 1: TJR Asia Sweep — XAUUSD H1 (07:00–16:00)
-  Asia range (00–05) → London/NY sweep → MSS → EMA trend
-  Backtest: 50-53% WR, PF 2.28, +0.48R/trade, 3.0R max DD
+Replaces the sweep-fade strategies with a trend-following Donchian breakout
+approach, activated ONLY when ATR(14) > 1.5x its 20-period SMA (extreme vol).
 
-Strategy 2: London Sweep — XAGUSD M15 (07:00–12:00)
-  Pre-London range (04–07) → London sweep → MSS → EMA trend
-  Backtest: 60-67% WR, PF 1.52, +0.88R/trade, 2.5R max DD
+Vol-regime gate:
+    H1 ATR(14) must exceed 1.5x its 20-bar SMA on the symbol being traded.
+    When vol is normal, this algorithm does nothing (normal-vol strategies TBD).
 
-Strategy 3: NY Sweep — EURUSD M15 (13:00–16:00)
-  London range (07–13) → NY open sweep → MSS
-  Backtest: 62.5% WR, PF 2.94, +0.76R/trade, 3.3R max DD
+Donchian breakout:
+    entry_period=15 (reduced 25% from standard 20 for high vol)
+    EMA filter=50
+    XAUUSD on H1, all other symbols on M15
+    Only 'long_confirmed' or 'short_confirmed' signals from donchian_trend_filter
 
-Strategy 4: NY PM Sweep — XAGUSD M15 (16:00–22:00)
-  London+NY AM range (07–16) → NY PM sweep → MSS → EMA trend
-  Backtest: 67-75% WR, PF 4.52, +1.16R/trade, 1.2R max DD
+Directional bias:
+    XAUUSD  — LONG ONLY  (safe haven in war)
+    USDJPY  — SHORT ONLY (JPY safe haven)
+    USDCHF  — SHORT ONLY (CHF safe haven)
+    EURUSD  — sell bias but both allowed
+    GBPUSD, AUDUSD, XAGUSD, USDCAD — both directions
 
-All strategies: broker SL/TP only, no trailing, no phases.
-Risk: €50 per trade. Max 1 trade per symbol at a time.
+Risk:
+    €7.50 per trade (half size for extreme vol)
+    SL = 2.5x ATR (wider for vol)
+    TP = 5.0x ATR (safety net only — Donchian exit trail manages real exit)
+    No fixed TP philosophy: trail should close before safety TP hits
+
+Session: 07:00–17:00 UTC (London + NY overlap)
 """
 
 from __future__ import annotations
@@ -36,16 +45,19 @@ from app.utils.api.positions import get_positions
 from app.utils.api.data import symbol_info_tick
 from app.utils.arithmetics import calculate_risk_based_lots
 from app.utils.constants import MT5Timeframe
+from app.quant.indicators.donchian import donchian_trend_filter
 
 logger = logging.getLogger('quant')
 
 # ---------------------------------------------------------------------------
-# Shared config
+# Config
 # ---------------------------------------------------------------------------
-RISK_EUR = 15.0
-MAX_LOT = 0.20
-COOLDOWN_TTL = 900
-MAX_DAILY_LOSS = -75.0
+RISK_EUR = 7.50               # Half size for extreme vol
+MAX_LOT = 0.10
+SL_ATR_MULT = 2.5             # Wider stops for extreme vol
+TP_ATR_MULT = 5.0             # Safety-net TP only (Donchian exit trail manages)
+COOLDOWN_TTL = 1800            # 30min cooldown
+MAX_DAILY_LOSS = -50.0
 DAILY_LOSS_KEY = 'fx:daily_loss'
 
 CB_KEY = 'fx:circuit_breaker'
@@ -53,33 +65,27 @@ LOSS_KEY = 'fx:consecutive_losses'
 CB_LOSSES = 3
 CB_TTL = 7200
 
-# ---------------------------------------------------------------------------
-# Strategy 1: TJR Asia Sweep — XAUUSD H1
-# ---------------------------------------------------------------------------
-XAU = 'XAUUSD'
-XAU_SL = 1.2
-XAU_TP = 2.4
-XAU_BARS = 250
+DONCHIAN_ENTRY_PERIOD = 15     # Reduced 25% from 20 for high vol
+DONCHIAN_EMA_PERIOD = 50
+VOL_THRESHOLD = 1.5            # ATR must exceed 1.5x its SMA to qualify
 
 # ---------------------------------------------------------------------------
-# Strategy 2 & 4: Silver Sweep — XAGUSD M15
+# Symbol groups
 # ---------------------------------------------------------------------------
-XAG = 'XAGUSD'
-XAG_SL = 1.5               # Silver — tighter for faster resolution
-XAG_TP = 3.0
-XAG_BARS = 900
+SYMBOLS_H1 = ['XAUUSD']
+SYMBOLS_M15 = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'XAGUSD', 'AUDUSD', 'USDCAD']
 
-# ---------------------------------------------------------------------------
-# Strategy 3: NY Sweep — EURUSD M15
-# ---------------------------------------------------------------------------
-EUR = 'EURUSD'
-EUR_SL = 1.2
-EUR_TP = 2.4
-EUR_BARS = 900
-
-# Swing lookback
-SLB_H1 = 3
-SLB_M15 = 5
+# Directional bias: None = both directions allowed
+DIRECTION_BIAS = {
+    'XAUUSD': 'BUY',       # LONG ONLY — safe haven in war
+    'USDJPY': 'SELL',       # SHORT ONLY — JPY safe haven
+    'USDCHF': 'SELL',       # SHORT ONLY — CHF safe haven
+    'EURUSD': None,         # Sell bias but both allowed
+    'GBPUSD': None,
+    'AUDUSD': None,
+    'XAGUSD': None,
+    'USDCAD': None,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -87,221 +93,96 @@ SLB_M15 = 5
 # ---------------------------------------------------------------------------
 
 def entry_forex_algorithm():
-    """Run all three strategies. Called every 60s by Celery beat."""
+    """Run Donchian breakout scan for all symbols. Called every 60s by Celery beat."""
     if cache.get(CB_KEY):
         return
     if (cache.get(DAILY_LOSS_KEY) or 0) <= MAX_DAILY_LOSS:
         return
 
-    open_syms = _open_symbols()
+    # Session filter: 07:00–17:00 UTC only
     hour = datetime.now(timezone.utc).hour
+    if hour < 7 or hour >= 17:
+        return
 
-    # Strategy 1: XAUUSD TJR (07:00–16:00)
-    if XAU not in open_syms and not cache.get(f'fx_cd:{XAU}'):
-        if 7 <= hour < 16:
-            _run_xau_tjr()
+    open_syms = _open_symbols()
 
-    # Strategy 2: XAGUSD London Sweep (07:00–12:00)
-    if XAG not in open_syms and not cache.get(f'fx_cd:{XAG}'):
-        if 7 <= hour < 12:
-            _run_xag_london()
+    # H1 symbols (XAUUSD)
+    for symbol in SYMBOLS_H1:
+        if symbol in open_syms or cache.get(f'fx_cd:{symbol}'):
+            continue
+        _run_donchian(symbol, MT5Timeframe.H1, 'H1')
 
-    # Strategy 3: EURUSD NY Sweep (13:00–16:00)
-    if EUR not in open_syms and not cache.get(f'fx_cd:{EUR}'):
-        if 13 <= hour < 16:
-            _run_eur_ny()
-
-    # Strategy 4: XAGUSD NY PM Sweep (16:00–22:00)
-    if XAG not in open_syms and not cache.get(f'fx_cd:{XAG}'):
-        if 16 <= hour < 22:
-            _run_xag_ny_pm()
+    # M15 symbols (forex pairs + silver)
+    for symbol in SYMBOLS_M15:
+        if symbol in open_syms or cache.get(f'fx_cd:{symbol}'):
+            continue
+        _run_donchian(symbol, MT5Timeframe.M15, 'M15')
 
 
 # ---------------------------------------------------------------------------
-# Strategy 1: XAUUSD TJR Asia Sweep
-# Asia range (00–05) → sweep during London/NY (07–16) → MSS → trend
+# Donchian breakout scanner
 # ---------------------------------------------------------------------------
 
-def _run_xau_tjr():
-    df = _fetch_bars(XAU, MT5Timeframe.H1, XAU_BARS)
-    if df is None or len(df) < 210:
+def _run_donchian(symbol, timeframe, tf_label):
+    """Check vol regime, then scan for Donchian breakout on a single symbol."""
+
+    # --- Vol-regime gate (always check on H1) ---
+    atr_df = _fetch_bars(symbol, MT5Timeframe.H1, 50)
+    if atr_df is None or len(atr_df) < 35:
         return
-    df = _indicators_h1(df)
+    atr_df = _add_atr(atr_df, period=14)
 
-    i = len(df) - 1
-    atr = df['atr'].iloc[i]
-    if pd.isna(atr) or atr <= 0:
-        return
-    if pd.isna(df['ema200'].iloc[i]):
-        return
+    atr_14 = atr_df['atr'].iloc[-1]
+    atr_ma_20 = atr_df['atr'].rolling(20).mean().iloc[-1]
 
-    today = df['date'].iloc[i]
-    c, pc = df['close'].iloc[i], df['close'].iloc[i - 1]
-    trend_bull = df['ema50'].iloc[i] > df['ema200'].iloc[i]
-
-    # Asia range (try today, fallback to yesterday)
-    asia_h, asia_l = _session_range(df, i, today, 0, 5)
-    if asia_h is None:
-        yesterday = (df['time'].iloc[i] - timedelta(days=1)).date()
-        asia_h, asia_l = _session_range(df, i, yesterday, 0, 5)
-        if asia_h is None:
-            return
-
-    sess = df[(df['date'] == today) & (df['hour'] >= 7) & (df.index <= i)]
-    if len(sess) < 2:
+    if pd.isna(atr_14) or pd.isna(atr_ma_20) or atr_ma_20 <= 0:
         return
 
-    # BULLISH: sweep Asia low + MSS + uptrend
-    if sess['low'].min() < asia_l and trend_bull:
-        shs = _swing_highs(df, i - SLB_H1, SLB_H1)
-        if shs and pc <= shs[-1][1] and c > shs[-1][1] and c > asia_l:
-            logger.info('[tjr] BUY: swept asia_low=%.2f MSS>%.2f c=%.2f', asia_l, shs[-1][1], c)
-            _execute(XAU, 'BUY', df, XAU_SL, XAU_TP, 'TJR_ASIA_XAU', 'H1')
-            return
+    is_extreme_vol = atr_14 > VOL_THRESHOLD * atr_ma_20
+    if not is_extreme_vol:
+        return  # Normal vol — skip (normal-vol strategies added later)
 
-    # BEARISH: sweep Asia high + MSS + downtrend
-    if sess['high'].max() > asia_h and not trend_bull:
-        sls = _swing_lows(df, i - SLB_H1, SLB_H1)
-        if sls and pc >= sls[-1][1] and c < sls[-1][1] and c < asia_h:
-            logger.info('[tjr] SELL: swept asia_high=%.2f MSS<%.2f c=%.2f', asia_h, sls[-1][1], c)
-            _execute(XAU, 'SELL', df, XAU_SL, XAU_TP, 'TJR_ASIA_XAU', 'H1')
-
-
-# ---------------------------------------------------------------------------
-# Strategy 2: XAGUSD London Sweep
-# Pre-London range (04–07) → sweep during London (07–12) → MSS → trend
-# ---------------------------------------------------------------------------
-
-def _run_xag_london():
-    df = _fetch_bars(XAG, MT5Timeframe.M15, XAG_BARS)
-    if df is None or len(df) < 820:
-        return
-    df = _indicators_m15(df)
-
-    i = len(df) - 1
-    atr = df['atr'].iloc[i]
-    if pd.isna(atr) or atr <= 0:
-        return
-    if pd.isna(df['ema200'].iloc[i]):
+    # --- Fetch data for the trading timeframe ---
+    bar_count = 250 if timeframe == MT5Timeframe.H1 else 900
+    df = _fetch_bars(symbol, timeframe, bar_count)
+    if df is None or len(df) < 60:
         return
 
-    today = df['date'].iloc[i]
-    c, pc = df['close'].iloc[i], df['close'].iloc[i - 1]
-    trend_bull = df['ema50'].iloc[i] > df['ema200'].iloc[i]
+    # --- Donchian trend filter ---
+    signals = donchian_trend_filter(df, params={
+        'entry_period': DONCHIAN_ENTRY_PERIOD,
+        'ema_period': DONCHIAN_EMA_PERIOD,
+    })
 
-    pre_h, pre_l = _session_range(df, i, today, 4, 7)
-    if pre_h is None:
+    latest_signal = signals.iloc[-1]
+
+    if latest_signal not in ('long_confirmed', 'short_confirmed'):
         return
 
-    sess = df[(df['date'] == today) & (df['hour'] >= 7) & (df['hour'] < 12) & (df.index <= i)]
-    if len(sess) < 2:
+    direction = 'BUY' if latest_signal == 'long_confirmed' else 'SELL'
+
+    # --- Directional bias filter ---
+    bias = DIRECTION_BIAS.get(symbol)
+    if bias is not None and direction != bias:
+        logger.info(
+            '[donchian] %s %s blocked by directional bias (%s only)',
+            symbol, direction, bias,
+        )
         return
 
-    # BULLISH
-    if sess['low'].min() < pre_l and trend_bull:
-        shs = _swing_highs(df, i - SLB_M15, SLB_M15)
-        if shs and pc <= shs[-1][1] and c > shs[-1][1] and c > pre_l:
-            logger.info('[ldn] BUY: swept pre_low=%.4f MSS>%.4f c=%.4f', pre_l, shs[-1][1], c)
-            _execute(XAG, 'BUY', df, XAG_SL, XAG_TP, 'LDN_SWEEP_XAG', 'M15')
-            return
-
-    # BEARISH
-    if sess['high'].max() > pre_h and not trend_bull:
-        sls = _swing_lows(df, i - SLB_M15, SLB_M15)
-        if sls and pc >= sls[-1][1] and c < sls[-1][1] and c < pre_h:
-            logger.info('[ldn] SELL: swept pre_high=%.4f MSS<%.4f c=%.4f', pre_h, sls[-1][1], c)
-            _execute(XAG, 'SELL', df, XAG_SL, XAG_TP, 'LDN_SWEEP_XAG', 'M15')
-
-
-# ---------------------------------------------------------------------------
-# Strategy 3: EURUSD NY Sweep
-# London range (07–13) → sweep during NY open (13–16) → MSS
-# ---------------------------------------------------------------------------
-
-def _run_eur_ny():
-    df = _fetch_bars(EUR, MT5Timeframe.M15, EUR_BARS)
-    if df is None or len(df) < 820:
-        return
-    df = _indicators_m15(df)
-
-    i = len(df) - 1
-    atr = df['atr'].iloc[i]
-    if pd.isna(atr) or atr <= 0:
+    # --- Compute ATR on the trading timeframe for SL/TP ---
+    df = _add_atr(df, period=14 if timeframe == MT5Timeframe.H1 else 56)
+    atr_val = df['atr'].iloc[-1]
+    if pd.isna(atr_val) or atr_val <= 0:
         return
 
-    today = df['date'].iloc[i]
-    c, pc = df['close'].iloc[i], df['close'].iloc[i - 1]
+    logger.info(
+        '[donchian] SIGNAL %s %s on %s | atr=%.5f atr14_h1=%.5f atr_ma20=%.5f (%.1fx)',
+        symbol, direction, tf_label, atr_val, atr_14, atr_ma_20,
+        atr_14 / atr_ma_20,
+    )
 
-    # London range to sweep (07:00–13:00)
-    ldn_h, ldn_l = _session_range(df, i, today, 7, 13)
-    if ldn_h is None:
-        return
-
-    sess = df[(df['date'] == today) & (df['hour'] >= 13) & (df['hour'] < 16) & (df.index <= i)]
-    if len(sess) < 2:
-        return
-
-    # BULLISH: sweep London low + MSS
-    if sess['low'].min() < ldn_l:
-        shs = _swing_highs(df, i - SLB_M15, SLB_M15)
-        if shs and pc <= shs[-1][1] and c > shs[-1][1]:
-            logger.info('[ny_eur] BUY: swept ldn_low=%.5f MSS>%.5f c=%.5f', ldn_l, shs[-1][1], c)
-            _execute(EUR, 'BUY', df, EUR_SL, EUR_TP, 'NY_SWEEP_EUR', 'M15')
-            return
-
-    # BEARISH: sweep London high + MSS
-    if sess['high'].max() > ldn_h:
-        sls = _swing_lows(df, i - SLB_M15, SLB_M15)
-        if sls and pc >= sls[-1][1] and c < sls[-1][1]:
-            logger.info('[ny_eur] SELL: swept ldn_high=%.5f MSS<%.5f c=%.5f', ldn_h, sls[-1][1], c)
-            _execute(EUR, 'SELL', df, EUR_SL, EUR_TP, 'NY_SWEEP_EUR', 'M15')
-
-
-# ---------------------------------------------------------------------------
-# Strategy 4: XAGUSD NY PM Sweep
-# London+NY AM range (07–16) → sweep during NY PM (16–22) → MSS → trend
-# ---------------------------------------------------------------------------
-
-def _run_xag_ny_pm():
-    df = _fetch_bars(XAG, MT5Timeframe.M15, XAG_BARS)
-    if df is None or len(df) < 820:
-        return
-    df = _indicators_m15(df)
-
-    i = len(df) - 1
-    atr = df['atr'].iloc[i]
-    if pd.isna(atr) or atr <= 0:
-        return
-    if pd.isna(df['ema200'].iloc[i]):
-        return
-
-    today = df['date'].iloc[i]
-    c, pc = df['close'].iloc[i], df['close'].iloc[i - 1]
-    trend_bull = df['ema50'].iloc[i] > df['ema200'].iloc[i]
-
-    # Range to sweep: London + NY AM (07:00–16:00)
-    day_h, day_l = _session_range(df, i, today, 7, 16)
-    if day_h is None:
-        return
-
-    sess = df[(df['date'] == today) & (df['hour'] >= 16) & (df.index <= i)]
-    if len(sess) < 2:
-        return
-
-    # BULLISH: sweep day low + MSS + uptrend
-    if sess['low'].min() < day_l and trend_bull:
-        shs = _swing_highs(df, i - SLB_M15, SLB_M15)
-        if shs and pc <= shs[-1][1] and c > shs[-1][1] and c > day_l:
-            logger.info('[nypm] BUY: swept day_low=%.4f MSS>%.4f c=%.4f', day_l, shs[-1][1], c)
-            _execute(XAG, 'BUY', df, XAG_SL, XAG_TP, 'NY_PM_SWEEP_XAG', 'M15')
-            return
-
-    # BEARISH: sweep day high + MSS + downtrend
-    if sess['high'].max() > day_h and not trend_bull:
-        sls = _swing_lows(df, i - SLB_M15, SLB_M15)
-        if sls and pc >= sls[-1][1] and c < sls[-1][1] and c < day_h:
-            logger.info('[nypm] SELL: swept day_high=%.4f MSS<%.4f c=%.4f', day_h, sls[-1][1], c)
-            _execute(XAG, 'SELL', df, XAG_SL, XAG_TP, 'NY_PM_SWEEP_XAG', 'M15')
+    _execute(symbol, direction, df, SL_ATR_MULT, TP_ATR_MULT, 'DONCHIAN_BREAKOUT', tf_label)
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +286,17 @@ def _execute(symbol, direction, df, sl_mult, tp_mult, strategy_name, timeframe):
 # Indicators
 # ---------------------------------------------------------------------------
 
+def _add_atr(df, period=14):
+    """Add ATR column to dataframe if not already present."""
+    if 'atr' in df.columns and df['atr'].notna().sum() > 0:
+        return df
+    c = df['close']
+    tr = np.maximum(df['high'] - df['low'],
+                    np.maximum(abs(df['high'] - c.shift(1)), abs(df['low'] - c.shift(1))))
+    df['atr'] = tr.rolling(period).mean()
+    return df
+
+
 def _indicators_h1(df):
     c = df['close']
     tr = np.maximum(df['high'] - df['low'],
@@ -427,40 +319,6 @@ def _indicators_m15(df):
     df['hour'] = df['time'].dt.hour
     df['date'] = df['time'].dt.date
     return df
-
-
-# ---------------------------------------------------------------------------
-# Structure
-# ---------------------------------------------------------------------------
-
-def _session_range(df, i, date, start_h, end_h):
-    mask = (df['date'] == date) & (df['hour'] >= start_h) & (df['hour'] < end_h)
-    bars = df.loc[mask]
-    if len(bars) < 2:
-        return None, None
-    return bars['high'].max(), bars['low'].min()
-
-
-def _swing_highs(df, end_idx, lookback=3, count=3):
-    start = max(lookback, end_idx - 80)
-    swings = []
-    highs = df['high']
-    for j in range(start, min(end_idx + 1, len(df) - lookback)):
-        window = highs.iloc[j - lookback:j + lookback + 1]
-        if highs.iloc[j] == window.max() and highs.iloc[j] > highs.iloc[j - 1]:
-            swings.append((j, highs.iloc[j]))
-    return swings[-count:]
-
-
-def _swing_lows(df, end_idx, lookback=3, count=3):
-    start = max(lookback, end_idx - 80)
-    swings = []
-    lows = df['low']
-    for j in range(start, min(end_idx + 1, len(df) - lookback)):
-        window = lows.iloc[j - lookback:j + lookback + 1]
-        if lows.iloc[j] == window.min() and lows.iloc[j] < lows.iloc[j - 1]:
-            swings.append((j, lows.iloc[j]))
-    return swings[-count:]
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ Reads real-time CVD signals from tick_consumer (cached in Redis) and
 confirms with M5/M15 candle structure before entering.
 
 Signal source: tick_consumer → RealtimeCVD → Redis `realtime_cvd:{symbol}`
-Signal types used: lack_of_participants, absorption (skip exhaustion — too noisy)
+Signal types used: absorption only (lack_of_participants disabled — 8.3% WR)
 
 Confirmation:
   M5:  EMA 8/21 alignment in signal direction (momentum)
@@ -13,8 +13,12 @@ Confirmation:
        + ATR for SL/TP sizing
 
 Entry: market order at current price
-SL: 1.8× M15 ATR from entry
-TP: 3.6× M15 ATR from entry (1:2 R:R)
+SL: 2.5× M15 ATR from entry (wide for extreme vol)
+TP: 5.0× M15 ATR from entry (safety TP — trail should close before this)
+
+Vol-regime gate: only trades absorption in extreme vol if signal is very strong.
+Donchian breakout (entry_forex.py) is the primary strategy — CVD absorption is secondary.
+Directional bias: XAUUSD long-only, USDJPY/USDCHF short-only (safe haven flows).
 
 24/7 operation with loose session sizing:
   - London/NY: full size
@@ -49,10 +53,10 @@ SYMBOLS = [
 ]
 
 # Risk
-RISK_EUR = 15.0          # Risk per trade in EUR (small + frequent)
-MAX_LOT = 0.20           # Max lot size
-SL_ATR_MULT = 1.2        # SL distance as ATR multiple
-TP_ATR_MULT = 2.4        # TP distance (1:2 R:R)
+RISK_EUR = 7.50           # Half size for extreme vol
+MAX_LOT = 0.10            # Smaller max lot
+SL_ATR_MULT = 2.5         # Much wider stops (was 1.2)
+TP_ATR_MULT = 5.0         # Wide safety TP (trail should close before this)
 
 # Position limits
 MAX_OPEN = 5             # Max simultaneous positions
@@ -71,6 +75,13 @@ VALID_SIGNALS = {
     'bullish_absorption',
     'bearish_absorption',
     # lack_of_participants disabled — 1W/11L (8.3% WR), -€104 total
+}
+
+# Directional bias — safe-haven flows during extreme geopolitical vol
+DIRECTION_BIAS = {
+    'XAUUSD': 'BUY',      # Long-only gold (safe haven in war)
+    'USDJPY': 'SELL',      # Short-only (JPY safe haven)
+    'USDCHF': 'SELL',      # Short-only (CHF safe haven)
 }
 
 # Session sizing (24/7 but adjust for liquidity)
@@ -236,6 +247,13 @@ def entry_cvd_tick_algorithm():
     if _check_circuit_breaker():
         return
 
+    # Vol-regime gate: only trade absorption in extreme vol if signal is very strong
+    # This allows the Donchian breakout (entry_forex.py) to be the primary strategy
+    # CVD absorption is secondary — only fires if direction matches the trend
+    vol_regime = cache.get('market:vol_regime')
+    if vol_regime == 'extreme':
+        logger.info("CVD TICK: Extreme vol regime detected — tightening filters")
+
     # Global cooldown
     if cache.get('cvd_tick:global_cooldown'):
         return
@@ -283,6 +301,14 @@ def entry_cvd_tick_algorithm():
         if not _check_m15_structure(symbol, direction, atr):
             logger.info("CVD TICK SKIP: %s %s %s — M15 structure rejected",
                        symbol, signal_type, direction)
+            continue
+
+        # --- DIRECTIONAL BIAS FILTER ---
+        # If symbol has a bias and trade direction doesn't match, skip
+        bias = DIRECTION_BIAS.get(symbol)
+        if bias and direction != bias:
+            logger.info("CVD TICK SKIP: %s %s blocked by %s-only bias",
+                       symbol, direction, bias)
             continue
 
         # --- EXECUTE ENTRY ---
