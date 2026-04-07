@@ -204,9 +204,11 @@ def _execute(symbol, direction, df, sl_mult, tp_mult, strategy_name, timeframe):
     tp = fill_ref + tp_dist if direction == 'BUY' else fill_ref - tp_dist
 
     try:
+        from app.quant.algorithms.position_manager import get_dynamic_risk
+        dynamic_risk = get_dynamic_risk()
         volume = calculate_risk_based_lots(
             symbol=symbol, sl_distance=sl_dist,
-            target_risk=RISK_EUR, order_type=direction,
+            target_risk=dynamic_risk, order_type=direction,
         )
     except Exception as e:
         logger.error('[fx] Sizing failed %s: %s', symbol, e)
@@ -240,7 +242,7 @@ def _execute(symbol, direction, df, sl_mult, tp_mult, strategy_name, timeframe):
     try:
         from app.utils.db.create import create_trade
         trade_obj, _ = create_trade(
-            order=result, symbol=symbol, capital=RISK_EUR,
+            order=result, symbol=symbol, capital=dynamic_risk,
             position_size_usd=0, leverage=500, commission=0,
             type=direction, broker='VantageInternational-Demo',
             market='FOREX', strategy=strategy_name,

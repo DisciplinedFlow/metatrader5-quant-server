@@ -101,8 +101,8 @@ SYMBOL_CONFIGS = {
 
 SYMBOLS = list(SYMBOL_CONFIGS.keys())
 
-# Risk (shared across all symbols)
-RISK_EUR = 7.50
+# Risk — dynamic sizing from position_manager.get_dynamic_risk()
+# Falls back to €7.50 if equity unavailable
 MAX_LOT = 0.10
 
 # Position limits
@@ -402,9 +402,10 @@ def entry_cvd_tick_algorithm():
             sl = entry_price + sl_dist
             tp = entry_price - tp_dist
 
-        # Session-adjusted sizing
+        # Dynamic risk: 2% of account equity, session-adjusted
+        from app.quant.algorithms.position_manager import get_dynamic_risk
         size_mult = _session_size_mult()
-        risk = RISK_EUR * size_mult
+        risk = get_dynamic_risk() * size_mult
 
         # Calculate lot size
         lots = calculate_risk_based_lots(symbol, sl_dist, risk, direction)
