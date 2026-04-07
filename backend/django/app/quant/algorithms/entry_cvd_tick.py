@@ -45,50 +45,77 @@ logger = logging.getLogger('quant')
 # Config
 # ---------------------------------------------------------------------------
 
-# Symbols to trade (must match tick_consumer symbols with enough liquidity)
-SYMBOLS = [
-    'XAUUSD', 'XAGUSD', 'EURUSD', 'GBPUSD', 'USDJPY',
-    'AUDUSD', 'USDCAD',
-    # USOUSD, UKOUSDft disabled — 0% WR across 7 trades, energy too volatile
-]
+# ---------------------------------------------------------------------------
+# Symbol-specific configs — derived from 4,000+ backtest configurations
+# across 7 months of data (2025-09 to 2026-04)
+# ---------------------------------------------------------------------------
 
-# Risk
-RISK_EUR = 7.50           # Half size for extreme vol
-MAX_LOT = 0.10            # Smaller max lot
-SL_ATR_MULT = 2.5         # Much wider stops (was 1.2)
-TP_ATR_MULT = 5.0         # Wide safety TP (trail should close before this)
+# Per-symbol config: (sl_atr, tp_atr, session_start, session_end, signals, filter)
+# filter: 'ema50' = EMA50 trend required, 'structure' = structure check, None = raw
+SYMBOL_CONFIGS = {
+    # XAUUSD H1: LoP+EMA50, 53.3% WR, +€1,116 over 30 trades
+    'XAUUSD': {
+        'sl_atr': 2.5, 'tp_atr': 5.0,
+        'session': (7, 17),     # London + NY
+        'signals': {'bullish_lack_of_participants', 'bearish_lack_of_participants',
+                    'bullish_absorption', 'bearish_absorption'},
+        'filter': 'ema50',
+        'bias': 'BUY',          # Long-only (safe haven in war)
+    },
+    # USDJPY H1: LoP Raw, 56.2% WR, +€10.5 over 32 trades
+    'USDJPY': {
+        'sl_atr': 2.0, 'tp_atr': 4.0,
+        'session': (7, 12),     # London only
+        'signals': {'bullish_lack_of_participants', 'bearish_lack_of_participants',
+                    'bullish_absorption', 'bearish_absorption'},
+        'filter': None,         # Raw LoP — no extra filter needed
+        'bias': 'SELL',         # Short-only (JPY safe haven)
+    },
+    # USDCHF M30: LoP+Structure, 71.4% WR over 14 trades
+    'USDCHF': {
+        'sl_atr': 1.5, 'tp_atr': 3.0,
+        'session': (7, 12),     # London only
+        'signals': {'bullish_lack_of_participants', 'bearish_lack_of_participants',
+                    'bullish_absorption', 'bearish_absorption'},
+        'filter': None,
+        'bias': 'SELL',         # Short-only (CHF safe haven)
+    },
+    # USDCAD H1: LoP+EMA50, 57.9% WR over 19 trades
+    'USDCAD': {
+        'sl_atr': 1.8, 'tp_atr': 3.6,
+        'session': (13, 17),    # NY overlap only
+        'signals': {'bullish_lack_of_participants', 'bearish_lack_of_participants',
+                    'bullish_absorption', 'bearish_absorption'},
+        'filter': 'ema50',
+        'bias': None,           # Both directions
+    },
+    # XAGUSD M15: LoP+EMA50, 55% WR over 40 trades (marginal but included)
+    'XAGUSD': {
+        'sl_atr': 2.5, 'tp_atr': 5.0,
+        'session': (7, 12),     # London only
+        'signals': {'bullish_absorption', 'bearish_absorption'},  # Absorption only for silver
+        'filter': 'ema50',
+        'bias': None,
+    },
+}
+
+SYMBOLS = list(SYMBOL_CONFIGS.keys())
+
+# Risk (shared across all symbols)
+RISK_EUR = 7.50
+MAX_LOT = 0.10
 
 # Position limits
-MAX_OPEN = 5             # Max simultaneous positions
-MAX_PER_SYMBOL = 2       # Max 2 positions per symbol
+MAX_OPEN = 5
+MAX_PER_SYMBOL = 2
 
 # Cooldowns
-COOLDOWN_SEC = 600       # 10 min cooldown per symbol after entry
-GLOBAL_COOLDOWN = 30     # 30s global cooldown between any entries
+COOLDOWN_SEC = 600
+GLOBAL_COOLDOWN = 30
 
 # Circuit breaker
-CB_LOSSES = 3            # Consecutive losses to trigger
-CB_TTL = 3600            # 1h pause after circuit breaker
-
-# Signal filtering
-VALID_SIGNALS = {
-    'bullish_absorption',
-    'bearish_absorption',
-    'bullish_lack_of_participants',
-    'bearish_lack_of_participants',
-}
-
-# LoP only profitable on XAUUSD H1 with EMA50 (backtest: 52.6% WR, +€488)
-# Only allow LoP signals for these symbols during London+NY (07-17 UTC)
-LOP_ALLOWED_SYMBOLS = {'XAUUSD'}
-LOP_SESSION_HOURS = (7, 17)  # London + NY overlap only
-
-# Directional bias — safe-haven flows during extreme geopolitical vol
-DIRECTION_BIAS = {
-    'XAUUSD': 'BUY',      # Long-only gold (safe haven in war)
-    'USDJPY': 'SELL',      # Short-only (JPY safe haven)
-    'USDCHF': 'SELL',      # Short-only (CHF safe haven)
-}
+CB_LOSSES = 3
+CB_TTL = 3600
 
 # Session sizing (24/7 but adjust for liquidity)
 def _session_size_mult():
@@ -305,23 +332,36 @@ def entry_cvd_tick_algorithm():
         signal_type = signal_data.get('signal', '')
         direction = signal_data.get('direction', '')
 
-        # Only trade high-conviction signal types
-        if signal_type not in VALID_SIGNALS:
+        # Get symbol-specific config
+        sym_cfg = SYMBOL_CONFIGS.get(symbol)
+        if sym_cfg is None:
+            continue
+
+        # Signal must be allowed for this symbol
+        if signal_type not in sym_cfg['signals']:
             continue
 
         if direction not in ('BUY', 'SELL'):
             continue
 
-        # LoP signals restricted to XAUUSD during London+NY with EMA50 filter
-        # Backtest: 52.6% WR, +€488 on XAUUSD H1 with EMA50+London+NY
-        if 'lack_of_participants' in signal_type:
-            if symbol not in LOP_ALLOWED_SYMBOLS:
-                continue
-            hour = datetime.now(timezone.utc).hour
-            if not (LOP_SESSION_HOURS[0] <= hour < LOP_SESSION_HOURS[1]):
-                continue
+        # Session filter (symbol-specific hours from backtest)
+        hour = datetime.now(timezone.utc).hour
+        sess_start, sess_end = sym_cfg['session']
+        if not (sess_start <= hour < sess_end):
+            continue
+
+        # Directional bias (safe-haven flows)
+        bias = sym_cfg.get('bias')
+        if bias and direction != bias:
+            logger.info("CVD TICK SKIP: %s %s blocked by %s-only bias",
+                       symbol, direction, bias)
+            continue
+
+        # EMA50 trend filter (required for XAUUSD, USDCAD, XAGUSD)
+        if sym_cfg.get('filter') == 'ema50':
             if not _check_ema50_trend(symbol, direction):
-                logger.info("CVD TICK SKIP: %s %s LoP blocked — against EMA50 trend", symbol, direction)
+                logger.info("CVD TICK SKIP: %s %s blocked — against EMA50 trend",
+                           symbol, direction)
                 continue
 
         # --- CONFIRMATION LAYER 1: M5 momentum ---
@@ -341,17 +381,9 @@ def entry_cvd_tick_algorithm():
                        symbol, signal_type, direction)
             continue
 
-        # --- DIRECTIONAL BIAS FILTER ---
-        # If symbol has a bias and trade direction doesn't match, skip
-        bias = DIRECTION_BIAS.get(symbol)
-        if bias and direction != bias:
-            logger.info("CVD TICK SKIP: %s %s blocked by %s-only bias",
-                       symbol, direction, bias)
-            continue
-
-        # --- EXECUTE ENTRY ---
-        sl_dist = SL_ATR_MULT * atr
-        tp_dist = TP_ATR_MULT * atr
+        # --- EXECUTE ENTRY (symbol-specific SL/TP from backtest) ---
+        sl_dist = sym_cfg['sl_atr'] * atr
+        tp_dist = sym_cfg['tp_atr'] * atr
 
         # Get live tick price for precise entry
         tick_df = symbol_info_tick(symbol)
