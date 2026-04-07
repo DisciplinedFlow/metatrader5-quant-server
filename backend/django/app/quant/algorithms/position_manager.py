@@ -62,8 +62,8 @@ def get_dynamic_risk():
 
         risk_pct = cache.get(RISK_PCT_KEY) or RISK_PCT
         risk = float(equity) * float(risk_pct)
-        # Clamp: min €2, max €100
-        return max(2.0, min(100.0, risk))
+        # Clamp: min €2, max €20 (prevents oversizing on larger accounts during testing)
+        return max(2.0, min(20.0, risk))
     except Exception as e:
         logger.debug('Equity fetch failed: %s', e)
         return 7.50
