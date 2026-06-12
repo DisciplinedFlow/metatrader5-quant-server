@@ -1,0 +1,109 @@
+# Celery worker + tick consumer.
+#
+# Corrections vs the ChatGPT proposal:
+#   - app module is `app`, not `core`
+#   - queues are default,critical,analysis — the proposed `execution`/`ml`
+#     queues don't exist in the codebase
+#   - replicas MUST be 1 (proposal had 2): the pod also runs the
+#     `tick_consumer` management command (single consumer on redis db 2),
+#     and duplicate workers double-fire entry/trailing-stop tasks → real
+#     duplicate trades on a live broker account.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery
+  namespace: mt5-quant
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: celery
+  template:
+    metadata:
+      labels:
+        app: celery
+    spec:
+      containers:
+        - name: worker
+          image: mt5-quant/django:latest
+          imagePullPolicy: Never
+          command: ["bash", "-c"]
+          args:
+            - python manage.py tick_consumer --redis-url redis://redis:6379/2 &
+              celery -A app worker --loglevel=info --concurrency=8 -Q default,critical,analysis
+          envFrom:
+            - secretRef:
+                name: app-env
+          volumeMounts:
+            - name: static-files
+              mountPath: /app/staticfiles
+            - name: quant-logs
+              mountPath: /app/logs
+            - name: ml-models
+              mountPath: /app/ml_models
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi   # matches compose mem_limit
+          livenessProbe:
+            exec:
+              command: ["celery", "-A", "app", "inspect", "ping", "--timeout", "5"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 3
+---
+# Celery Beat — the heartbeat of the whole platform. Schedules the entry
+# algorithm (60s), trailing stops (15s), close detection (15s), regime scans
+# and ML retraining (the in-app `run_ml_retrain` task replaces the proposed
+# k8s CronJob, which pointed at training/train.py — a file that isn't even
+# inside the django image).
+#
+# THE CHATGPT DOC OMITTED BEAT ENTIRELY — without it, no strategy ever runs.
+# Exactly one replica, Recreate: two beats = every trade fired twice.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat
+  namespace: mt5-quant
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: celery-beat
+  template:
+    metadata:
+      labels:
+        app: celery-beat
+    spec:
+      containers:
+        - name: beat
+          image: mt5-quant/django:latest
+          imagePullPolicy: Never
+          command: ["celery", "-A", "app", "beat", "--loglevel=info"]
+          envFrom:
+            - secretRef:
+                name: app-env
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi   # matches compose mem_limit
+          livenessProbe:
+            exec:
+              # same /proc scan as the compose healthcheck (slim image: no ps/pgrep)
+              command:
+                - python
+                - -c
+                - import os, sys; sys.exit(0 if any('celery' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore') and 'beat' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore') for p in os.listdir('/proc') if p.isdigit()) else 1)
+            initialDelaySeconds: 20
+            periodSeconds: 30

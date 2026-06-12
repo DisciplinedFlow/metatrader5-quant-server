@@ -1,0 +1,96 @@
+# Vue dashboard. Missing from the ChatGPT doc; in compose it only exists in
+# the dev override. The image's baked-in nginx.conf uses Docker's embedded
+# DNS (resolver 127.0.0.11) and runtime-resolved upstreams — both
+# Docker-specific — so we mount a K8s-flavored config over it: static
+# upstreams resolved at startup via CoreDNS, no resolver directive needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-nginx
+  namespace: mt5-quant
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        # MT5 Flask API proxy
+        location ~ ^/api/mt5/(.*) {
+            proxy_pass http://mt5:5001/$1$is_args$args;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 30s;
+        }
+
+        # Django API proxy
+        location ~ ^/api/django/(.*) {
+            proxy_pass http://django:8000/$1$is_args$args;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 30s;
+        }
+
+        # Static files
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: mt5-quant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: mt5-quant/dashboard:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 10
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: dashboard-nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: mt5-quant
+spec:
+  ports:
+    - port: 80
+  selector:
+    app: dashboard

@@ -1,0 +1,57 @@
+# Shared volumes mirroring docker-compose volumes. All RWO on the K3s
+# local-path provisioner; sharing across pods is safe because this is a
+# single-node cluster (all pods land on the same node).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mt5-config
+  namespace: mt5-quant
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi   # Wine prefix + MT5 terminal installation (stateful!)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ml-models
+  namespace: mt5-quant
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi    # shared by django + celery (compose: ./ml_models)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: quant-logs
+  namespace: mt5-quant
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi    # shared by django + celery (compose: quant-logs)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: static-files
+  namespace: mt5-quant
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi    # collectstatic output (compose: static_volume)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: mt5-quant
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi    # AOF persistence (compose: redis-data)

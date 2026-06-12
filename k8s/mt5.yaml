@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mt5
+  namespace: mt5-quant
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # one broker session only — two MT5 terminals logged into
+                     # the same account would fight over positions
+  selector:
+    matchLabels:
+      app: mt5
+  template:
+    metadata:
+      labels:
+        app: mt5
+    spec:
+      containers:
+        - name: mt5
+          image: mt5-quant/mt5:latest   # built locally, imported into k3s (see scripts/)
+          imagePullPolicy: Never
+          # Wine/MT5 is x86-only; cluster node must be amd64
+          envFrom:
+            - secretRef:
+                name: app-env
+          ports:
+            - containerPort: 5001
+              name: api
+            - containerPort: 3000
+              name: vnc
+          volumeMounts:
+            - name: config
+              mountPath: /config   # Wine prefix + MT5 install live here
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi   # matches compose mem_limit
+          # Flask API only answers once Wine + MT5 + the Python bridge are up,
+          # which can take minutes on first boot (terminal download/install).
+          startupProbe:
+            tcpSocket:
+              port: 5001
+            failureThreshold: 60
+            periodSeconds: 10   # up to 10 minutes for cold start
+          readinessProbe:
+            tcpSocket:
+              port: 5001
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 5001
+            periodSeconds: 30
+            failureThreshold: 4
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: mt5-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mt5   # name is load-bearing: MT5_API_URL=http://mt5:5001 and the
+              # dashboard nginx proxy both resolve this hostname
+  namespace: mt5-quant
+spec:
+  ports:
+    - port: 5001
+      name: api
+    - port: 3000
+      name: vnc
+  selector:
+    app: mt5

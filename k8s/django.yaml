@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: django
+  namespace: mt5-quant
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # shares RWO volumes with celery; keep one instance
+  selector:
+    matchLabels:
+      app: django
+  template:
+    metadata:
+      labels:
+        app: django
+    spec:
+      initContainers:
+        - name: migrate
+          image: mt5-quant/django:latest
+          imagePullPolicy: Never
+          command: ["python", "manage.py", "migrate", "--noinput"]
+          envFrom:
+            - secretRef:
+                name: app-env
+      containers:
+        - name: django
+          image: mt5-quant/django:latest
+          imagePullPolicy: Never
+          # Dockerfile CMD: gunicorn app.wsgi, 8 gthread workers, port 8000
+          envFrom:
+            - secretRef:
+                name: app-env
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: static-files
+              mountPath: /app/staticfiles
+            - name: quant-logs
+              mountPath: /app/logs
+            - name: ml-models
+              mountPath: /app/ml_models
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 1500m
+              memory: 2Gi   # matches compose mem_limit
+          readinessProbe:
+            httpGet:
+              path: /v1/bot/status/   # same endpoint as the compose healthcheck
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /v1/bot/status/
+              port: 8000
+            initialDelaySeconds: 45
+            periodSeconds: 30
+            failureThreshold: 4
+      volumes:
+        - name: static-files
+          persistentVolumeClaim:
+            claimName: static-files
+        - name: quant-logs
+          persistentVolumeClaim:
+            claimName: quant-logs
+        - name: ml-models
+          persistentVolumeClaim:
+            claimName: ml-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: django   # name is load-bearing: dashboard nginx proxies to django:8000
+  namespace: mt5-quant
+spec:
+  ports:
+    - port: 8000
+  selector:
+    app: django

@@ -1,0 +1,59 @@
+# Rendered by scripts/deploy.sh with envsubst from .env — do not apply raw.
+# Uses the Traefik ingress controller that ships with K3s. The ChatGPT doc
+# exposed only the Django API; this covers all four web surfaces.
+#
+# TLS: K3s Traefik has no ACME resolver by default. Install cert-manager and
+# uncomment the annotations + tls blocks (see k8s/README.md).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mt5-quant
+  namespace: mt5-quant
+  # annotations:
+  #   cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: ${DJANGO_DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: django
+                port:
+                  number: 8000
+    - host: ${API_DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mt5
+                port:
+                  number: 5001
+    - host: ${VNC_DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mt5
+                port:
+                  number: 3000
+    - host: ${DASHBOARD_DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard
+                port:
+                  number: 80
+  # tls:
+  #   - hosts: [${DJANGO_DOMAIN}, ${API_DOMAIN}, ${VNC_DOMAIN}, ${DASHBOARD_DOMAIN}]
+  #     secretName: mt5-quant-tls

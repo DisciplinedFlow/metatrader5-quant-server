@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - storage.yaml
+  - postgres.yaml
+  - redis.yaml
+  - mt5.yaml
+  - django.yaml
+  - celery.yaml
+  - dashboard.yaml
+# ingress.template.yaml is rendered and applied by scripts/deploy.sh
+# secret `app-env` is created from .env by scripts/deploy.sh

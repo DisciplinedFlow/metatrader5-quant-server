@@ -1,0 +1,11 @@
+# Single namespace by design (diverges from the ChatGPT 3-namespace proposal):
+# the app config and dashboard nginx resolve services by bare hostname
+# (redis://redis, http://mt5:5001, http://django:8000), which only works
+# when everything shares one namespace. On a single-VM K3s there is no
+# isolation benefit that justifies rewriting those references.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mt5-quant
+  labels:
+    app.kubernetes.io/part-of: mt5-quant-server
