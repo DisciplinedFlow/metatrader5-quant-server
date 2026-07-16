@@ -227,15 +227,12 @@ services:
       dockerfile: Dockerfile
     container_name: celery
     command: bash -c "python -m app.ws.server & python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=6 -Q default,critical,analysis -n celery-forex@%h"
-    extra_hosts:
-      - "raspberrypi:172.28.55.86"
     ports:
       - "8001:8001"
     volumes:
       - static_volume:/app/staticfiles
       - quant-logs:/app/logs
       - ./ml_models:/app/ml_models
-      - ~/.ssh:/root/.ssh:ro
     env_file:
       - .env
     depends_on:

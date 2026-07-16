@@ -116,4 +116,14 @@ export TRAEFIK_HASHED_PASSWORD=$(openssl passwd -apr1 $PASSWORD)
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE.md).
+No license. This repository is private and all rights are reserved.
+
+It derives from [slowfound/metatrader5-quant-server-python](https://github.com/slowfound/metatrader5-quant-server-python)
+(originally `sesto-dev/metatrader5-linux-django-docker`), which specifies no
+license of its own — so no redistribution rights were ever granted upstream, and
+none can be granted downstream from here. Earlier revisions of this file claimed
+MIT and linked a `LICENSE.md` that has never existed in either repository; that
+claim was inherited from upstream and was never accurate.
+
+Before open-sourcing, distributing, or selling access to this code, that needs
+resolving with the original author.
