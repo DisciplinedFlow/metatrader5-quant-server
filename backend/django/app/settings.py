@@ -140,7 +140,7 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 100
+    'PAGE_SIZE': 1000
 }
 
 MIDDLEWARE = [
@@ -262,9 +262,13 @@ CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
 CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_ROUTES = {
+    # ── Forex (celery-forex worker: queues critical, analysis, default) ──
     'quant.tasks.run_quant_trailing_stop_algorithm': {'queue': 'critical'},
     'quant.tasks.run_quant_close_algorithm': {'queue': 'critical'},
+    'quant.tasks.run_position_reconciliation': {'queue': 'critical'},
+    'quant.tasks.run_forex_entry': {'queue': 'critical'},
     'quant.tasks.run_quant_entry_algorithm': {'queue': 'critical'},
+    'quant.tasks.run_structure_scanner': {'queue': 'critical'},
     'quant.tasks.run_ict_scanner': {'queue': 'analysis'},
     'quant.tasks.run_regime_scan': {'queue': 'analysis'},
     'quant.tasks.run_ai_brain': {'queue': 'analysis'},
@@ -272,124 +276,114 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.run_strategy_rotation': {'queue': 'analysis'},
     'quant.tasks.run_ml_retrain': {'queue': 'analysis'},
     'quant.tasks.run_llm_retrain': {'queue': 'analysis'},
+    'quant.tasks.check_news_sentiment': {'queue': 'default'},
+    # ── Crypto (celery-crypto worker: queues crypto-critical, crypto-analysis) ──
+    'quant.tasks.run_crypto_entry': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_exit': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_reconcile': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_rsi_scalper': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_lighter_bb_scalper': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_adx_entry': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_entry': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_mean_reversion': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_cvd': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_momentum': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_wti': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_near': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_lighter_tsla': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_funding_arb_scan': {'queue': 'crypto-analysis'},
+    'crypto.tasks.sync_crypto_prices': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_crypto_exit': {'queue': 'crypto-critical'},
+    'crypto.tasks.run_crypto_backtest': {'queue': 'crypto-analysis'},
+    'crypto.tasks.run_crypto_backtest_all': {'queue': 'crypto-analysis'},
+    'crypto.tasks.train_crypto_ml': {'queue': 'crypto-analysis'},
 }
+
+# --- Neo4j Knowledge Graph (DISABLED — container removed) ---
+# NEO4J_URI = os.getenv('NEO4J_URI', 'bolt://neo4j:7687')
+# NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
+# NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', '')
+GRAPH_FEATURES_ACTIVE = False
+GRAPH_FEATURES_LIVE_FALLBACK = False
+GRAPH_ROUTER_SIGNAL_ACTIVE = False
+
+# --- Anthropic Claude API (Haiku for trading intelligence) ---
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+
 CELERY_BEAT_SCHEDULE = {
-    'run-quant-entry-algorithm': {
-        'task': 'quant.tasks.run_quant_entry_algorithm',  # This should match the @shared_task name
-        'schedule': 60.0 * 1,
+    # ── Forex (MT5) ──────────────────────────────────────────
+    'run-forex-entry': {
+        'task': 'quant.tasks.run_forex_entry',
+        'schedule': 60.0,
     },
     'run-quant-trailing-stop-algorithm': {
-        'task': 'quant.tasks.run_quant_trailing_stop_algorithm',  # This should match the @shared_task name
-        'schedule': 2,  # every 2 seconds — gold/silver can move $10+ in 5s
-    },
-    'run-quant-close-algorithm': {
-        'task': 'quant.tasks.run_quant_close_algorithm',  # This should match the @shared_task name
+        'task': 'quant.tasks.run_quant_trailing_stop_algorithm',
         'schedule': 15,
     },
-    'run-backtest': {
-        'task': 'quant.tasks.run_backtest',
-        'schedule': 60.0 * 60 * 6,  # every 6 hours
+    'run-quant-close-algorithm': {
+        'task': 'quant.tasks.run_quant_close_algorithm',
+        'schedule': 15,
     },
-    # --- Hyperliquid: re-enabled alongside Lighter for multi-venue ---
-    'sync-crypto-prices': {
-        'task': 'crypto.tasks.sync_crypto_prices',
+    'run-position-reconciliation': {
+        'task': 'quant.tasks.run_position_reconciliation',
+        'schedule': 30,
+    },
+    'check-tick-consumer-health': {
+        'task': 'quant.tasks.check_tick_consumer_health',
         'schedule': 60.0,
     },
+    # ── Crypto (Lighter.xyz) ─────────────────────────────────
     'run-crypto-entry': {
-        'task': 'crypto.tasks.run_crypto_entry',
-        'schedule': 60.0,
-    },
-    'run-crypto-exit': {
-        'task': 'crypto.tasks.run_crypto_exit',
-        'schedule': 30.0,
-    },
-    # --- Lighter.xyz DEX (zero-fee venue) ---
-    'run-lighter-entry': {
-        'task': 'crypto.tasks.run_lighter_entry',
+        'task': 'quant.tasks.run_crypto_entry',
         'schedule': 60.0,
     },
     'run-lighter-exit': {
         'task': 'crypto.tasks.run_lighter_exit',
-        'schedule': 30.0,
+        'schedule': 10.0,  # 6/min × 2 = 12 API/min — fastest possible exit detection
     },
-    # --- Funding Rate Arbitrage Monitor (Hyperliquid vs Lighter) ---
-    'run-funding-arb-scan': {
-        'task': 'crypto.tasks.run_funding_arb_scan',
-        'schedule': 300.0,  # every 5 minutes
+    'run-lighter-rsi-scalper': {
+        'task': 'crypto.tasks.run_lighter_rsi_scalper',
+        'schedule': 20.0,  # 3/min × 2 = 6 API/min — XAU scalp entries
     },
-    # --- LLM-powered tasks DISABLED: $10/day API cost not justified at current scale ---
-    # Re-enable when account is consistently profitable. These are "nice to have"
-    # on top of the 6 rule-based layers (circuit breaker, symbol filter, regime,
-    # group tendency, ML meta-filter, event guard) which cost $0.
-    #
-    # 'run-macro-analysis': {
-    #     'task': 'quant.tasks.run_macro_analysis',
-    #     'schedule': 60.0 * 30,  # every 30 minutes
+    'run-lighter-bb-scalper': {
+        'task': 'crypto.tasks.run_lighter_bb_scalper',
+        'schedule': 30.0,  # every 30s — WTI BB mean reversion
+    },
+    # DISABLED — ADX strategy unprofitable over 60d Yahoo backtest (PF<1 all pairs)
+    # 'run-lighter-adx-entry': {
+    #     'task': 'crypto.tasks.run_lighter_adx_entry',
+    #     'schedule': 30.0,
     # },
-    # 'run-strategy-evolution': {
-    #     'task': 'quant.tasks.run_strategy_evolution',
-    #     'schedule': 60.0 * 60 * 6,  # every 6 hours
-    # },
-    # 'run-ai-brain': {
-    #     'task': 'quant.tasks.run_ai_brain',
-    #     'schedule': 60.0 * 5,  # every 5 minutes
-    # },
+    'run-lighter-reconcile': {
+        'task': 'crypto.tasks.run_lighter_reconcile',
+        'schedule': 45.0,  # 1.3/min × 3 = 4 API/min
+    },
+    'run-lighter-entry': {
+        'task': 'crypto.tasks.run_lighter_entry',
+        'schedule': 30.0,  # 2/min × 2 = 4 API/min — XAU/XAG/WTI momentum
+    },
+    'run-lighter-mean-reversion': {
+        'task': 'crypto.tasks.run_lighter_mean_reversion',
+        'schedule': 60.0,  # 1/min × 2 = 2 API/min
+    },
+    'run-lighter-wti': {
+        'task': 'crypto.tasks.run_lighter_wti',
+        'schedule': 30.0,  # 2/min × 3 = 6 API/min — war headlines move fast
+    },
+    # NEAR/TSLA disabled — commodities only (war economy focus)
+    # 'run-lighter-near': { ... },
+    # 'run-lighter-tsla': { ... },
+    # ── Monitoring ──────────────────────────────────────────
     'fetch-market-pulse': {
         'task': 'quant.tasks.fetch_market_pulse',
-        'schedule': 120.0,  # every 2 minutes
+        'schedule': 120.0,
     },
-    'run-regime-scan': {
-        'task': 'quant.tasks.run_regime_scan',
-        'schedule': 300.0,  # every 5 minutes
+    'check-news-sentiment': {
+        'task': 'quant.tasks.check_news_sentiment',
+        'schedule': 300.0,
     },
-    # 'run-ai-brain-executor': {
-    #     'task': 'quant.tasks.run_ai_brain_executor',
-    #     'schedule': 300.0,  # every 5 minutes
+    # 'run-funding-arb-scan': {  # Disabled — not trading on Hyperliquid
+    #     'task': 'crypto.tasks.run_funding_arb_scan',
+    #     'schedule': 300.0,
     # },
-    'run-ml-retrain': {
-        'task': 'quant.tasks.run_ml_retrain',
-        'schedule': 60.0 * 30,  # every 30 minutes
-    },
-    # 'run-llm-retrain': {
-    #     'task': 'quant.tasks.run_llm_retrain',
-    #     'schedule': crontab(hour=3, minute=0),  # daily at 03:00 UTC (off-market hours)
-    # },
-    'run-ict-scanner': {
-        'task': 'quant.tasks.run_ict_scanner',
-        'schedule': 60.0,  # every 1 minute — same as CVD entry
-    },
-    'check-tick-consumer-health': {
-        'task': 'quant.tasks.check_tick_consumer_health',
-        'schedule': 60.0,  # every 1 minute
-    },
-    'run-strategy-orchestrator': {
-        'task': 'quant.tasks.run_strategy_orchestrator',
-        'schedule': 300.0,  # every 5 minutes
-    },
-    # --- Strategy Auto-Rotator (5x daily at session boundaries, weekdays only) ---
-    'run-rotation-asia-open': {
-        'task': 'quant.tasks.run_strategy_rotation',
-        'schedule': crontab(hour=6, minute=0, day_of_week='1-5'),
-        'args': ('ASIA_OPEN',),
-    },
-    'run-rotation-london-open': {
-        'task': 'quant.tasks.run_strategy_rotation',
-        'schedule': crontab(hour=9, minute=0, day_of_week='1-5'),
-        'args': ('LONDON_OPEN',),
-    },
-    'run-rotation-ny-open': {
-        'task': 'quant.tasks.run_strategy_rotation',
-        'schedule': crontab(hour=13, minute=0, day_of_week='1-5'),
-        'args': ('NY_OPEN',),
-    },
-    'run-rotation-ny-afternoon': {
-        'task': 'quant.tasks.run_strategy_rotation',
-        'schedule': crontab(hour=17, minute=0, day_of_week='1-5'),
-        'args': ('NY_AFTERNOON',),
-    },
-    'run-rotation-asia-close': {
-        'task': 'quant.tasks.run_strategy_rotation',
-        'schedule': crontab(hour=22, minute=0, day_of_week='1-5'),
-        'args': ('ASIA_CLOSE',),
-    },
 }

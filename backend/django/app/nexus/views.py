@@ -202,10 +202,6 @@ class AIBrainControlView(views.APIView):
         from app.quant.ai_bot_control import set_ai_brain_enabled, get_ai_brain_status
         enabled = request.data.get('enabled', False)
         set_ai_brain_enabled(enabled)
-        # Optionally trigger an immediate analysis
-        if enabled and request.data.get('run_now', False):
-            from app.quant.tasks import run_ai_brain
-            run_ai_brain.delay()
         return Response(get_ai_brain_status())
 
 
@@ -1039,3 +1035,15 @@ class TrainingHistoryView(views.APIView):
                 'llm_result': r.llm_result,
             } for r in runs],
         })
+
+
+class KnowledgeGraphSummaryView(views.APIView):
+    """Neo4j removed — returns unavailable."""
+    def get(self, request):
+        return Response({'connected': False, 'status': 'removed'})
+
+
+class KnowledgeGraphHealthView(views.APIView):
+    """Neo4j removed — returns unavailable."""
+    def get(self, request):
+        return Response({'connected': False, 'status': 'removed'})

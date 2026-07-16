@@ -29,20 +29,8 @@ RETRAIN_INTERVAL_HOURS = int(os.getenv('LLM_RETRAIN_INTERVAL_HOURS', '24'))
 
 # Inference settings
 LLM_SCORE_TEMPERATURE = float(os.getenv('LLM_SCORE_TEMPERATURE', '0.3'))
-LLM_SCORE_MAX_TOKENS = int(os.getenv('LLM_SCORE_MAX_TOKENS', '512'))
+LLM_SCORE_MAX_TOKENS = int(os.getenv('LLM_SCORE_MAX_TOKENS', '80'))   # 3-line format only: DECISION+CONFIDENCE+REASONING
 LLM_ENABLED = os.getenv('LLM_ENABLED', 'false').lower() == 'true'
 
 # Trade reasoning system prompt
-TRADE_SYSTEM_PROMPT = """You are a forex trade analyst for an automated trading system. You analyze trade setups using market features and historical performance patterns.
-
-Given a trade setup with technical indicators, market regime, and performance context, you must:
-1. Analyze the setup quality (confluence of signals)
-2. Check if conditions match historically winning patterns
-3. Output a clear ACCEPT or REJECT decision with confidence (0-100)
-
-Format your response EXACTLY as:
-DECISION: ACCEPT|REJECT
-CONFIDENCE: <0-100>
-REASONING: <2-3 sentences explaining why>
-
-Be concise. Focus on edge — does this setup have positive expectancy based on the patterns you've learned?"""
+TRADE_SYSTEM_PROMPT = """Forex trade quality filter. ACCEPT if: confluence>=5 AND HTF aligned AND streak>=0 AND WR>=45%. REJECT otherwise."""

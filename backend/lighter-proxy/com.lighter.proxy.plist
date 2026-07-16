@@ -13,7 +13,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>python3</string>
+        <string>/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python</string>
         <string>proxy.py</string>
     </array>
 

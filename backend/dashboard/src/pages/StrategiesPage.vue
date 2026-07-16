@@ -87,7 +87,7 @@ async function loadDetailForConfig(configId, cs) {
   }
 }
 
-usePolling(async () => { await refresh(); await refreshCustom() }, 10000)
+usePolling(async () => { await refresh(); await refreshCustom() }, 60000)  // was 10s
 
 async function activate(id) {
   loadingBtn.value[`activate-${id}`] = true
@@ -102,25 +102,33 @@ async function activate(id) {
 }
 
 async function runBacktest(id) {
-  loadingBtn.value[`backtest-${id}`] = true
+  loadingBtn.value[`backtest-${id}`] = 'running'
   try {
     await api.runBacktest(id)
-    toast.success('Backtest started -- results will appear shortly')
+    loadingBtn.value[`backtest-${id}`] = 'done'
+    setTimeout(() => {
+      loadingBtn.value[`backtest-${id}`] = false
+      refresh()
+    }, 2000)
   } catch (err) {
     toast.error(`Backtest failed: ${err.message}`)
+    loadingBtn.value[`backtest-${id}`] = false
   }
-  loadingBtn.value[`backtest-${id}`] = false
 }
 
 async function runCustomBacktest(id) {
-  loadingBtn.value[`cbacktest-${id}`] = true
+  loadingBtn.value[`cbacktest-${id}`] = 'running'
   try {
     await api.runCustomBacktest(id)
-    toast.success('Custom backtest started')
+    loadingBtn.value[`cbacktest-${id}`] = 'done'
+    setTimeout(() => {
+      loadingBtn.value[`cbacktest-${id}`] = false
+      refreshCustom()
+    }, 2000)
   } catch (err) {
     toast.error(`Backtest failed: ${err.message}`)
+    loadingBtn.value[`cbacktest-${id}`] = false
   }
-  loadingBtn.value[`cbacktest-${id}`] = false
 }
 
 async function activateCustom(id) {
@@ -373,19 +381,32 @@ function getColor(index) {
         <div class="card-actions">
           <button
             v-if="!s.is_active"
-            class="tp-btn tp-btn-primary"
-            style="flex:1;"
+            class="tp-btn tp-btn-primary card-action-btn"
             :aria-busy="loadingBtn[`activate-${s.id}`]"
             @click="activate(s.id)"
-          >Activate</button>
+          >
+            <span class="material-symbols-outlined" style="font-size:14px">power_settings_new</span>
+            Activate
+          </button>
+          <span v-else class="tp-btn tp-btn-dark card-action-btn" style="cursor:default;">
+            <span class="material-symbols-outlined" style="font-size:14px">check_circle</span>
+            Active
+          </span>
           <button
-            class="tp-btn tp-btn-outline"
-            style="flex:1;"
-            :aria-busy="loadingBtn[`backtest-${s.id}`]"
+            class="tp-btn tp-btn-outline card-action-btn"
+            :class="{
+              'tp-btn-warning': loadingBtn[`backtest-${s.id}`] === 'running',
+              'tp-btn-success': loadingBtn[`backtest-${s.id}`] === 'done'
+            }"
+            :disabled="loadingBtn[`backtest-${s.id}`] === 'running'"
             @click="runBacktest(s.id)"
           >
-            <span class="material-symbols-outlined" style="font-size:16px">science</span>
-            Run Backtest
+            <span class="material-symbols-outlined" style="font-size:14px">
+              {{ loadingBtn[`backtest-${s.id}`] === 'running' ? 'hourglass_top' :
+                 loadingBtn[`backtest-${s.id}`] === 'done' ? 'check' : 'science' }}
+            </span>
+            {{ loadingBtn[`backtest-${s.id}`] === 'running' ? 'Running...' :
+               loadingBtn[`backtest-${s.id}`] === 'done' ? 'Done' : 'Backtest' }}
           </button>
         </div>
       </div>
@@ -414,14 +435,15 @@ function getColor(index) {
       </div>
       <div v-else class="strategy-grid">
         <div v-for="(cs, idx) in customStrategies" :key="'c'+cs.id" class="tp-card strategy-card" :class="{ 'card-active': cs.is_active }">
+          <!-- Card Header — matches Active Strategies layout -->
           <div class="card-top">
             <div class="card-title-row">
-              <div class="strat-icon" :style="cs.is_active ? 'background:rgba(34,197,94,0.15);color:#22c55e;' : 'background:rgba(139,92,246,0.15);color:#8b5cf6;'">
-                <span class="material-symbols-outlined" style="font-size:18px">{{ cs.is_active ? 'bolt' : 'code' }}</span>
+              <div class="strat-icon" :style="cs.is_active ? 'background:rgba(34,197,94,0.15);color:#22c55e;' : `background:${getColor(idx)}15;color:${getColor(idx)};`">
+                <span class="material-symbols-outlined" style="font-size:18px">{{ cs.is_active ? 'bolt' : getIcon(idx) }}</span>
               </div>
-              <div>
+              <div class="card-title-text">
                 <h3 class="strat-name">{{ cs.name }}</h3>
-                <p class="strat-desc">{{ cs.description || 'Custom strategy' }}</p>
+                <p class="strat-desc strat-desc-clamp">{{ cs.description || 'Custom strategy' }}</p>
               </div>
             </div>
             <span class="tp-badge" :class="cs.is_active ? 'tp-badge-success' : 'tp-badge-primary'">
@@ -430,7 +452,30 @@ function getColor(index) {
             </span>
           </div>
 
-          <!-- Definition (expandable) -->
+          <!-- Backtest Stats — always visible, fixed position -->
+          <div v-if="cs.latest_backtest" class="card-stats">
+            <div class="stat-item">
+              <span class="stat-micro-label">Win Rate</span>
+              <span class="stat-micro-value" :class="(cs.latest_backtest.win_rate * 100) >= 50 ? 'positive' : 'negative'">
+                {{ (cs.latest_backtest.win_rate * 100).toFixed(1) }}%
+              </span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-micro-label">Trades</span>
+              <span class="stat-micro-value">{{ cs.latest_backtest.total_trades }}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-micro-label">Total PnL</span>
+              <span class="stat-micro-value" :class="(cs.latest_backtest.total_pnl ?? 0) >= 0 ? 'positive' : 'negative'">
+                {{ cs.latest_backtest.total_pnl != null ? (cs.latest_backtest.total_pnl * 100).toFixed(3) + '%' : 'N/A' }}
+              </span>
+            </div>
+          </div>
+          <div v-else class="card-stats card-stats-empty">
+            <span class="stat-micro-label">No backtest results yet</span>
+          </div>
+
+          <!-- Expandable Sections -->
           <div class="card-expandable">
             <details>
               <summary class="expand-summary">
@@ -442,31 +487,7 @@ function getColor(index) {
               </div>
             </details>
 
-            <!-- Charts for custom strategies -->
             <template v-if="cs.strategy_config">
-              <!-- Backtest Stats -->
-              <template v-if="cs.latest_backtest">
-                <div class="card-stats">
-                  <div class="stat-item">
-                    <span class="stat-micro-label">Win Rate</span>
-                    <span class="stat-micro-value" :class="(cs.latest_backtest.win_rate * 100) >= 50 ? 'positive' : 'negative'">
-                      {{ (cs.latest_backtest.win_rate * 100).toFixed(1) }}%
-                    </span>
-                  </div>
-                  <div class="stat-item">
-                    <span class="stat-micro-label">Trades</span>
-                    <span class="stat-micro-value">{{ cs.latest_backtest.total_trades }}</span>
-                  </div>
-                  <div class="stat-item">
-                    <span class="stat-micro-label">Total PnL</span>
-                    <span class="stat-micro-value" :class="(cs.latest_backtest.total_pnl ?? 0) >= 0 ? 'positive' : 'negative'">
-                      {{ cs.latest_backtest.total_pnl != null ? (cs.latest_backtest.total_pnl * 100).toFixed(3) + '%' : 'N/A' }}
-                    </span>
-                  </div>
-                </div>
-              </template>
-
-              <!-- Backtest Charts -->
               <details @toggle="e => { if (e.target.open) loadDetailForConfig(cs.strategy_config, cs) }">
                 <summary class="expand-summary">
                   <span class="material-symbols-outlined" style="font-size:16px">ssid_chart</span>
@@ -487,7 +508,6 @@ function getColor(index) {
                 </div>
               </details>
 
-              <!-- Backtest History -->
               <details @toggle="e => { if (e.target.open) loadHistory(cs.strategy_config) }">
                 <summary class="expand-summary">
                   <span class="material-symbols-outlined" style="font-size:16px">history</span>
@@ -501,32 +521,39 @@ function getColor(index) {
             </template>
           </div>
 
+          <!-- Card Footer Actions — pinned to bottom -->
           <div class="card-actions">
             <button
               v-if="!cs.is_active"
-              class="tp-btn tp-btn-primary"
-              style="flex:1;"
+              class="tp-btn tp-btn-primary card-action-btn"
               :aria-busy="loadingBtn[`cactivate-${cs.id}`]"
               @click="activateCustom(cs.id)"
             >
-              <span class="material-symbols-outlined" style="font-size:16px">power_settings_new</span>
+              <span class="material-symbols-outlined" style="font-size:14px">power_settings_new</span>
               Activate
             </button>
-            <span v-else class="tp-btn tp-btn-dark" style="flex:1;cursor:default;text-align:center;">
-              <span class="material-symbols-outlined" style="font-size:16px">check_circle</span>
-              Currently Active
+            <span v-else class="tp-btn tp-btn-dark card-action-btn" style="cursor:default;">
+              <span class="material-symbols-outlined" style="font-size:14px">check_circle</span>
+              Active
             </span>
             <button
-              class="tp-btn tp-btn-outline"
-              style="flex:1;"
-              :aria-busy="loadingBtn[`cbacktest-${cs.id}`]"
+              class="tp-btn tp-btn-outline card-action-btn"
+              :class="{
+                'tp-btn-warning': loadingBtn[`cbacktest-${cs.id}`] === 'running',
+                'tp-btn-success': loadingBtn[`cbacktest-${cs.id}`] === 'done'
+              }"
+              :disabled="loadingBtn[`cbacktest-${cs.id}`] === 'running'"
               @click="runCustomBacktest(cs.id)"
             >
-              <span class="material-symbols-outlined" style="font-size:16px">science</span>
-              Run Backtest
+              <span class="material-symbols-outlined" style="font-size:14px">
+                {{ loadingBtn[`cbacktest-${cs.id}`] === 'running' ? 'hourglass_top' :
+                   loadingBtn[`cbacktest-${cs.id}`] === 'done' ? 'check' : 'science' }}
+              </span>
+              {{ loadingBtn[`cbacktest-${cs.id}`] === 'running' ? 'Running...' :
+                 loadingBtn[`cbacktest-${cs.id}`] === 'done' ? 'Done' : 'Backtest' }}
             </button>
-            <button class="tp-btn tp-btn-danger" style="flex:0 0 auto;" @click="deleteCustom(cs.id)">
-              <span class="material-symbols-outlined" style="font-size:16px">delete</span>
+            <button class="tp-btn tp-btn-danger card-action-delete" @click="deleteCustom(cs.id)">
+              <span class="material-symbols-outlined" style="font-size:14px">delete</span>
             </button>
           </div>
         </div>
@@ -595,6 +622,7 @@ function getColor(index) {
 .strategy-card {
   display: flex;
   flex-direction: column;
+  min-height: 320px;
 }
 .strategy-card.card-inactive {
   opacity: 0.7;
@@ -609,11 +637,18 @@ function getColor(index) {
   align-items: flex-start;
   padding: 0.85rem 1rem;
   border-bottom: 1px solid var(--tp-border);
+  min-height: 5.5rem;
 }
 .card-title-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.6rem;
+  flex: 1;
+  min-width: 0;
+}
+.card-title-text {
+  min-width: 0;
+  flex: 1;
 }
 .strat-icon {
   width: 2.25rem; height: 2.25rem;
@@ -632,6 +667,13 @@ function getColor(index) {
 .strat-desc {
   font-size: 0.7rem;
   color: var(--tp-text-dim) !important;
+}
+.strat-desc-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.4;
 }
 
 /* Card Stats */
@@ -729,12 +771,33 @@ details[open] > .expand-summary::after {
   padding: 0.3rem 0.75rem;
 }
 
-/* Card Actions */
+/* Card Actions — pinned to bottom of flex card */
 .card-actions {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
   padding: 0.75rem 1rem;
   margin-top: auto;
+  border-top: 1px solid var(--tp-border);
+}
+.card-action-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 0.68rem;
+  padding: 0.5rem 0.5rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  justify-content: center;
+}
+.card-action-delete {
+  flex: 0 0 2.25rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Result Pre */

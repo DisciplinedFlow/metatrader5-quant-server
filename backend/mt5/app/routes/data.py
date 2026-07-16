@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request
 import MetaTrader5 as mt5
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import pandas as pd
 from flasgger import swag_from
@@ -299,4 +299,83 @@ def fetch_ticks_endpoint():
         return jsonify(df.to_dict(orient='records'))
     except Exception as e:
         logger.error(f"Error in fetch_ticks: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@data_bp.route('/fetch_data_pos_batch', methods=['POST'])
+def fetch_data_pos_batch_endpoint():
+    """
+    Fetch OHLCV bars for multiple symbols in one request.
+    MT5 calls are sequential (mt5 library is not thread-safe).
+    Body: {"symbols": ["XAUUSD", ...], "timeframe": "H4", "bars": 50}
+    Returns: {"XAUUSD": [...bars], "XAGUSD": [...bars], ...}
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Request body required"}), 400
+
+        symbols = data.get('symbols', [])
+        timeframe = data.get('timeframe', 'H4')
+        num_bars = int(data.get('bars', 50))
+
+        if not symbols:
+            return jsonify({}), 200
+
+        mt5_timeframe = get_timeframe(timeframe)
+        result = {}
+
+        for symbol in symbols:
+            rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, num_bars)
+            if rates is not None and len(rates) > 0:
+                df = pd.DataFrame(rates)
+                df['time'] = pd.to_datetime(df['time'], unit='s')
+                result[symbol] = df.to_dict(orient='records')
+            else:
+                result[symbol] = []
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in fetch_data_pos_batch: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@data_bp.route('/fetch_ticks_batch', methods=['POST'])
+def fetch_ticks_batch_endpoint():
+    """
+    Fetch recent ticks for multiple symbols in one request.
+    MT5 calls are sequential (mt5 library is not thread-safe).
+    Body: {"symbols": ["EURUSD", ...], "count": 500, "seconds_back": 3}
+    Returns: {"EURUSD": [...ticks], "XAUUSD": [...ticks], ...}
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Request body required"}), 400
+
+        symbols = data.get('symbols', [])
+        count = int(data.get('count', 500))
+        seconds_back = int(data.get('seconds_back', 3))
+
+        if not symbols:
+            return jsonify({}), 200
+
+        utc = pytz.UTC
+        date_from = datetime.now(utc) - timedelta(seconds=seconds_back)
+        result = {}
+
+        for symbol in symbols:
+            ticks = mt5.copy_ticks_from(symbol, date_from, count, mt5.COPY_TICKS_ALL)
+            if ticks is not None and len(ticks) > 0:
+                df = pd.DataFrame(ticks)
+                df['time'] = pd.to_datetime(df['time'], unit='s')
+                result[symbol] = df.to_dict(orient='records')
+            else:
+                result[symbol] = []
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in fetch_ticks_batch: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500

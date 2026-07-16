@@ -2,19 +2,12 @@
 import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePolling } from '@/composables/usePolling'
+import { useWebSocket } from '@/composables/useWebSocket'
 import api from '@/services/api'
 import SectionNav from '@/components/SectionNav.vue'
+import { cryptoLinks, COIN_COLORS, fmt, fmtPrice } from '@/utils/cryptoConstants'
 
 const router = useRouter()
-
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
 
 // Bot state
 const botPaused = ref(false)
@@ -42,8 +35,56 @@ const venueHealth = reactive({
   hyperliquid: { status: 'unknown', latency: null, lastCheck: null },
 })
 
+// Per-venue trading toggles
+const lighterEnabled = ref(true)
+const lighterToggling = ref(false)
+const hyperliquidEnabled = ref(true)
+const hyperliquidToggling = ref(false)
+
+// Lighter proxy direct state (browser → macOS localhost:5555)
+const proxyDirect = reactive({
+  online: false,
+  active: false,
+  uptime: 0,
+  markets: 0,
+})
+
 // Active venue tab for positions
 const activeVenueTab = ref('all')
+
+// News feed
+const newsFeed = ref([])
+const newsLoading = ref(false)
+
+// WebSocket (enhancement over polling — polling remains the primary data source)
+const { connected: wsConnected, on: wsOn } = useWebSocket()
+
+wsOn('bot_status', (data) => {
+  if (data && data.paused != null) botPaused.value = data.paused
+})
+
+wsOn('trade_opened', () => {
+  refresh()
+})
+
+wsOn('trade_closed', () => {
+  refresh()
+})
+
+wsOn('position_update', () => {
+  refresh()
+})
+
+wsOn('price_update', () => {
+  refresh()
+})
+
+wsOn('news_alert', (data) => {
+  if (data && data.headline) {
+    newsFeed.value.unshift(data)
+    if (newsFeed.value.length > 20) newsFeed.value.pop()
+  }
+})
 
 // Funding rates (mock structure — will populate from API when available)
 const fundingRates = ref([
@@ -86,6 +127,9 @@ const marginLevel = computed(() => {
   return (accountValue.value / totalMarginUsed.value) * 100
 })
 
+// Net PnL = gross pnl minus exchange fees
+const netPnl = (p) => Number(p.pnl_usd ?? 0) - Number(p.total_fees ?? 0)
+
 // P&L performance data from closed positions
 const sortedClosed = computed(() =>
   closedPositions.value
@@ -96,21 +140,21 @@ const sortedClosed = computed(() =>
 const equityCurve = computed(() => {
   let cumulative = 0
   return sortedClosed.value.map(p => {
-    cumulative += Number(p.pnl_usd)
-    return { pnl: Number(p.pnl_usd), cumulative, symbol: p.symbol, time: p.closed_at }
+    cumulative += netPnl(p)
+    return { pnl: netPnl(p), cumulative, symbol: p.symbol, time: p.closed_at }
   })
 })
 
 const pnlStats = computed(() => {
   const ct = sortedClosed.value
-  const wins = ct.filter(p => Number(p.pnl_usd) > 0)
-  const losses = ct.filter(p => Number(p.pnl_usd) <= 0)
-  const total = ct.reduce((s, p) => s + Number(p.pnl_usd), 0)
+  const wins = ct.filter(p => netPnl(p) > 0)
+  const losses = ct.filter(p => netPnl(p) <= 0)
+  const total = ct.reduce((s, p) => s + netPnl(p), 0)
   const winRate = ct.length ? (wins.length / ct.length * 100) : 0
-  const bestTrade = ct.length ? Math.max(...ct.map(p => Number(p.pnl_usd))) : 0
-  const worstTrade = ct.length ? Math.min(...ct.map(p => Number(p.pnl_usd))) : 0
-  const avgWin = wins.length ? wins.reduce((s, p) => s + Number(p.pnl_usd), 0) / wins.length : 0
-  const avgLoss = losses.length ? losses.reduce((s, p) => s + Number(p.pnl_usd), 0) / losses.length : 0
+  const bestTrade = ct.length ? Math.max(...ct.map(p => netPnl(p))) : 0
+  const worstTrade = ct.length ? Math.min(...ct.map(p => netPnl(p))) : 0
+  const avgWin = wins.length ? wins.reduce((s, p) => s + netPnl(p), 0) / wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((s, p) => s + netPnl(p), 0) / losses.length : 0
   const profitFactor = avgLoss !== 0 ? Math.abs(avgWin * wins.length / (avgLoss * losses.length)) : 0
   return { total: ct.length, wins: wins.length, losses: losses.length, totalPnl: total, winRate, bestTrade, worstTrade, avgWin, avgLoss, profitFactor }
 })
@@ -165,30 +209,33 @@ const positionsByVenue = computed(() => {
   return { hyperliquid: hl, lighter: lt }
 })
 
-// Coin colors
-const COIN_COLORS = {
-  BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', AVAX: '#e84142',
-  DOGE: '#c2a633', ARB: '#28a0f0', MATIC: '#8247e5', LINK: '#2a5ada',
-  OP: '#ff0420', SUI: '#4da2ff',
-}
-
 function getCoinColor(coin) {
   return COIN_COLORS[coin] || 'var(--tp-primary)'
 }
 
 async function checkVenueHealth() {
-  // Check Lighter proxy (port 5555)
+  // Check Lighter proxy via Django endpoint (also returns account data)
   try {
-    const start = Date.now()
-    const resp = await fetch('/api/django/v1/crypto/lighter/health/', { signal: AbortSignal.timeout(5000) })
-    const latency = Date.now() - start
-    if (resp.ok) {
-      venueHealth.lighter = { status: 'connected', latency, lastCheck: new Date() }
-    } else {
-      venueHealth.lighter = { status: 'error', latency: null, lastCheck: new Date() }
+    const data = await api.getLighterProxyStatus()
+    venueHealth.lighter = {
+      status: data.proxy_status || 'unknown',
+      latency: data.latency_ms,
+      lastCheck: new Date(),
+    }
+    lighterEnabled.value = data.enabled !== false
+
+    // Update account stats from Lighter — ONLY if data is valid (never reset to zero)
+    if (data.equity != null && data.equity > 0) {
+      accountValue.value = data.equity
+      withdrawable.value = data.available_balance ?? 0
+      totalMarginUsed.value = data.equity - (data.available_balance ?? 0)
+      totalNtlPos.value = data.equity - (data.available_balance ?? 0)
     }
   } catch {
-    venueHealth.lighter = { status: 'offline', latency: null, lastCheck: new Date() }
+    // Don't reset venue health on failure — keep last known state
+    if (venueHealth.lighter.status === 'unknown') {
+      venueHealth.lighter = { status: 'offline', latency: null, lastCheck: new Date() }
+    }
   }
 
   // Hyperliquid health is inferred from wallet call success
@@ -197,6 +244,48 @@ async function checkVenueHealth() {
   } else if (walletError.value) {
     venueHealth.hyperliquid = { status: 'error', latency: null, lastCheck: new Date() }
   }
+
+  // Fetch Hyperliquid trading toggle state
+  try {
+    const hlData = await api.getHyperliquidStatus()
+    hyperliquidEnabled.value = hlData.enabled !== false
+  } catch {
+    // fail silently
+  }
+}
+
+async function checkProxyDirect() {
+  const data = await api.lighterProxyDirect()
+  proxyDirect.online = !data._offline
+  proxyDirect.active = data.active ?? false
+  proxyDirect.uptime = data.uptime_s ?? 0
+  proxyDirect.markets = data.markets ?? 0
+}
+
+async function toggleLighter() {
+  lighterToggling.value = true
+  try {
+    // Toggle directly on the macOS proxy (no Django middleman)
+    const resp = await api.lighterProxyToggle()
+    proxyDirect.active = resp.active
+    // Also sync the Django-side flag for Celery tasks
+    await api.setLighterEnabled(resp.active)
+    lighterEnabled.value = resp.active
+  } catch (err) {
+    console.error('Lighter toggle error:', err)
+  }
+  lighterToggling.value = false
+}
+
+async function toggleHyperliquid() {
+  hyperliquidToggling.value = true
+  try {
+    const resp = await api.setHyperliquidEnabled(!hyperliquidEnabled.value)
+    hyperliquidEnabled.value = resp.enabled
+  } catch (err) {
+    console.error('Hyperliquid toggle error:', err)
+  }
+  hyperliquidToggling.value = false
 }
 
 async function fetchFundingRates() {
@@ -213,12 +302,35 @@ async function fetchFundingRates() {
   }
 }
 
+async function fetchNews() {
+  newsLoading.value = true
+  try {
+    const data = await api.getCryptoNews()
+    if (Array.isArray(data)) {
+      newsFeed.value = data.slice(0, 20)
+    }
+  } catch {
+    // News is optional — fail silently
+  }
+  newsLoading.value = false
+}
+
+function timeAgo(timestamp) {
+  if (!timestamp) return ''
+  const seconds = Math.floor(Date.now() / 1000) - timestamp
+  if (seconds < 60) return 'just now'
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago'
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago'
+  return Math.floor(seconds / 86400) + 'd ago'
+}
+
 async function refresh() {
-  const [botResult, dashResult, walletResult, closedResult] = await Promise.allSettled([
+  const [botResult, dashResult, walletResult, closedResult, openResult] = await Promise.allSettled([
     api.getCryptoBotStatus(),
     api.getCryptoDashboard(),
     api.getCryptoWallet(),
-    api.getCryptoPositions('closed'),
+    api.getCryptoPositions('CLOSED'),
+    api.getCryptoPositions('OPEN'),
   ])
 
   if (botResult.status === 'fulfilled') {
@@ -228,6 +340,9 @@ async function refresh() {
     openPositionsCount.value = dashResult.value.open_positions ?? 0
     totalPnl.value = dashResult.value.total_pnl ?? 0
   }
+
+  // Build price map from wallet for live mark prices
+  let priceMap = {}
   if (walletResult.status === 'fulfilled') {
     const w = walletResult.value
     walletAddress.value = w.wallet_address ?? ''
@@ -235,14 +350,37 @@ async function refresh() {
     totalMarginUsed.value = w.total_margin_used ?? 0
     totalNtlPos.value = w.total_ntl_pos ?? 0
     withdrawable.value = w.withdrawable ?? 0
-    livePositions.value = w.positions ?? []
     prices.value = w.prices ?? []
     walletError.value = ''
     walletLoaded.value = true
+    for (const p of (w.prices ?? [])) priceMap[p.coin] = p.price
   } else if (walletResult.status === 'rejected') {
     walletError.value = walletResult.reason?.message || 'Failed to load wallet'
     walletLoaded.value = true
   }
+
+  // Build livePositions from DB open positions (Lighter reconciler keeps these in sync)
+  if (openResult.status === 'fulfilled') {
+    const dbOpen = openResult.value.results ?? openResult.value ?? []
+    livePositions.value = dbOpen.map(p => {
+      const mark = priceMap[p.symbol] ?? null
+      const uPnl = mark && p.entry_price
+        ? (p.side === 'LONG' ? (mark - p.entry_price) * p.size : (p.entry_price - mark) * p.size)
+        : 0
+      return {
+        coin: p.symbol,
+        side: p.side,
+        size: p.size,
+        entry_price: p.entry_price,
+        mark_price: mark,
+        leverage: p.leverage,
+        margin_used: p.entry_price * p.size / p.leverage,
+        unrealized_pnl: uPnl,
+        venue: 'lighter',
+      }
+    })
+  }
+
   if (closedResult.status === 'fulfilled') {
     closedPositions.value = closedResult.value.results ?? closedResult.value ?? []
   }
@@ -263,22 +401,6 @@ async function toggleBot() {
   botStatusLoading.value = false
 }
 
-function fmt(val, decimals = 2) {
-  if (val == null) return '-'
-  return Number(val).toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
-
-function fmtPrice(val) {
-  if (val == null) return '-'
-  const n = Number(val)
-  if (n >= 1000) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  if (n >= 1) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-  return n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })
-}
-
 function fmtPct(val) {
   return (val * 100).toFixed(1) + '%'
 }
@@ -287,6 +409,20 @@ function fmtFunding(val) {
   if (val == null) return '--'
   return (val * 100).toFixed(4) + '%'
 }
+
+// Lighter proxy direct — three-state display
+const proxyDirectIcon = computed(() => {
+  if (!proxyDirect.online) return 'cancel'
+  return proxyDirect.active ? 'check_circle' : 'pause_circle'
+})
+const proxyDirectLabel = computed(() => {
+  if (!proxyDirect.online) return 'OFFLINE'
+  return proxyDirect.active ? 'ACTIVE' : 'STANDBY'
+})
+const proxyDirectClass = computed(() => {
+  if (!proxyDirect.online) return 'venue-down'
+  return proxyDirect.active ? 'venue-ok' : 'venue-standby'
+})
 
 function venueStatusIcon(status) {
   switch (status) {
@@ -306,8 +442,14 @@ function venueStatusClass(status) {
   }
 }
 
-onMounted(refresh)
-usePolling(refresh, 10000)
+onMounted(() => {
+  refresh()
+  fetchNews()
+  checkProxyDirect()
+})
+usePolling(refresh, 30000)  // 30s — Lighter API is slow + rate limited
+usePolling(fetchNews, 300000)  // 5 min — news doesn't need real-time polling
+usePolling(checkProxyDirect, 60000)  // was 10s — bot gets API priority
 </script>
 
 <template>
@@ -334,18 +476,44 @@ usePolling(refresh, 10000)
           </button>
         </div>
 
+        <span v-if="wsConnected" class="ws-badge" title="WebSocket connected">WS</span>
+
         <div class="system-bar-divider"></div>
 
         <!-- Venue Health Indicators -->
         <div class="venue-health-group">
-          <div class="venue-chip" :class="venueStatusClass(venueHealth.hyperliquid.status)">
+          <div class="venue-chip" :class="[venueStatusClass(venueHealth.hyperliquid.status), { 'venue-disabled': !hyperliquidEnabled }]">
             <span class="material-symbols-outlined venue-chip-icon">{{ venueStatusIcon(venueHealth.hyperliquid.status) }}</span>
             <span class="venue-chip-name">Hyperliquid</span>
+            <button
+              class="venue-toggle-btn"
+              :class="hyperliquidEnabled ? 'vt-on' : 'vt-off'"
+              :aria-busy="hyperliquidToggling"
+              @click.stop="toggleHyperliquid"
+              :title="hyperliquidEnabled ? 'Disable Hyperliquid trading' : 'Enable Hyperliquid trading'"
+            >
+              <span class="material-symbols-outlined" style="font-size:13px">{{ hyperliquidEnabled ? 'pause' : 'play_arrow' }}</span>
+            </button>
           </div>
-          <div class="venue-chip" :class="venueStatusClass(venueHealth.lighter.status)">
-            <span class="material-symbols-outlined venue-chip-icon">{{ venueStatusIcon(venueHealth.lighter.status) }}</span>
+          <div class="venue-chip" :class="proxyDirectClass">
+            <span class="material-symbols-outlined venue-chip-icon">{{ proxyDirectIcon }}</span>
             <span class="venue-chip-name">Lighter</span>
-            <span v-if="venueHealth.lighter.latency" class="venue-chip-latency">{{ venueHealth.lighter.latency }}ms</span>
+            <span class="venue-chip-state">{{ proxyDirectLabel }}</span>
+            <span v-if="proxyDirect.online && proxyDirect.uptime" class="venue-chip-latency">
+              {{ Math.floor(proxyDirect.uptime / 60) }}m up
+            </span>
+            <button
+              class="venue-toggle-btn"
+              :class="proxyDirect.active ? 'vt-on' : 'vt-off'"
+              :disabled="!proxyDirect.online"
+              :aria-busy="lighterToggling"
+              @click.stop="toggleLighter"
+              :title="!proxyDirect.online ? 'Proxy offline — start it on macOS' : proxyDirect.active ? 'Pause Lighter trading' : 'Activate Lighter trading'"
+            >
+              <span class="material-symbols-outlined" style="font-size:13px">
+                {{ !proxyDirect.online ? 'power_off' : proxyDirect.active ? 'pause' : 'play_arrow' }}
+              </span>
+            </button>
           </div>
         </div>
       </div>
@@ -571,9 +739,9 @@ usePolling(refresh, 10000)
           <div class="trade-bars" v-if="sortedClosed.length">
             <div v-for="(t, i) in sortedClosed.slice(-30)" :key="i"
                  class="trade-bar"
-                 :class="Number(t.pnl_usd) >= 0 ? 'bar-win' : 'bar-loss'"
-                 :style="{ height: Math.min(100, Math.max(8, Math.abs(Number(t.pnl_usd)) * 3)) + '%' }"
-                 :title="`${t.symbol} ${Number(t.pnl_usd) >= 0 ? '+' : ''}$${Number(t.pnl_usd).toFixed(2)}`"
+                 :class="netPnl(t) >= 0 ? 'bar-win' : 'bar-loss'"
+                 :style="{ height: Math.min(100, Math.max(8, Math.abs(netPnl(t)) * 3)) + '%' }"
+                 :title="`${t.symbol} ${netPnl(t) >= 0 ? '+' : ''}$${netPnl(t).toFixed(2)}`"
             ></div>
           </div>
 
@@ -609,6 +777,42 @@ usePolling(refresh, 10000)
             <span class="material-symbols-outlined" style="font-size:16px">history</span>
             View Full History
           </button>
+        </div>
+
+        <!-- Crypto News Feed -->
+        <div class="tp-card card-terminal news-card">
+          <div class="card-header-row">
+            <div class="card-title-group">
+              <span class="material-symbols-outlined card-icon">newspaper</span>
+              <h3>Crypto News</h3>
+            </div>
+            <span v-if="newsLoading" class="tp-badge tp-badge-dim" style="font-size: 0.55rem;">
+              <span class="material-symbols-outlined" style="font-size:12px">sync</span> Loading
+            </span>
+          </div>
+          <div class="news-body">
+            <template v-if="newsFeed.length > 0">
+              <a
+                v-for="article in newsFeed.slice(0, 8)"
+                :key="article.id || article.datetime"
+                :href="article.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="news-item"
+              >
+                <div class="news-item-top">
+                  <span class="news-source-badge">{{ article.source }}</span>
+                  <span class="news-time">{{ timeAgo(article.datetime) }}</span>
+                </div>
+                <div class="news-headline">{{ article.headline }}</div>
+                <span class="news-link-icon material-symbols-outlined">open_in_new</span>
+              </a>
+            </template>
+            <div v-else class="news-empty">
+              <span class="material-symbols-outlined" style="font-size:1.5rem;color:var(--tp-text-dim)">newspaper</span>
+              <p>No recent crypto news</p>
+            </div>
+          </div>
         </div>
 
         <!-- Margin & Risk Card -->
@@ -705,6 +909,15 @@ usePolling(refresh, 10000)
                 <span class="venue-block-dot" :class="venueStatusClass(venueHealth.hyperliquid.status)"></span>
                 <span class="venue-block-name">Hyperliquid L1</span>
                 <span class="venue-block-chain">Arbitrum</span>
+                <button
+                  class="venue-block-toggle"
+                  :class="hyperliquidEnabled ? 'vbt-on' : 'vbt-off'"
+                  :aria-busy="hyperliquidToggling"
+                  @click="toggleHyperliquid"
+                >
+                  <span class="material-symbols-outlined" style="font-size:13px">{{ hyperliquidEnabled ? 'pause' : 'play_arrow' }}</span>
+                  {{ hyperliquidEnabled ? 'Disable' : 'Enable' }}
+                </button>
               </div>
               <div v-if="walletAddress" class="wallet-address-row">
                 <span class="wallet-addr">{{ shortAddress }}</span>
@@ -727,6 +940,15 @@ usePolling(refresh, 10000)
                 <span class="venue-block-dot" :class="venueStatusClass(venueHealth.lighter.status)"></span>
                 <span class="venue-block-name">Lighter.xyz</span>
                 <span class="venue-block-chain">Zero-Fee</span>
+                <button
+                  class="venue-block-toggle"
+                  :class="lighterEnabled ? 'vbt-on' : 'vbt-off'"
+                  :aria-busy="lighterToggling"
+                  @click="toggleLighter"
+                >
+                  <span class="material-symbols-outlined" style="font-size:13px">{{ lighterEnabled ? 'pause' : 'play_arrow' }}</span>
+                  {{ lighterEnabled ? 'Disable' : 'Enable' }}
+                </button>
               </div>
               <div class="venue-block-stats">
                 <div class="venue-mini-stat">
@@ -735,7 +957,15 @@ usePolling(refresh, 10000)
                 </div>
                 <div class="venue-mini-stat">
                   <span class="meta-label">Proxy</span>
-                  <span class="meta-value">:5555</span>
+                  <span class="meta-value" :class="venueHealth.lighter.status === 'connected' ? 'val-ok' : 'val-down'">
+                    {{ venueHealth.lighter.status === 'connected' ? 'Online' : venueHealth.lighter.status }}
+                  </span>
+                </div>
+                <div class="venue-mini-stat">
+                  <span class="meta-label">Trading</span>
+                  <span class="meta-value" :class="lighterEnabled ? 'val-ok' : 'val-down'">
+                    {{ lighterEnabled ? 'Enabled' : 'Disabled' }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -989,11 +1219,24 @@ usePolling(refresh, 10000)
   background: rgba(100, 116, 139, 0.06);
   border-color: rgba(100, 116, 139, 0.15);
 }
+.venue-standby {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.2);
+}
+.venue-chip-state {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+}
 
 /* System Stats */
 .sys-stat {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  text-align: center;
   gap: 1px;
   padding: 0.35rem 1rem;
   border-left: 1px solid var(--tp-border);
@@ -1003,15 +1246,15 @@ usePolling(refresh, 10000)
   border-left: none;
 }
 .sys-stat-label {
-  font-size: 0.5rem;
+  font-size: 0.45rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   color: var(--tp-text-dim);
   text-transform: uppercase;
   white-space: nowrap;
 }
 .sys-stat-value {
-  font-size: 1.1rem;
+  font-size: 0.85rem;
   font-weight: 800;
   color: var(--tp-text);
   font-feature-settings: 'tnum' 1;
@@ -1676,6 +1919,199 @@ usePolling(refresh, 10000)
 }
 .venue-mini-stat .meta-value {
   font-size: 0.72rem;
+}
+
+/* Lighter Proxy Toggle (system bar) */
+.venue-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: transparent;
+  padding: 0;
+  margin-left: 0.15rem;
+}
+.vt-on {
+  color: var(--tp-success);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+.vt-on:hover {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--tp-warning);
+  border-color: var(--tp-warning);
+}
+.vt-off {
+  color: var(--tp-danger);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.vt-off:hover {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--tp-success);
+  border-color: var(--tp-success);
+}
+.venue-disabled {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.2);
+  opacity: 1;
+}
+.venue-disabled .venue-chip-icon {
+  color: #f59e0b;
+}
+
+/* Lighter Proxy Toggle (venue block) */
+.venue-block-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: transparent;
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.vbt-on {
+  color: var(--tp-success);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+.vbt-on:hover {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--tp-warning);
+  border-color: var(--tp-warning);
+}
+.vbt-off {
+  color: var(--tp-danger);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.vbt-off:hover {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--tp-success);
+  border-color: var(--tp-success);
+}
+
+/* Value status colors */
+.val-ok { color: var(--tp-success); }
+.val-down { color: var(--tp-danger); }
+
+/* ===== WS Badge ===== */
+.ws-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--tp-success);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+/* ===== News Card ===== */
+.news-card {
+  overflow: hidden;
+}
+.news-body {
+  padding: 0;
+  max-height: 24rem;
+  overflow-y: auto;
+}
+.news-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.6rem 1.25rem;
+  border-bottom: 1px solid var(--tp-border);
+  text-decoration: none;
+  color: inherit;
+  position: relative;
+  transition: background 0.15s ease;
+  cursor: pointer;
+}
+.news-item:hover {
+  background: var(--tp-bg-hover);
+}
+.news-item:last-child {
+  border-bottom: none;
+}
+.news-item-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.news-source-badge {
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  flex-shrink: 0;
+}
+.news-time {
+  font-size: 0.6rem;
+  color: var(--tp-text-dim);
+  font-weight: 600;
+}
+.news-headline {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--tp-text);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  padding-right: 1.5rem;
+}
+.news-link-icon {
+  position: absolute;
+  right: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  color: var(--tp-text-dim);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.news-item:hover .news-link-icon {
+  opacity: 1;
+  color: var(--tp-primary);
+}
+.news-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 2rem;
+  color: var(--tp-text-dim);
+  font-size: 0.75rem;
+  text-align: center;
+}
+.tp-badge-dim {
+  background: rgba(100, 116, 139, 0.1);
+  color: var(--tp-text-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-weight: 700;
 }
 
 /* ===== Utility Classes ===== */

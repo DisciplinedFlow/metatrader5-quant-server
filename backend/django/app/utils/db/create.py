@@ -22,20 +22,31 @@ def create_trade(order, symbol: str, capital: float, position_size_usd: float,
                 f"— using order ticket {broker_ticket} as transaction_broker_id"
             )
 
+        # Compute optional risk prices — only valid when position_size_usd is set
+        # Fall back to entry_price when position_size_usd=0 (forex risk-based sizing)
+        break_even_price = entry_price
+        liquidity_price = entry_price
+        if position_size_usd and position_size_usd > 0:
+            try:
+                break_even_price = get_price_at_pnl(0, entry_price, position_size_usd, leverage, type, commission)[0]
+                liquidity_price = get_price_at_pnl(-capital, entry_price, position_size_usd, leverage, type, commission)[0]
+            except Exception:
+                pass
+
         # Create Trade instance
         trade = Trade.objects.create(
             transaction_broker_id=broker_ticket,
             symbol=symbol,
-            entry_time=datetime.now(),  # Modify as needed based on actual data
+            entry_time=datetime.now(),
             entry_price=entry_price,
-            type=type.upper(),  # Ensure matching choices
-            position_size_usd=position_size_usd,  # Example calculation
-            capital=capital,  # Set appropriately
-            leverage=leverage,  # Adjust based on your data
+            type=type.upper(),
+            position_size_usd=position_size_usd,
+            capital=capital,
+            leverage=leverage,
             order_volume=order_volume,
             order_commission=commission,
-            break_even_price=get_price_at_pnl(0, entry_price, position_size_usd, leverage, type, commission)[0],
-            liquidity_price=get_price_at_pnl(-capital, entry_price, position_size_usd, leverage, type, commission)[0],
+            break_even_price=break_even_price,
+            liquidity_price=liquidity_price,
             broker=broker,
             market_type=market,
             strategy=strategy,

@@ -50,7 +50,8 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
             else:
                 logger.warning(f"R:R CHECK SKIPPED {symbol}: could not fetch tick data")
         elif tp is None:
-            logger.warning(f"R:R CHECK SKIPPED {symbol} {order_type}: no TP provided — allowing trade")
+            logger.warning(f"R:R REJECTED {symbol} {order_type}: no TP provided — algorithmic orders require TP")
+            return None
         # ─────────────────────────────────────────────────────────────
 
         request = {
@@ -83,6 +84,19 @@ def send_market_order(symbol: str, volume: float, order_type: str, sl: float, tp
         order = response_data.get('result')
         if order is None:
             logger.error("Order response missing 'result' field")
+            return None
+
+        # Verify order actually filled — deal>0 and price>0
+        # MT5 can return retcode=10009 (DONE) with a valid order ticket
+        # but deal=0/price=0 when the broker connection is flaky
+        deal_ticket = order.get('deal', 0)
+        fill_price = order.get('price', 0)
+        if not deal_ticket or not fill_price:
+            logger.error(
+                "Order accepted but NOT FILLED: %s %s deal=%s price=%s order=%s — "
+                "broker may be disconnected",
+                symbol, order_type_str, deal_ticket, fill_price, order.get('order'),
+            )
             return None
 
         return order

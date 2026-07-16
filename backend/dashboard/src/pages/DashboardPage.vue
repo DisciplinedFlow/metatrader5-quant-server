@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { usePositionsStore } from '@/stores/positions'
 import { usePolling } from '@/composables/usePolling'
 import { useHMMRegime } from '@/composables/useHMMRegime'
+import { useWebSocket } from '@/composables/useWebSocket'
 import PositionsTable from '@/components/PositionsTable.vue'
 import MarketSessions from '@/components/MarketSessions.vue'
 import SectionNav from '@/components/SectionNav.vue'
@@ -49,10 +50,12 @@ const pnlStats = computed(() => {
   const wins = ct.filter(t => t.pnl > 0)
   const losses = ct.filter(t => t.pnl <= 0)
   const totalPnl = ct.reduce((s, t) => s + t.pnl, 0)
+  const totalGross = ct.reduce((s, t) => s + (t.pnl_excluding_commission ?? t.pnl), 0)
+  const totalCommission = ct.reduce((s, t) => s + (t.order_commission ?? 0), 0)
   const winRate = ct.length ? (wins.length / ct.length * 100) : 0
   const bestTrade = ct.length ? Math.max(...ct.map(t => t.pnl)) : 0
   const worstTrade = ct.length ? Math.min(...ct.map(t => t.pnl)) : 0
-  return { total: ct.length, wins: wins.length, losses: losses.length, totalPnl, winRate, bestTrade, worstTrade }
+  return { total: ct.length, wins: wins.length, losses: losses.length, totalPnl, totalGross, totalCommission, winRate, bestTrade, worstTrade }
 })
 
 // SVG equity curve path
@@ -146,11 +149,19 @@ function formatNewsTime(unixTimestamp) {
 
 const hmmRegime = useHMMRegime()
 
+// WebSocket: auto-refresh on live trade events
+const { connected: wsConnected, on: wsOn } = useWebSocket()
+wsOn('trade_opened', () => { refresh(); fetchTrades() })
+wsOn('trade_closed', () => { refresh(); fetchTrades() })
+wsOn('position_update', () => refresh())
+wsOn('bot_status', (data) => { if (data && data.paused != null) botPaused.value = data.paused })
+wsOn('news_alert', () => fetchMarketPulse())
+
 onMounted(fetchTrades)
-usePolling(refresh, 5000)
-usePolling(fetchMarketPulse, 120000)
-usePolling(fetchTrades, 30000)
-usePolling(() => hmmRegime.fetch(), 30000)
+usePolling(refresh, 30000)              // was 5s — bot gets API priority
+usePolling(fetchMarketPulse, 300000)    // was 120s — use Lighter browser instead
+usePolling(fetchTrades, 60000)          // was 30s
+usePolling(() => hmmRegime.fetch(), 120000)  // was 30s
 </script>
 
 <template>
@@ -167,14 +178,32 @@ usePolling(() => hmmRegime.fetch(), 30000)
         <button class="cmd-toggle" @click="toggleBot" :aria-busy="botStatusLoading">
           <span class="material-symbols-outlined">{{ botPaused ? 'play_arrow' : 'pause' }}</span>
         </button>
+        <span class="ws-indicator" :class="wsConnected ? 'ws-connected' : 'ws-disconnected'">
+          <span class="pulse-dot" v-if="wsConnected"></span>
+          {{ wsConnected ? 'Live' : 'Polling' }}
+        </span>
       </div>
 
       <div class="cmd-metrics">
         <div class="cmd-sep"></div>
         <div class="cmd-metric cmd-metric-hero">
-          <span class="cmd-label">Total P&L</span>
+          <span class="cmd-label">Net P&L</span>
           <span class="cmd-value" :class="pnlStats.totalPnl >= 0 ? 'val-pos' : 'val-neg'">
-            {{ pnlStats.totalPnl >= 0 ? '+' : '' }}${{ pnlStats.totalPnl.toFixed(2) }}
+            {{ pnlStats.totalPnl >= 0 ? '+' : '' }}&euro;{{ pnlStats.totalPnl.toFixed(2) }}
+          </span>
+        </div>
+        <div class="cmd-sep"></div>
+        <div class="cmd-metric">
+          <span class="cmd-label">Gross</span>
+          <span class="cmd-value" :class="pnlStats.totalGross >= 0 ? 'val-pos' : 'val-neg'">
+            {{ pnlStats.totalGross >= 0 ? '+' : '' }}&euro;{{ pnlStats.totalGross.toFixed(2) }}
+          </span>
+        </div>
+        <div class="cmd-sep"></div>
+        <div class="cmd-metric">
+          <span class="cmd-label">Fees</span>
+          <span class="cmd-value val-neg">
+            &euro;{{ pnlStats.totalCommission.toFixed(2) }}
           </span>
         </div>
         <div class="cmd-sep"></div>
@@ -196,14 +225,14 @@ usePolling(() => hmmRegime.fetch(), 30000)
         <div class="cmd-metric">
           <span class="cmd-label">Floating</span>
           <span class="cmd-value" :class="positionsStore.totalProfit >= 0 ? 'val-pos' : 'val-neg'" v-if="!posError">
-            {{ positionsStore.totalProfit >= 0 ? '+' : '' }}${{ positionsStore.totalProfit.toFixed(2) }}
+            {{ positionsStore.totalProfit >= 0 ? '+' : '' }}&euro;{{ positionsStore.totalProfit.toFixed(2) }}
           </span>
           <span v-else class="cmd-value cmd-dim">&mdash;</span>
         </div>
         <div class="cmd-sep"></div>
         <div class="cmd-metric">
           <span class="cmd-label">Swap</span>
-          <span class="cmd-value" v-if="!posError">${{ positionsStore.totalSwap.toFixed(2) }}</span>
+          <span class="cmd-value" v-if="!posError">&euro;{{ positionsStore.totalSwap.toFixed(2) }}</span>
           <span v-else class="cmd-value cmd-dim">&mdash;</span>
         </div>
       </div>
@@ -217,7 +246,7 @@ usePolling(() => hmmRegime.fetch(), 30000)
         <div class="perf-header">
           <h3 class="card-title">Performance</h3>
           <span class="perf-total" :class="pnlStats.totalPnl >= 0 ? 'val-pos' : 'val-neg'">
-            {{ pnlStats.totalPnl >= 0 ? '+' : '' }}${{ pnlStats.totalPnl.toFixed(2) }}
+            {{ pnlStats.totalPnl >= 0 ? '+' : '' }}&euro;{{ pnlStats.totalPnl.toFixed(2) }}
           </span>
         </div>
         <span class="perf-trades">{{ pnlStats.total }} closed trades</span>
@@ -239,7 +268,7 @@ usePolling(() => hmmRegime.fetch(), 30000)
                class="trade-bar"
                :class="t.pnl >= 0 ? 'bar-win' : 'bar-loss'"
                :style="{ height: Math.min(100, Math.max(8, Math.abs(t.pnl) * 3)) + '%' }"
-               :title="`${t.symbol} ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`"
+               :title="`${t.symbol} ${t.pnl >= 0 ? '+' : ''}€${t.pnl.toFixed(2)}`"
           ></div>
         </div>
 
@@ -250,11 +279,11 @@ usePolling(() => hmmRegime.fetch(), 30000)
           </div>
           <div class="perf-kpi">
             <span class="perf-kpi-label">Best</span>
-            <span class="perf-kpi-val val-pos">+${{ pnlStats.bestTrade.toFixed(2) }}</span>
+            <span class="perf-kpi-val val-pos">+&euro;{{ pnlStats.bestTrade.toFixed(2) }}</span>
           </div>
           <div class="perf-kpi">
             <span class="perf-kpi-label">Worst</span>
-            <span class="perf-kpi-val val-neg">${{ pnlStats.worstTrade.toFixed(2) }}</span>
+            <span class="perf-kpi-val val-neg">&euro;{{ pnlStats.worstTrade.toFixed(2) }}</span>
           </div>
           <button class="perf-hist-btn" @click="router.push('/forex/history')">
             <span class="material-symbols-outlined">history</span>
@@ -875,5 +904,36 @@ usePolling(() => hmmRegime.fetch(), 30000)
 
 @media (min-width: 769px) and (max-width: 1023px) {
   .row-perf-pos { grid-template-columns: 1fr 1fr; }
+}
+
+/* ═══ WebSocket Connection Indicator ═══ */
+.ws-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  font-family: var(--tp-font);
+}
+.ws-connected {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+}
+.ws-disconnected {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: ws-pulse 2s ease infinite;
+}
+@keyframes ws-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50%      { box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
 }
 </style>

@@ -274,6 +274,67 @@ const api = {
     return this.django('v1/crypto/wallet/')
   },
 
+  getHyperliquidStatus() {
+    return this.django('v1/crypto/hyperliquid/control/')
+  },
+
+  setHyperliquidEnabled(enabled) {
+    return this.django('v1/crypto/hyperliquid/control/', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    })
+  },
+
+  getLighterProxyStatus() {
+    return this.django('v1/crypto/lighter/proxy/')
+  },
+
+  getLighterAPITrades() {
+    return this.django('v1/crypto/lighter/trades/')
+  },
+
+  getCryptoMLStats() {
+    return this.django('v1/crypto/ml/stats/')
+  },
+
+  getCryptoMLStatus() {
+    return this.django('v1/crypto/ml/status/')
+  },
+
+  getCryptoMLPredictions(limit = 50) {
+    return this.django(`v1/crypto/ml/predictions/?limit=${limit}`)
+  },
+
+  setLighterEnabled(enabled) {
+    return this.django('v1/crypto/lighter/proxy/', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    })
+  },
+
+  // --- Lighter Proxy Direct (browser → macOS localhost:5555) ---
+
+  async lighterProxyDirect() {
+    try {
+      const resp = await fetch('http://localhost:5555/status', {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(3000),
+      })
+      return await resp.json()
+    } catch {
+      return { active: false, _offline: true }
+    }
+  },
+
+  async lighterProxyToggle() {
+    const resp = await fetch('http://localhost:5555/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(3000),
+    })
+    return await resp.json()
+  },
+
   // --- AI Brain API ---
 
   getAIBrainStatus() {
@@ -387,6 +448,22 @@ const api = {
 
   getTrainingHistory(limit = 20) {
     return this.django(`v1/training/history/?limit=${limit}`)
+  },
+
+  // --- Knowledge Graph API ---
+
+  getKnowledgeGraphSummary() {
+    return this.django('v1/knowledge-graph/summary/')
+  },
+
+  getKnowledgeGraphHealth() {
+    return this.django('v1/knowledge-graph/health/')
+  },
+
+  // --- Crypto News API ---
+
+  getCryptoNews() {
+    return this.django('v1/finnhub/news/?category=crypto')
   },
 }
 

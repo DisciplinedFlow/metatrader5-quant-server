@@ -11,11 +11,13 @@ const sections = [
   { path: '/crypto', label: 'Crypto' },
   { path: '/ai-brain', label: 'AI Brain' },
   { path: '/ml', label: 'ML' },
+  { path: '/forex/knowledge', label: 'Brain' },
   { path: '/settings', label: 'Settings' },
 ]
 
 const activeSection = computed(() => {
   const p = route.path
+  if (p.startsWith('/forex/knowledge')) return '/forex/knowledge'
   if (p.startsWith('/crypto')) return '/crypto'
   if (p.startsWith('/ai-brain')) return '/ai-brain'
   if (p.startsWith('/ml')) return '/ml'

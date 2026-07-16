@@ -11,14 +11,25 @@ LIGHTER_TESTNET = os.getenv('LIGHTER_TESTNET', 'true').lower() == 'true'
 LIGHTER_SIGNER_PROXY_URL = os.getenv('LIGHTER_SIGNER_PROXY_URL', 'http://host.docker.internal:5555')
 
 # Trading parameters
-LIGHTER_CAPITAL_USD = float(os.getenv('LIGHTER_CAPITAL_USD', '10'))
+LIGHTER_CAPITAL_USD = float(os.getenv('LIGHTER_CAPITAL_USD', '30'))  # Match actual equity (was $10)
+# Hard global cap driven by exchange OCO limit: Lighter allows ~4 conditional orders
+# per account (2 per position: SL + TP). More than 2 concurrent positions means the
+# 3rd position cannot get exchange-level stops — software-only protection only.
 LIGHTER_MAX_POSITIONS = int(os.getenv('LIGHTER_MAX_POSITIONS', '2'))
-LIGHTER_LEVERAGE = int(os.getenv('LIGHTER_LEVERAGE', '5'))
+LIGHTER_LEVERAGE = int(os.getenv('LIGHTER_LEVERAGE', '15'))  # 3x scale-up (was 5)
 LIGHTER_MAX_SLIPPAGE = float(os.getenv('LIGHTER_MAX_SLIPPAGE', '0.005'))  # 0.5%
-LIGHTER_POSITION_SIZE_PCT = float(os.getenv('LIGHTER_POSITION_SIZE_PCT', '0.40'))  # 40% of capital per trade
+LIGHTER_POSITION_SIZE_PCT = float(os.getenv('LIGHTER_POSITION_SIZE_PCT', '0.50'))  # 50% of capital per trade (up from 40%, justified by 65% WR / PF 2.01)
+
+PLATFORM_PREFIX = 'lighter:'
+
+# Asset-class classification (used by entry, exit, reconcile, rsi_scalper)
+FOREX_SYMBOLS = frozenset({'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'})
+METALS_SYMBOLS = frozenset({'XAU', 'XAG', 'PAXG', 'WTI'})
 
 # Trading pairs (Lighter perp symbols)
-LIGHTER_PAIRS = os.getenv('LIGHTER_PAIRS', 'ETH,BTC,SOL').split(',')
+# Backtest-validated only: XAU 1h EMA(5/100) 61.5% WR PF 2.88,
+# AVAX 1h EMA(8/21) 57.1% WR PF 2.53. All others removed.
+LIGHTER_PAIRS = os.getenv('LIGHTER_PAIRS', 'XAU').split(',')  # XAU only — 91.7% WR proven edge
 
 # Market metadata: {symbol: (market_id, min_base, size_decimals, price_decimals)}
 # All markets enforce size_decimals + price_decimals = 6
@@ -99,3 +110,18 @@ def sdk_to_human_price(symbol: str, sdk_price: int) -> float:
     """Convert SDK integer price back to human-readable."""
     meta = LIGHTER_MARKETS[symbol]
     return sdk_price / (10 ** meta['price_dec'])
+
+
+def is_global_position_limit_reached() -> bool:
+    """Return True if the global Lighter position cap is reached across ALL strategies.
+
+    Checks CryptoPosition directly so every strategy (CVD, MOM, RSI2) shares
+    the same hard limit. Capped at LIGHTER_MAX_POSITIONS=2 to match the exchange's
+    ~4 conditional order limit (2 positions × SL+TP each).
+    """
+    try:
+        from app.crypto.models import CryptoPosition
+        open_count = CryptoPosition.objects.filter(status='OPEN').count()
+        return open_count >= LIGHTER_MAX_POSITIONS
+    except Exception:
+        return False  # fail-open so a DB hiccup doesn't freeze the bot

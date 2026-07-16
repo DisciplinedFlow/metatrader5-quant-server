@@ -2,30 +2,26 @@
 import { ref, computed, onMounted } from 'vue'
 import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
-
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
+import { cryptoLinks, fmtTime, fmtPrice, duration } from '@/utils/cryptoConstants'
 
 const positions = ref([])
 const loading = ref(true)
 const error = ref('')
 
+// Net PnL = gross pnl_usd minus exchange fees (from total_fees field)
+const netPnl = (p) => Number(p.pnl_usd ?? 0) - Number(p.total_fees ?? 0)
+
 const stats = computed(() => {
   const closed = positions.value.filter(p => p.status === 'CLOSED')
-  const wins = closed.filter(p => Number(p.pnl_usd) > 0)
-  const losses = closed.filter(p => Number(p.pnl_usd) <= 0)
-  const totalPnl = closed.reduce((sum, p) => sum + Number(p.pnl_usd ?? 0), 0)
-  const avgWin = wins.length ? wins.reduce((s, p) => s + Number(p.pnl_usd), 0) / wins.length : 0
-  const avgLoss = losses.length ? losses.reduce((s, p) => s + Number(p.pnl_usd), 0) / losses.length : 0
+  const wins = closed.filter(p => netPnl(p) > 0)
+  const losses = closed.filter(p => netPnl(p) <= 0)
+  const totalPnl = closed.reduce((sum, p) => sum + netPnl(p), 0)
+  const totalFees = closed.reduce((sum, p) => sum + Number(p.total_fees ?? 0), 0)
+  const avgWin = wins.length ? wins.reduce((s, p) => s + netPnl(p), 0) / wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((s, p) => s + netPnl(p), 0) / losses.length : 0
   const winRate = closed.length ? (wins.length / closed.length * 100) : 0
   const openCount = positions.value.filter(p => p.status === 'OPEN').length
-  return { total: closed.length, wins: wins.length, losses: losses.length, totalPnl, avgWin, avgLoss, winRate, openCount }
+  return { total: closed.length, wins: wins.length, losses: losses.length, totalPnl, totalFees, avgWin, avgLoss, winRate, openCount }
 })
 
 async function fetchHistory() {
@@ -40,32 +36,10 @@ async function fetchHistory() {
   loading.value = false
 }
 
-function formatTime(iso) {
-  if (!iso) return '-'
-  const d = new Date(iso)
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-}
-
 function formatPnl(val) {
   if (val == null) return '-'
   const n = Number(val)
   return (n >= 0 ? '+' : '') + n.toFixed(2)
-}
-
-function fmtPrice(val) {
-  if (val == null) return '-'
-  return Number(val).toFixed(2)
-}
-
-function duration(open, close) {
-  if (!open || !close) return '-'
-  const ms = new Date(close) - new Date(open)
-  const mins = Math.floor(ms / 60000)
-  if (mins < 60) return `${mins}m`
-  const hrs = Math.floor(mins / 60)
-  const rm = mins % 60
-  if (hrs < 24) return `${hrs}h ${rm}m`
-  return `${Math.floor(hrs / 24)}d ${hrs % 24}h`
 }
 
 onMounted(fetchHistory)
@@ -77,7 +51,7 @@ onMounted(fetchHistory)
     <div class="page-header">
       <div>
         <h1>Trade History</h1>
-        <p>All crypto trades tracked by the bot — Hyperliquid Perpetuals.</p>
+        <p>All crypto trades tracked by the bot — Lighter.xyz & Hyperliquid Perpetuals.</p>
       </div>
       <button class="tp-btn tp-btn-outline" @click="fetchHistory" :disabled="loading">
         <span class="material-symbols-outlined" style="font-size:16px">refresh</span>
@@ -150,7 +124,7 @@ onMounted(fetchHistory)
             </thead>
             <tbody>
               <tr v-for="p in positions" :key="p.id">
-                <td class="td-time">{{ formatTime(p.opened_at) }}</td>
+                <td class="td-time">{{ fmtTime(p.opened_at) }}</td>
                 <td class="td-symbol">{{ p.symbol }}</td>
                 <td>
                   <span class="side-badge" :class="p.side === 'LONG' ? 'buy' : 'sell'">
@@ -162,8 +136,8 @@ onMounted(fetchHistory)
                 <td class="td-duration">{{ duration(p.opened_at, p.closed_at) }}</td>
                 <td style="font-weight:500">{{ Number(p.size).toFixed(4) }}</td>
                 <td>{{ p.leverage }}x</td>
-                <td class="td-pnl" :class="Number(p.pnl_usd ?? 0) > 0 ? 'pnl-pos' : Number(p.pnl_usd ?? 0) < 0 ? 'pnl-neg' : ''">
-                  {{ formatPnl(p.pnl_usd) }}
+                <td class="td-pnl" :class="netPnl(p) > 0 ? 'pnl-pos' : netPnl(p) < 0 ? 'pnl-neg' : ''">
+                  {{ formatPnl(netPnl(p)) }}
                 </td>
                 <td class="td-peak">
                   <span v-if="p.peak_profit_usd != null" class="pnl-pos">${{ Number(p.peak_profit_usd).toFixed(2) }}</span>

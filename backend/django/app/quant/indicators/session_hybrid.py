@@ -198,41 +198,50 @@ def asian_mean_reversion(df, params=None):
     rsi_oversold = params.get('rsi_oversold', 30)
     rsi_overbought = params.get('rsi_overbought', 70)
 
-    # --- Session check ---
-    utc_time = _get_utc_time(df)
-    if utc_time is None:
-        return 'off_session'
-
-    if not _time_in_range(utc_time, ASIAN_START, ASIAN_END):
-        return 'off_session'
+    result = pd.Series('neutral', index=df.index, dtype=object)
 
     # --- Guard: enough data ---
     min_bars = max(bb_period, rsi_period) + 1
     if len(df) < min_bars:
         logger.debug(f"asian_mean_reversion: need {min_bars} bars, got {len(df)}")
-        return 'neutral'
+        return result
+
+    # --- Session mask ---
+    # Determine which bars fall in the Asian session
+    if isinstance(df.index, pd.DatetimeIndex):
+        hours_series = df.index.hour
+        minutes_series = df.index.minute
+        bar_times = [t.time() for t in df.index]
+    elif 'time' in df.columns:
+        try:
+            timestamps = pd.to_datetime(df['time'])
+            hours_series = timestamps.dt.hour
+            minutes_series = timestamps.dt.minute
+            bar_times = [t.time() for t in timestamps]
+        except Exception:
+            result[:] = 'off_session'
+            return result
+    else:
+        result[:] = 'off_session'
+        return result
+
+    in_asian = pd.Series(False, index=df.index)
+    for i in range(len(df)):
+        in_asian.iloc[i] = _time_in_range(bar_times[i], ASIAN_START, ASIAN_END)
+
+    result[~in_asian] = 'off_session'
 
     # --- Indicators ---
     close = df['close']
     middle, upper, lower = _calculate_bollinger_bands(close, bb_period, bb_std)
     rsi_values = _calculate_rsi(close, rsi_period)
 
-    current_close = close.iloc[-1]
-    current_upper = upper.iloc[-1]
-    current_lower = lower.iloc[-1]
-    current_rsi = rsi_values.iloc[-1]
+    valid = upper.notna() & lower.notna() & rsi_values.notna() & in_asian
 
-    # --- NaN check ---
-    if np.isnan(current_upper) or np.isnan(current_lower) or np.isnan(current_rsi):
-        return 'neutral'
+    result[(close <= lower) & (rsi_values < rsi_oversold) & valid] = 'bullish_reversion'
+    result[(close >= upper) & (rsi_values > rsi_overbought) & valid] = 'bearish_reversion'
 
-    # --- Signal logic ---
-    if current_close <= current_lower and current_rsi < rsi_oversold:
-        return 'bullish_reversion'
-    elif current_close >= current_upper and current_rsi > rsi_overbought:
-        return 'bearish_reversion'
-    else:
-        return 'neutral'
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -267,52 +276,55 @@ def london_breakout(df, params=None):
     pip_size = params.get('pip_size', 0.0001)
     ema_period = params.get('ema_period', 20)
 
-    # --- Session check ---
-    utc_time = _get_utc_time(df)
-    if utc_time is None:
-        return 'off_session'
-
-    if not _time_in_range(utc_time, LONDON_START, LONDON_END):
-        return 'off_session'
-
-    # --- Asian range ---
-    asian_high, asian_low = _get_asian_range(df)
-    if asian_high is None or asian_low is None:
-        logger.debug("london_breakout: no Asian range available")
-        return 'neutral'
+    result = pd.Series('neutral', index=df.index, dtype=object)
 
     # --- Guard: enough data for EMA ---
     if len(df) < ema_period:
         logger.debug(f"london_breakout: need {ema_period} bars, got {len(df)}")
-        return 'neutral'
+        return result
+
+    # --- Session mask ---
+    if isinstance(df.index, pd.DatetimeIndex):
+        bar_times = [t.time() for t in df.index]
+    elif 'time' in df.columns:
+        try:
+            timestamps = pd.to_datetime(df['time'])
+            bar_times = [t.time() for t in timestamps]
+        except Exception:
+            result[:] = 'off_session'
+            return result
+    else:
+        result[:] = 'off_session'
+        return result
+
+    in_london = pd.Series(False, index=df.index)
+    for i in range(len(df)):
+        in_london.iloc[i] = _time_in_range(bar_times[i], LONDON_START, LONDON_END)
+
+    result[~in_london] = 'off_session'
+
+    # --- Asian range (single value used for all London bars) ---
+    asian_high, asian_low = _get_asian_range(df)
+    if asian_high is None or asian_low is None:
+        logger.debug("london_breakout: no Asian range available")
+        return result
 
     # --- Indicators ---
     close = df['close']
     ema = close.ewm(span=ema_period, adjust=False).mean()
 
-    current_close = close.iloc[-1]
-    current_ema = ema.iloc[-1]
-
-    if np.isnan(current_ema):
-        return 'neutral'
-
     buffer = breakout_buffer_pips * pip_size
     breakout_high = asian_high + buffer
     breakout_low = asian_low - buffer
 
-    # --- Signal logic ---
-    if current_close > breakout_high:
-        if current_close > current_ema:
-            return 'bullish_breakout'
-        else:
-            return 'unconfirmed_bullish'
-    elif current_close < breakout_low:
-        if current_close < current_ema:
-            return 'bearish_breakout'
-        else:
-            return 'unconfirmed_bearish'
-    else:
-        return 'neutral'
+    valid = ema.notna() & in_london
+
+    result[(close > breakout_high) & (close > ema) & valid] = 'bullish_breakout'
+    result[(close > breakout_high) & (close <= ema) & valid] = 'unconfirmed_bullish'
+    result[(close < breakout_low) & (close < ema) & valid] = 'bearish_breakout'
+    result[(close < breakout_low) & (close >= ema) & valid] = 'unconfirmed_bearish'
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -320,34 +332,50 @@ def london_breakout(df, params=None):
 # ---------------------------------------------------------------------------
 
 def session_strategy_router(df, params=None):
-    """Meta-indicator: returns which strategy mode to use for the current session.
+    """Meta-indicator: returns which strategy mode to use for each bar's session.
 
     This routes the entry algorithm to the correct strategy based on time-of-day,
     reflecting the structural behavior of AUDUSD across sessions.
 
     Args:
-        df: DataFrame with DatetimeIndex. Only the last candle timestamp is used.
+        df: DataFrame with DatetimeIndex or 'time' column.
         params: dict (unused, included for consistent signature)
 
     Returns:
-        str: 'mean_reversion' (22:00-06:00 UTC)
+        pd.Series of strategy mode strings per bar:
+             'mean_reversion' (22:00-06:00 UTC)
              'breakout' (06:00-10:00 UTC)
              'trend_follow' (10:00-14:00 UTC)
              'close_all' (14:00-22:00 UTC)
     """
-    utc_time = _get_utc_time(df)
-    if utc_time is None:
-        # Cannot determine session — default to safe mode
-        return 'close_all'
+    result = pd.Series('close_all', index=df.index, dtype=object)
 
-    if _time_in_range(utc_time, ASIAN_START, ASIAN_END):
-        return 'mean_reversion'
-    elif _time_in_range(utc_time, LONDON_START, LONDON_END):
-        return 'breakout'
-    elif _time_in_range(utc_time, TREND_START, TREND_END):
-        return 'trend_follow'
+    if len(df) == 0:
+        return result
+
+    # Extract time objects for each bar
+    if isinstance(df.index, pd.DatetimeIndex):
+        bar_times = [t.time() for t in df.index]
+    elif 'time' in df.columns:
+        try:
+            timestamps = pd.to_datetime(df['time'])
+            bar_times = [t.time() for t in timestamps]
+        except Exception:
+            return result
     else:
-        return 'close_all'
+        return result
+
+    for i in range(len(df)):
+        t = bar_times[i]
+        if _time_in_range(t, ASIAN_START, ASIAN_END):
+            result.iloc[i] = 'mean_reversion'
+        elif _time_in_range(t, LONDON_START, LONDON_END):
+            result.iloc[i] = 'breakout'
+        elif _time_in_range(t, TREND_START, TREND_END):
+            result.iloc[i] = 'trend_follow'
+        # else: stays 'close_all'
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +410,8 @@ def commodity_correlation_filter(df, params=None):
     correlation_period = params.get('correlation_period', 20)
     gold_trend_ema = params.get('gold_trend_ema', 50)
 
+    result = pd.Series('neutral', index=df.index, dtype=object)
+
     # Use external close data if provided (e.g., gold prices), otherwise self-proxy
     external_close = params.get('external_close', None)
     if external_close is not None and isinstance(external_close, pd.Series):
@@ -395,38 +425,23 @@ def commodity_correlation_filter(df, params=None):
         logger.debug(
             f"commodity_correlation_filter: need {min_bars} bars, got {len(close)}"
         )
-        return 'neutral'
+        return result
 
     # --- EMA slope as trend proxy ---
     ema = close.ewm(span=gold_trend_ema, adjust=False).mean()
+    ema_past = ema.shift(correlation_period)
 
-    if ema.iloc[-1] is None or np.isnan(ema.iloc[-1]):
-        return 'neutral'
-
-    # Calculate slope: change in EMA over the correlation period
-    # Positive slope → risk-on → favor longs
-    # Negative slope → risk-off → favor shorts
-    ema_now = ema.iloc[-1]
-    ema_past = ema.iloc[-correlation_period]
-
-    if np.isnan(ema_past):
-        return 'neutral'
-
-    slope = ema_now - ema_past
+    slope = ema - ema_past
 
     # Normalize slope relative to price level to handle different instruments
-    price_level = close.iloc[-1]
-    if price_level == 0:
-        return 'neutral'
-
-    normalized_slope = slope / price_level
+    normalized_slope = slope / close.replace(0, np.nan)
 
     # Threshold: slope must be at least 0.1% over the period to be meaningful
     threshold = 0.001
 
-    if normalized_slope > threshold:
-        return 'favor_long'
-    elif normalized_slope < -threshold:
-        return 'favor_short'
-    else:
-        return 'neutral'
+    valid = ema.notna() & ema_past.notna() & normalized_slope.notna()
+
+    result[(normalized_slope > threshold) & valid] = 'favor_long'
+    result[(normalized_slope < -threshold) & valid] = 'favor_short'
+
+    return result

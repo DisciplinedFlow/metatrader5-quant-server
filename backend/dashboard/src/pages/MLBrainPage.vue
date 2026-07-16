@@ -5,17 +5,25 @@ import api from '@/services/api'
 
 const status = ref(null)
 const predictions = ref([])
+const cryptoML = ref(null)
+const cryptoPredictions = ref([])
 const loading = ref(true)
 const activeTab = ref('overview')
+const activeCryptoTab = ref('overview')
+const activeMLTab = ref('forex')
 
 async function refresh() {
   try {
-    const [s, p] = await Promise.all([
+    const [s, p, c, cp] = await Promise.all([
       api.getMLStatus(),
       api.getMLPredictions(50),
+      api.getCryptoMLStatus(),
+      api.getCryptoMLPredictions(50),
     ])
     status.value = s
     predictions.value = p
+    cryptoML.value = c
+    cryptoPredictions.value = cp
   } catch (err) {
     console.error('ML status error:', err)
   }
@@ -235,6 +243,192 @@ const thresholdAnalysis = computed(() => {
   })
 })
 
+// --- Crypto ML computed properties ---
+const cryptoModel = computed(() => cryptoML.value?.active_model)
+const cryptoFeatures = computed(() => cryptoML.value?.features || {})
+
+const cryptoTopFeatures = computed(() => {
+  if (!cryptoModel.value?.feature_importance) return []
+  const imp = cryptoModel.value.feature_importance
+  return Object.entries(imp)
+    .filter(([k]) => !k.startsWith('_'))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+})
+
+const cryptoResolvedPredictions = computed(() =>
+  cryptoPredictions.value.filter(p => p.actual_win !== null && p.ml_score !== null)
+)
+
+const cryptoPredictionAccuracy = computed(() => {
+  if (cryptoResolvedPredictions.value.length === 0) return null
+  const correct = cryptoResolvedPredictions.value.filter(p => (p.ml_score >= 0.5) === p.actual_win)
+  return (correct.length / cryptoResolvedPredictions.value.length * 100).toFixed(1)
+})
+
+const cryptoTrainBalance = computed(() => {
+  const w = cryptoFeatures.value.wins || 0
+  const l = cryptoFeatures.value.losses || 0
+  const total = w + l
+  if (total === 0) return null
+  return {
+    wins: w,
+    losses: l,
+    total,
+    winPct: (w / total * 100).toFixed(0),
+    lossPct: (l / total * 100).toFixed(0),
+    winDeg: (w / total * 360),
+  }
+})
+
+const cryptoScoreDistribution = computed(() => {
+  const r = cryptoResolvedPredictions.value
+  if (r.length === 0) return []
+  const buckets = Array.from({ length: 10 }, (_, i) => ({
+    label: `${(i * 10)}`,
+    min: i * 0.1,
+    max: (i + 1) * 0.1,
+    wins: 0,
+    losses: 0,
+  }))
+  for (const p of r) {
+    const idx = Math.min(Math.floor(p.ml_score * 10), 9)
+    if (p.actual_win) buckets[idx].wins++
+    else buckets[idx].losses++
+  }
+  return buckets
+})
+
+const cryptoScoreDistMax = computed(() => {
+  if (cryptoScoreDistribution.value.length === 0) return 1
+  return Math.max(...cryptoScoreDistribution.value.map(b => b.wins + b.losses), 1)
+})
+
+const cryptoSymbolStats = computed(() => {
+  const r = cryptoResolvedPredictions.value
+  if (r.length === 0) return []
+  const map = {}
+  for (const p of r) {
+    if (!map[p.symbol]) map[p.symbol] = { symbol: p.symbol, wins: 0, losses: 0, total: 0, pnl: 0 }
+    map[p.symbol].total++
+    if (p.actual_win) map[p.symbol].wins++
+    else map[p.symbol].losses++
+    if (p.pnl != null) map[p.symbol].pnl += p.pnl
+  }
+  return Object.values(map).sort((a, b) => b.total - a.total)
+})
+
+const cryptoHistory = computed(() => cryptoML.value?.model_history || [])
+
+const cryptoNetPnl = computed(() => {
+  // Try resolved predictions first
+  const r = cryptoResolvedPredictions.value.filter(p => p.pnl != null)
+  if (r.length > 0) return r.reduce((s, p) => s + p.pnl, 0)
+  // Fall back to session/training data from API
+  if (cryptoML.value?.session?.net_pnl != null) return cryptoML.value.session.net_pnl
+  if (cryptoML.value?.training?.net_pnl != null) return cryptoML.value.training.net_pnl
+  return null
+})
+
+const cryptoModelTypeClass = computed(() => {
+  if (!cryptoModel.value) return ''
+  return modelTypeClassFor(cryptoModel.value.model_type)
+})
+
+// Crypto confusion matrix
+const cryptoConfusionMatrix = computed(() => {
+  const preds = cryptoPredictions.value.filter(p => p.actual_win !== null)
+  if (preds.length === 0) return null
+  let tp = 0, fp = 0, tn = 0, fn = 0
+  for (const p of preds) {
+    const pred = p.ml_score != null ? p.ml_score >= 0.5 : p.actual_win // no model: use outcome as "prediction"
+    if (pred && p.actual_win) tp++
+    else if (pred && !p.actual_win) fp++
+    else if (!pred && !p.actual_win) tn++
+    else fn++
+  }
+  return { tp, fp, tn, fn, total: tp + fp + tn + fn }
+})
+
+const cryptoConfusionPnl = computed(() => {
+  const r = cryptoPredictions.value.filter(p => p.actual_win !== null && p.pnl != null)
+  if (r.length === 0) return null
+  const buckets = { tp: [], fp: [], tn: [], fn: [] }
+  for (const p of r) {
+    const pred = p.ml_score != null ? p.ml_score >= 0.5 : p.actual_win
+    if (pred && p.actual_win) buckets.tp.push(p.pnl)
+    else if (pred && !p.actual_win) buckets.fp.push(p.pnl)
+    else if (!pred && !p.actual_win) buckets.tn.push(p.pnl)
+    else buckets.fn.push(p.pnl)
+  }
+  const avg = arr => arr.length ? (arr.reduce((s, v) => s + v, 0) / arr.length) : 0
+  const sum = arr => arr.reduce((s, v) => s + v, 0)
+  return {
+    tp: { avg: avg(buckets.tp), sum: sum(buckets.tp), n: buckets.tp.length },
+    fp: { avg: avg(buckets.fp), sum: sum(buckets.fp), n: buckets.fp.length },
+    tn: { avg: avg(buckets.tn), sum: sum(buckets.tn), n: buckets.tn.length },
+    fn: { avg: avg(buckets.fn), sum: sum(buckets.fn), n: buckets.fn.length },
+  }
+})
+
+const cryptoScorePnlData = computed(() => {
+  const r = cryptoPredictions.value.filter(p => p.pnl != null && p.actual_win !== null)
+  if (r.length === 0) return { points: [], minPnl: 0, maxPnl: 0, zeroNorm: 50 }
+  const pnls = r.map(p => p.pnl)
+  const minPnl = Math.min(...pnls)
+  const maxPnl = Math.max(...pnls)
+  const range = maxPnl - minPnl || 1
+  const points = r.map(p => ({
+    score: p.ml_score || 0,
+    pnl: p.pnl,
+    win: p.actual_win,
+    symbol: p.symbol,
+    xPct: ((p.ml_score || 0) * 100),
+    yPct: ((p.pnl - minPnl) / range * 100),
+  }))
+  const zeroNorm = ((0 - minPnl) / range * 100)
+  return { points, minPnl, maxPnl, zeroNorm }
+})
+
+// Crypto threshold analysis
+const cryptoThresholdAnalysis = computed(() => {
+  const r = cryptoPredictions.value.filter(p => p.pnl != null && p.actual_win !== null)
+  if (r.length < 3) return []
+  return [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65].map(t => {
+    const accepted = r.filter(p => (p.ml_score || 0) >= t)
+    const wins = accepted.filter(p => p.actual_win)
+    const totalPnl = accepted.reduce((s, p) => s + (p.pnl || 0), 0)
+    return {
+      threshold: t,
+      accepted: accepted.length,
+      rejected: r.length - accepted.length,
+      winRate: accepted.length > 0 ? (wins.length / accepted.length * 100).toFixed(1) : '-',
+      pnl: totalPnl.toFixed(2),
+      avgPnl: accepted.length > 0 ? (totalPnl / accepted.length).toFixed(2) : '-',
+      isCurrent: t === 0.50,
+    }
+  })
+})
+
+const cryptoCalibrationBuckets = computed(() => {
+  const r = cryptoPredictions.value.filter(p => p.actual_win !== null && p.ml_score != null)
+  if (r.length < 3) return []
+  const buckets = [
+    { label: '0-30%', min: 0, max: 0.3, wins: 0, total: 0 },
+    { label: '30-45%', min: 0.3, max: 0.45, wins: 0, total: 0 },
+    { label: '45-55%', min: 0.45, max: 0.55, wins: 0, total: 0 },
+    { label: '55-70%', min: 0.55, max: 0.7, wins: 0, total: 0 },
+    { label: '70-100%', min: 0.7, max: 1.01, wins: 0, total: 0 },
+  ]
+  for (const p of r) {
+    const b = buckets.find(b => p.ml_score >= b.min && p.ml_score < b.max)
+    if (b) { b.total++; if (p.actual_win) b.wins++ }
+  }
+  return buckets.filter(b => b.total > 0).map(b => ({
+    ...b, winRate: b.total > 0 ? (b.wins / b.total * 100) : 0,
+  }))
+})
+
 function scoreColor(score) {
   if (score === null || score === undefined) return ''
   if (score >= 0.6) return 'color: var(--tp-success)'
@@ -293,6 +487,14 @@ function modelTypeClassFor(type) {
       </div>
     </div>
 
+    <!-- Forex / Crypto ML Tabs -->
+    <div class="ml-tab-group">
+      <button class="ml-tab" :class="{ active: activeMLTab === 'forex' }" @click="activeMLTab = 'forex'">Forex ML</button>
+      <button class="ml-tab" :class="{ active: activeMLTab === 'crypto' }" @click="activeMLTab = 'crypto'">Crypto ML</button>
+    </div>
+
+    <!-- ===== FOREX ML TAB ===== -->
+    <template v-if="activeMLTab === 'forex'">
     <div v-if="loading" class="ml-loading">Loading ML data...</div>
 
     <template v-else>
@@ -487,10 +689,10 @@ function modelTypeClassFor(type) {
                       {{ t.winRate }}%
                     </td>
                     <td :style="pnlColor(parseFloat(t.pnl))">
-                      {{ parseFloat(t.pnl) >= 0 ? '+' : '' }}${{ t.pnl }}
+                      {{ parseFloat(t.pnl) >= 0 ? '+' : '' }}&euro;{{ t.pnl }}
                     </td>
                     <td :style="pnlColor(parseFloat(t.avgPnl))">
-                      {{ parseFloat(t.avgPnl) >= 0 ? '+' : '' }}${{ t.avgPnl }}
+                      {{ parseFloat(t.avgPnl) >= 0 ? '+' : '' }}&euro;{{ t.avgPnl }}
                     </td>
                   </tr>
                 </tbody>
@@ -856,6 +1058,526 @@ function modelTypeClassFor(type) {
         </div>
       </div>
     </template>
+    </template>
+
+    <!-- ===== CRYPTO ML TAB ===== -->
+    <template v-if="activeMLTab === 'crypto'">
+    <div v-if="loading" class="ml-loading">Loading Crypto ML data...</div>
+
+    <template v-else>
+      <!-- Stats Strip -->
+      <div class="tp-stats-grid" style="margin-bottom:1.25rem;padding-left:1.15rem;padding-right:1.15rem;">
+        <div class="tp-stat-card">
+          <div class="stat-label">Model</div>
+          <div class="stat-value" :style="cryptoModel ? 'color:var(--tp-success)' : ''">{{ cryptoModel ? `v${cryptoModel.version}` : 'Collecting' }}</div>
+          <div v-if="cryptoModel" class="stat-sub">{{ cryptoModel.model_type }}</div>
+          <div v-else class="stat-sub">{{ cryptoFeatures.labeled || 0 }} / 200 trades</div>
+        </div>
+        <div class="tp-stat-card">
+          <div class="stat-label">Accuracy</div>
+          <div class="stat-value" :style="cryptoModel && cryptoModel.accuracy > 0.55 ? 'color:var(--tp-success)' : ''">{{ cryptoModel ? fmtPct(cryptoModel.accuracy) : '-' }}</div>
+          <div v-if="cryptoModel" class="stat-sub">CV: {{ fmtPct(cryptoModel.cv_accuracy) }}</div>
+        </div>
+        <div class="tp-stat-card">
+          <div class="stat-label">Training Data</div>
+          <div class="stat-value">{{ cryptoFeatures.labeled || 0 }}</div>
+          <div class="stat-sub"><span style="color:var(--tp-success)">{{ cryptoFeatures.wins || 0 }}W</span> / <span style="color:var(--tp-danger)">{{ cryptoFeatures.losses || 0 }}L</span></div>
+        </div>
+        <div class="tp-stat-card">
+          <div class="stat-label">Win Rate</div>
+          <div class="stat-value" :style="cryptoTrainBalance && parseInt(cryptoTrainBalance.winPct) >= 55 ? 'color:var(--tp-success)' : ''">
+            {{ cryptoTrainBalance ? cryptoTrainBalance.winPct + '%' : '-' }}
+          </div>
+          <div v-if="cryptoTrainBalance" class="stat-sub">{{ cryptoTrainBalance.wins }}W / {{ cryptoTrainBalance.losses }}L</div>
+        </div>
+        <div class="tp-stat-card">
+          <div class="stat-label">Net P&L</div>
+          <div class="stat-value" :style="pnlColor(cryptoNetPnl)">{{ cryptoNetPnl !== null ? fmtDollar(cryptoNetPnl) : '-' }}</div>
+          <div class="stat-sub">Resolved trades</div>
+        </div>
+        <div class="tp-stat-card">
+          <div class="stat-label">ML Rejected</div>
+          <div class="stat-value" style="color:var(--tp-warning)">{{ cryptoFeatures.ml_rejected || 0 }}</div>
+          <div class="stat-sub">Blocked by scorer</div>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="tp-tabs" style="padding-left:1.15rem;padding-right:1.15rem;">
+        <button v-for="tab in ['overview', 'predictions', 'features', 'history']" :key="tab"
+          :class="{ active: activeCryptoTab === tab }" @click="activeCryptoTab = tab">
+          {{ tab.charAt(0).toUpperCase() + tab.slice(1) }}
+        </button>
+      </div>
+
+      <!-- ========== CRYPTO OVERVIEW TAB ========== -->
+      <template v-if="activeCryptoTab === 'overview'">
+        <!-- No Model Yet — Collecting State -->
+        <div v-if="!cryptoModel" class="tp-card ml-empty-state">
+          <span class="material-symbols-outlined" style="font-size:2.5rem;color:var(--tp-text-dim)">model_training</span>
+          <p class="empty-title">Collecting Training Data</p>
+          <p class="empty-desc">
+            Auto-trains after {{ 200 - (cryptoFeatures.labeled || 0) > 0 ? 200 - (cryptoFeatures.labeled || 0) : 0 }} more trades.
+            Currently {{ cryptoFeatures.labeled || 0 }} / 200.
+          </p>
+          <div class="progress-wrap">
+            <div class="progress-bar" :style="{ width: Math.min((cryptoFeatures.labeled || 0) / 200 * 100, 100) + '%' }"></div>
+          </div>
+        </div>
+
+        <!-- Row 1: Confusion Matrix + Score Distribution -->
+        <div v-if="cryptoConfusionMatrix || cryptoScoreDistribution.length" class="ml-chart-row">
+          <!-- Confusion Matrix with PnL -->
+          <div v-if="cryptoConfusionMatrix" class="tp-card ml-chart-card">
+            <h4>Confusion Matrix</h4>
+            <p class="chart-desc">Prediction accuracy on {{ cryptoConfusionMatrix.total }} resolved trades</p>
+            <div class="cm-grid">
+              <div class="cm-corner"></div>
+              <div class="cm-header">Predicted WIN</div>
+              <div class="cm-header">Predicted LOSS</div>
+              <div class="cm-row-label">Actual WIN</div>
+              <div class="cm-cell cm-tp" :title="`True Positive: ${cryptoConfusionMatrix.tp}`">
+                <span class="cm-val">{{ cryptoConfusionMatrix.tp }}</span>
+                <span class="cm-tag">TP</span>
+                <span v-if="cryptoConfusionPnl && cryptoConfusionPnl.tp.n" class="cm-pnl" :style="pnlColor(cryptoConfusionPnl.tp.avg)">
+                  avg {{ fmtDollar(cryptoConfusionPnl.tp.avg) }}
+                </span>
+              </div>
+              <div class="cm-cell cm-fn" :title="`False Negative: ${cryptoConfusionMatrix.fn}`">
+                <span class="cm-val">{{ cryptoConfusionMatrix.fn }}</span>
+                <span class="cm-tag">FN</span>
+                <span v-if="cryptoConfusionPnl && cryptoConfusionPnl.fn.n" class="cm-pnl" :style="pnlColor(cryptoConfusionPnl.fn.avg)">
+                  avg {{ fmtDollar(cryptoConfusionPnl.fn.avg) }}
+                </span>
+              </div>
+              <div class="cm-row-label">Actual LOSS</div>
+              <div class="cm-cell cm-fp" :title="`False Positive: ${cryptoConfusionMatrix.fp}`">
+                <span class="cm-val">{{ cryptoConfusionMatrix.fp }}</span>
+                <span class="cm-tag">FP</span>
+                <span v-if="cryptoConfusionPnl && cryptoConfusionPnl.fp.n" class="cm-pnl" :style="pnlColor(cryptoConfusionPnl.fp.avg)">
+                  avg {{ fmtDollar(cryptoConfusionPnl.fp.avg) }}
+                </span>
+              </div>
+              <div class="cm-cell cm-tn" :title="`True Negative: ${cryptoConfusionMatrix.tn}`">
+                <span class="cm-val">{{ cryptoConfusionMatrix.tn }}</span>
+                <span class="cm-tag">TN</span>
+                <span v-if="cryptoConfusionPnl && cryptoConfusionPnl.tn.n" class="cm-pnl" :style="pnlColor(cryptoConfusionPnl.tn.avg)">
+                  avg {{ fmtDollar(cryptoConfusionPnl.tn.avg) }}
+                </span>
+              </div>
+            </div>
+            <div class="cm-summary">
+              <span>Precision: <strong>{{ cryptoConfusionMatrix.tp + cryptoConfusionMatrix.fp > 0 ? ((cryptoConfusionMatrix.tp / (cryptoConfusionMatrix.tp + cryptoConfusionMatrix.fp)) * 100).toFixed(0) + '%' : '-' }}</strong></span>
+              <span>Recall: <strong>{{ cryptoConfusionMatrix.tp + cryptoConfusionMatrix.fn > 0 ? ((cryptoConfusionMatrix.tp / (cryptoConfusionMatrix.tp + cryptoConfusionMatrix.fn)) * 100).toFixed(0) + '%' : '-' }}</strong></span>
+            </div>
+          </div>
+
+          <!-- Score Distribution -->
+          <div v-if="cryptoScoreDistribution.length" class="tp-card ml-chart-card">
+            <h4>Score Distribution</h4>
+            <p class="chart-desc">How model scores separate wins from losses</p>
+            <div class="sd-chart">
+              <div v-for="b in cryptoScoreDistribution" :key="b.label" class="sd-col">
+                <div class="sd-bar-stack">
+                  <div class="sd-bar sd-loss" :style="{ height: (b.losses / cryptoScoreDistMax * 100) + '%' }"></div>
+                  <div class="sd-bar sd-win" :style="{ height: (b.wins / cryptoScoreDistMax * 100) + '%' }"></div>
+                </div>
+                <span class="sd-label">.{{ b.label }}</span>
+              </div>
+            </div>
+            <div class="sd-legend">
+              <span class="sd-leg-item"><span class="sd-dot sd-dot-win"></span> Win</span>
+              <span class="sd-leg-item"><span class="sd-dot sd-dot-loss"></span> Loss</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Row 2: Confidence vs Returns + Threshold Simulator -->
+        <div class="ml-chart-row" style="margin-top:1rem;">
+          <!-- Confidence vs Returns Scatter -->
+          <div v-if="cryptoScorePnlData.points.length > 2" class="tp-card ml-chart-card">
+            <h4>Confidence vs Returns</h4>
+            <p class="chart-desc">Does higher ML score produce better PnL?</p>
+            <div class="scatter-wrap">
+              <div class="scatter-y-axis">
+                <span>{{ fmtDollar(cryptoScorePnlData.maxPnl) }}</span>
+                <span style="color:var(--tp-text-dim)">$0</span>
+                <span>{{ fmtDollar(cryptoScorePnlData.minPnl) }}</span>
+              </div>
+              <div class="scatter-container">
+                <!-- Zero line -->
+                <div class="scatter-zero" :style="{ bottom: cryptoScorePnlData.zeroNorm + '%' }"></div>
+                <!-- Threshold line at 0.5 -->
+                <div class="scatter-threshold" style="left:50%"></div>
+                <!-- Dots -->
+                <div v-for="(d, i) in cryptoScorePnlData.points" :key="i"
+                  class="scatter-dot"
+                  :class="d.win ? 'dot-win' : 'dot-loss'"
+                  :style="{ left: d.xPct + '%', bottom: d.yPct + '%' }"
+                  :title="`${d.symbol} | Score: ${d.score.toFixed(2)} | PnL: $${d.pnl.toFixed(2)}`"
+                ></div>
+              </div>
+            </div>
+            <div class="scatter-x-axis">
+              <span>0.0</span>
+              <span>0.5</span>
+              <span>1.0</span>
+            </div>
+            <div class="chart-axis-label">ML Score</div>
+            <div class="scatter-legend">
+              <span class="sd-leg-item"><span class="sd-dot sd-dot-win"></span> Win</span>
+              <span class="sd-leg-item"><span class="sd-dot sd-dot-loss"></span> Loss</span>
+              <span class="sd-leg-item"><span class="scatter-leg-line scatter-leg-zero"></span> $0 line</span>
+              <span class="sd-leg-item"><span class="scatter-leg-line scatter-leg-thresh"></span> Threshold</span>
+            </div>
+          </div>
+
+          <!-- Threshold Simulator -->
+          <div v-if="cryptoThresholdAnalysis.length" class="tp-card ml-chart-card">
+            <h4>Threshold Simulator</h4>
+            <p class="chart-desc">Impact of different ML score cutoffs on trading performance</p>
+            <div class="thresh-table-wrap">
+              <table class="thresh-table">
+                <thead>
+                  <tr>
+                    <th>Cutoff</th>
+                    <th>Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total PnL</th>
+                    <th>Avg PnL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="t in cryptoThresholdAnalysis" :key="t.threshold"
+                    :class="{ 'thresh-current': t.isCurrent }">
+                    <td class="thresh-val">
+                      {{ t.threshold.toFixed(2) }}
+                      <span v-if="t.isCurrent" class="thresh-badge">current</span>
+                    </td>
+                    <td>{{ t.accepted }}<span class="thresh-dim"> / {{ t.accepted + t.rejected }}</span></td>
+                    <td :style="parseFloat(t.winRate) >= 55 ? 'color:var(--tp-success);font-weight:700' : parseFloat(t.winRate) < 45 ? 'color:var(--tp-danger)' : ''">
+                      {{ t.winRate }}%
+                    </td>
+                    <td :style="pnlColor(parseFloat(t.pnl))">
+                      {{ parseFloat(t.pnl) >= 0 ? '+' : '' }}&euro;{{ t.pnl }}
+                    </td>
+                    <td :style="pnlColor(parseFloat(t.avgPnl))">
+                      {{ parseFloat(t.avgPnl) >= 0 ? '+' : '' }}&euro;{{ t.avgPnl }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="thresh-hint">Raise the threshold to reject low-confidence trades. Watch for trade count vs quality tradeoff.</p>
+          </div>
+        </div>
+
+        <!-- Row 3: Calibration + Training Balance -->
+        <div class="ml-chart-row" style="margin-top:1rem;">
+          <!-- Prediction Calibration -->
+          <div v-if="cryptoCalibrationBuckets.length" class="tp-card ml-chart-card">
+            <h4>Prediction Calibration</h4>
+            <p class="chart-desc">Actual win rate vs predicted confidence — perfect calibration = diagonal</p>
+            <div class="cal-chart">
+              <div v-for="b in cryptoCalibrationBuckets" :key="b.label" class="cal-bucket">
+                <div class="cal-bar-wrap">
+                  <div class="cal-bar" :style="{
+                    height: b.winRate + '%',
+                    background: b.winRate > 55 ? 'var(--tp-success)' : b.winRate > 45 ? 'var(--tp-warning)' : 'var(--tp-danger)',
+                  }">
+                    <span class="cal-val">{{ b.winRate.toFixed(0) }}%</span>
+                  </div>
+                </div>
+                <span class="cal-label">{{ b.label }}</span>
+                <span class="cal-n">n={{ b.total }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Training Balance -->
+          <div v-if="cryptoTrainBalance" class="tp-card ml-chart-card">
+            <h4>Training Balance</h4>
+            <p class="chart-desc">Win/loss ratio in training data — imbalance affects model bias</p>
+            <div class="bal-ring-wrap">
+              <div class="bal-ring" :style="{
+                background: `conic-gradient(var(--tp-success) 0deg ${cryptoTrainBalance.winDeg}deg, var(--tp-danger) ${cryptoTrainBalance.winDeg}deg 360deg)`
+              }">
+                <div class="bal-ring-inner">
+                  <span class="bal-total">{{ cryptoTrainBalance.total }}</span>
+                  <span class="bal-sub">trades</span>
+                </div>
+              </div>
+              <div class="bal-legend">
+                <div class="bal-leg-row">
+                  <span class="bal-dot" style="background:var(--tp-success)"></span>
+                  <span>Wins</span>
+                  <strong style="color:var(--tp-success)">{{ cryptoTrainBalance.wins }} ({{ cryptoTrainBalance.winPct }}%)</strong>
+                </div>
+                <div class="bal-leg-row">
+                  <span class="bal-dot" style="background:var(--tp-danger)"></span>
+                  <span>Losses</span>
+                  <strong style="color:var(--tp-danger)">{{ cryptoTrainBalance.losses }} ({{ cryptoTrainBalance.lossPct }}%)</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Per-Symbol Performance (standalone card) -->
+        <div v-if="cryptoSymbolStats.length" class="tp-card" style="margin-top:1rem;">
+          <div class="sym-mini">
+            <h5>Per-Symbol Performance</h5>
+            <div v-for="s in cryptoSymbolStats" :key="s.symbol" class="sym-row">
+              <span class="sym-name">{{ s.symbol }}</span>
+              <div class="sym-bar-bg">
+                <div class="sym-bar-fill" :style="{ width: (s.wins / s.total * 100) + '%' }"></div>
+              </div>
+              <span class="sym-wr" :style="s.wins / s.total >= 0.5 ? 'color:var(--tp-success)' : 'color:var(--tp-danger)'">
+                {{ (s.wins / s.total * 100).toFixed(0) }}%
+              </span>
+              <span class="sym-pnl" :style="pnlColor(s.pnl)">{{ fmtDollar(s.pnl) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Model Details Card -->
+        <div v-if="cryptoModel" class="tp-card" style="margin-top:1rem;">
+          <h4>Active Model Details</h4>
+          <div class="detail-grid">
+            <div class="detail-item">
+              <span class="detail-label">Version</span>
+              <span class="detail-val">v{{ cryptoModel.version }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Type</span>
+              <span class="detail-val"><span class="model-type-inline" :class="cryptoModelTypeClass">{{ cryptoModel.model_type }}</span></span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Training Trades</span>
+              <span class="detail-val">{{ cryptoModel.trade_count }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Accuracy</span>
+              <span class="detail-val">{{ fmtPct(cryptoModel.accuracy) }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Cross-Validated</span>
+              <span class="detail-val">{{ fmtPct(cryptoModel.cv_accuracy) }} &plusmn; {{ fmtPct(cryptoModel.cv_std) }}</span>
+            </div>
+            <div class="detail-item" v-if="cryptoModel.walk_forward_accuracy != null">
+              <span class="detail-label">Walk-Forward</span>
+              <span class="detail-val" :style="cryptoModel.walk_forward_accuracy > 0.55 ? 'color:var(--tp-success);font-weight:700' : ''">
+                {{ fmtPct(cryptoModel.walk_forward_accuracy) }}
+              </span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Precision</span>
+              <span class="detail-val">{{ fmtPct(cryptoModel.precision) }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Recall</span>
+              <span class="detail-val">{{ fmtPct(cryptoModel.recall) }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">F1 Score</span>
+              <span class="detail-val">{{ fmtPct(cryptoModel.f1_score) }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Trained At</span>
+              <span class="detail-val">{{ fmtTime(cryptoModel.trained_at) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Per-symbol chips from old stats API (fallback) -->
+        <div v-if="cryptoML?.training?.by_symbol && Object.keys(cryptoML.training.by_symbol).length && !cryptoSymbolStats.length" class="tp-card" style="margin-top:1rem;">
+          <h4>Per Symbol</h4>
+          <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top:0.5rem;">
+            <div v-for="(stats, sym) in cryptoML.training.by_symbol" :key="sym" class="symbol-chip">
+              <span style="font-weight: 700;">{{ sym }}</span>
+              <span :style="{ color: stats.pnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)' }">
+                {{ stats.wins }}W/{{ stats.losses }}L {{ fmtDollar(stats.pnl) }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Session Card -->
+        <div v-if="cryptoML?.session?.total" class="tp-card" style="margin-top: 1rem;">
+          <h4>Current Session</h4>
+          <div style="display: flex; gap: 1.5rem; align-items: center; margin-top:0.5rem;">
+            <div>
+              <span style="font-weight: 700;">{{ cryptoML.session.wins }}W / {{ cryptoML.session.losses }}L</span>
+              <span style="color: var(--tp-text-dim); font-size: 0.8rem;"> ({{ cryptoML.session.win_rate }}%)</span>
+            </div>
+            <div :style="{ color: cryptoML.session.net_pnl >= 0 ? 'var(--tp-success)' : 'var(--tp-danger)', fontWeight: 700 }">
+              {{ fmtDollar(cryptoML.session.net_pnl) }}
+            </div>
+          </div>
+        </div>
+
+        <!-- Progress bar for data collection -->
+        <div v-if="!cryptoModel" class="tp-card" style="margin-top: 1rem;">
+          <h4>Data Collection Progress</h4>
+          <p class="chart-desc">{{ cryptoFeatures.labeled || 0 }} / 200 labeled trades collected. Model training begins at 200 trades.</p>
+          <div style="height: 8px; background: var(--tp-border); border-radius: 4px; overflow: hidden; margin-top:0.5rem;">
+            <div :style="{ width: Math.min((cryptoFeatures.labeled || 0) / 200 * 100, 100) + '%', background: 'var(--tp-primary)', height: '100%', transition: 'width 0.5s' }"></div>
+          </div>
+          <p v-if="cryptoML?.features?.length" style="color: var(--tp-text-dim); margin-top: 0.75rem; font-size: 0.75rem;">
+            Features: {{ cryptoML.features.join(', ') }}
+          </p>
+        </div>
+
+        <!-- Feature list if model exists -->
+        <div v-if="cryptoModel && cryptoML?.feature_names?.length" class="tp-card" style="margin-top: 1rem;">
+          <h4>Feature Set</h4>
+          <div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.5rem;">
+            <span v-for="f in cryptoML.feature_names" :key="f" class="feature-chip">{{ f.replace(/_/g, ' ') }}</span>
+          </div>
+        </div>
+      </template>
+
+      <!-- ========== CRYPTO PREDICTIONS TAB ========== -->
+      <template v-if="activeCryptoTab === 'predictions'">
+        <div class="tp-card">
+          <h4>Recent Crypto Predictions</h4>
+          <div v-if="cryptoPredictions.length === 0" class="ml-empty-state" style="padding:2rem 0;">
+            <p class="empty-desc">Trades appear here as they are scored by the model.</p>
+          </div>
+          <div v-else class="table-responsive">
+            <table class="ml-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Entry</th>
+                  <th>Close</th>
+                  <th>PnL</th>
+                  <th>ML Score</th>
+                  <th>Won</th>
+                  <th>Reason</th>
+                  <th>Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="p in cryptoPredictions" :key="p.trade_id || p.id">
+                  <td>{{ fmtTime(p.entry_time) }}</td>
+                  <td><strong>{{ p.symbol }}</strong></td>
+                  <td :style="p.type === 'BUY' || p.side === 'BUY' ? 'color:var(--tp-success)' : 'color:var(--tp-danger)'">{{ p.type || p.side }}</td>
+                  <td>{{ p.entry_price != null ? p.entry_price.toFixed(2) : '-' }}</td>
+                  <td>{{ p.close_price != null ? p.close_price.toFixed(2) : '-' }}</td>
+                  <td :style="pnlColor(p.pnl)">{{ p.pnl !== null && p.pnl !== undefined ? fmtDollar(p.pnl) : '-' }}</td>
+                  <td :style="scoreColor(p.ml_score)">{{ p.ml_score !== null && p.ml_score !== undefined ? p.ml_score.toFixed(2) : '-' }}</td>
+                  <td>
+                    <span v-if="p.actual_win === true" class="outcome-badge win">WIN</span>
+                    <span v-else-if="p.actual_win === false" class="outcome-badge loss">LOSS</span>
+                    <span v-else class="outcome-badge open">OPEN</span>
+                  </td>
+                  <td style="font-size:0.7rem;color:var(--tp-text-dim)">{{ p.reason || p.signal_reason || '-' }}</td>
+                  <td style="font-size:0.7rem;color:var(--tp-text-dim)">{{ p.duration_min != null ? p.duration_min.toFixed(0) + 'm' : '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+
+      <!-- ========== CRYPTO FEATURES TAB ========== -->
+      <template v-if="activeCryptoTab === 'features'">
+        <!-- Feature Importance Bars -->
+        <div class="tp-card" v-if="cryptoTopFeatures.length > 0">
+          <h4>Feature Importance</h4>
+          <p class="chart-desc">Magnitude of influence on predictions. Higher = more impact.</p>
+          <div class="feature-bars">
+            <div v-for="([name, importance], i) in cryptoTopFeatures" :key="name" class="feature-row">
+              <span class="feature-rank">{{ i + 1 }}</span>
+              <span class="feature-name">{{ name.replace(/_/g, ' ') }}</span>
+              <div class="feature-bar-bg">
+                <div class="feature-bar-fill" :style="{
+                  width: (importance / cryptoTopFeatures[0][1] * 100) + '%',
+                  background: i < 3 ? 'var(--tp-primary)' : i < 6 ? 'rgba(99,102,241,0.5)' : 'var(--tp-text-dim)',
+                }"></div>
+              </div>
+              <span class="feature-value">{{ (importance * 100).toFixed(1) }}%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature list from API -->
+        <div v-if="cryptoML?.feature_names?.length" class="tp-card" style="margin-top:1rem;">
+          <h4>Feature Set ({{ cryptoML.feature_names.length }} features)</h4>
+          <div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.5rem;">
+            <span v-for="f in cryptoML.feature_names" :key="f" class="feature-chip">{{ f.replace(/_/g, ' ') }}</span>
+          </div>
+        </div>
+
+        <div v-if="cryptoTopFeatures.length === 0 && !(cryptoML?.feature_names?.length)" class="tp-card ml-empty-state">
+          <span class="material-symbols-outlined" style="font-size:2rem;color:var(--tp-text-dim)">analytics</span>
+          <p class="empty-desc">Feature importance appears after first model training.</p>
+        </div>
+      </template>
+
+      <!-- ========== CRYPTO HISTORY TAB ========== -->
+      <template v-if="activeCryptoTab === 'history'">
+        <!-- Model Evolution Chart -->
+        <div v-if="cryptoHistory.length > 1" class="tp-card" style="margin-bottom:1rem;">
+          <h4>Model Evolution</h4>
+          <p class="chart-desc">Accuracy across model versions</p>
+          <div class="evo-chart">
+            <div v-for="m in cryptoHistory" :key="m.version" class="evo-col">
+              <div class="evo-bar-wrap">
+                <div class="evo-bar" :style="{
+                  height: ((m.accuracy || 0) * 100) + '%',
+                  background: m.is_active ? 'var(--tp-primary)' : 'var(--tp-text-dim)',
+                  opacity: m.is_active ? 1 : 0.5,
+                }">
+                  <span class="evo-val">{{ ((m.accuracy || 0) * 100).toFixed(0) }}%</span>
+                </div>
+              </div>
+              <span class="evo-label">v{{ m.version }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tp-card">
+          <h4>Version History</h4>
+          <div v-if="cryptoHistory.length === 0" class="ml-empty-state" style="padding:2rem 0;">
+            <p class="empty-desc">No models trained yet. Training begins after 200 labeled trades.</p>
+          </div>
+          <div v-else class="table-responsive">
+            <table class="ml-table">
+              <thead>
+                <tr>
+                  <th>Version</th>
+                  <th>Type</th>
+                  <th>Trades</th>
+                  <th>Accuracy</th>
+                  <th>CV Acc</th>
+                  <th>WF Acc</th>
+                  <th>Trained</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="m in cryptoHistory" :key="m.version" :class="{ 'row-active': m.is_active }">
+                  <td><strong>v{{ m.version }}</strong></td>
+                  <td><span class="model-type-inline" :class="modelTypeClassFor(m.model_type)">{{ m.model_type }}</span></td>
+                  <td>{{ m.trade_count }}</td>
+                  <td :style="m.accuracy > 0.55 ? 'color:var(--tp-success)' : ''">{{ fmtPct(m.accuracy) }}</td>
+                  <td>{{ fmtPct(m.cv_accuracy) }}</td>
+                  <td :style="m.walk_forward_accuracy > 0.55 ? 'color:var(--tp-success);font-weight:700' : ''">
+                    {{ m.walk_forward_accuracy != null ? fmtPct(m.walk_forward_accuracy) : '-' }}
+                  </td>
+                  <td>{{ fmtTime(m.trained_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+    </template>
+    </template>
+
   </div>
 </template>
 
@@ -1338,11 +2060,54 @@ function modelTypeClassFor(type) {
 .mt-sklearn { background: rgba(245,158,11,0.12); color: #f59e0b; }
 
 /* Empty state */
-.ml-empty-state { text-align: center; padding: 2.5rem 1rem; }
+.ml-empty-state { text-align: center; padding: 2.5rem 1rem; margin-bottom: 1rem; }
 .empty-title { font-size: 1rem; font-weight: 700; margin: 0.5rem 0 0.25rem; }
 .empty-desc { font-size: 0.8rem; color: var(--tp-text-dim); margin: 0; }
 .progress-wrap { width: 60%; margin: 0.75rem auto 0; height: 6px; background: rgba(128,128,128,0.12); border-radius: 3px; overflow: hidden; }
 .progress-bar { height: 100%; background: var(--tp-primary); border-radius: 3px; transition: width 0.5s; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .spinning { animation: spin 1s linear infinite; }
+
+/* Forex / Crypto ML Tabs */
+.ml-tab-group {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--tp-border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0 1.15rem 1.25rem;
+  width: fit-content;
+}
+.ml-tab {
+  font-family: var(--tp-font);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.3rem 0.75rem;
+  background: transparent;
+  border: none;
+  color: var(--tp-text-dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-right: 1px solid var(--tp-border);
+}
+.ml-tab:last-child { border-right: none; }
+.ml-tab:hover { background: var(--tp-bg-hover); color: var(--tp-text); }
+.ml-tab.active { background: var(--tp-primary); color: white; }
+
+/* Crypto ML placeholder */
+.crypto-ml-placeholder, .crypto-ml-section { padding: 0 1.15rem; }
+.stat-mini { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
+.stat-val { font-size: 1.2rem; font-weight: 800; color: var(--tp-text); }
+.stat-lbl { font-size: 0.6rem; color: var(--tp-text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }
+.symbol-chip { display: flex; gap: 0.5rem; padding: 0.3rem 0.75rem; background: var(--tp-bg-card); border: 1px solid var(--tp-border); border-radius: 6px; font-size: 0.78rem; }
+.feature-chip {
+  font-size: 0.68rem;
+  padding: 0.15rem 0.5rem;
+  background: rgba(99,102,241,0.08);
+  border: 1px solid rgba(99,102,241,0.15);
+  border-radius: 4px;
+  color: var(--tp-text);
+  text-transform: capitalize;
+}
 </style>

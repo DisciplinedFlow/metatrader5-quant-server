@@ -3,15 +3,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { usePolling } from '@/composables/usePolling'
 import SectionNav from '@/components/SectionNav.vue'
 import api from '@/services/api'
-
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
+import { cryptoLinks } from '@/utils/cryptoConstants'
 
 const lines = ref('200')
 const autoScroll = ref(true)
@@ -49,7 +41,7 @@ async function refresh() {
   }
 }
 
-usePolling(refresh, 5000)
+usePolling(refresh, 30000)  // was 5s — bot gets API priority
 
 watch(logs, async () => {
   if (autoScroll.value && viewerEl.value) {

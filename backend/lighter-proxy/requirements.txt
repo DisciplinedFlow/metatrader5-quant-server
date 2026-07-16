@@ -1,3 +1,5 @@
 lighter-sdk
 flask
 python-dotenv
+redis
+websockets

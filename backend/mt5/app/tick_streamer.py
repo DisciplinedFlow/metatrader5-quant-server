@@ -25,9 +25,15 @@ logging.basicConfig(
 logger = logging.getLogger('tick_streamer')
 
 DEFAULT_SYMBOLS = [
+    # Forex majors
     'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD',
     'USDCAD', 'USDCHF', 'EURGBP', 'USDCNH', 'USDSEK',
-    'XAUUSD', 'XAGUSD', 'USOUSD', 'UKOUSDft',
+    # Metals
+    'XAUUSD', 'XAUEUR', 'XAUAUD', 'XAUJPY', 'XAGUSD',
+    # Energy
+    'USOUSD', 'UKOUSDft', 'NG-C',
+    # US stocks
+    'AMD', 'MSFT',
 ]
 
 FLASK_API_URL = 'http://localhost:5001'
@@ -70,14 +76,11 @@ class TickStreamer:
         while self._running:
             cycle_start = time.monotonic()
 
-            for symbol in self.symbols:
-                if not self._running:
-                    break
-                try:
-                    self._poll_symbol(symbol)
-                except Exception as e:
-                    logger.error("Tick poll error for %s: %s", symbol, e)
-                    self.errors += 1
+            try:
+                self._poll_all_symbols()
+            except Exception as e:
+                logger.error("Batch tick poll error: %s", e)
+                self.errors += 1
 
             self.last_cycle_duration = time.monotonic() - cycle_start
 
@@ -120,23 +123,28 @@ class TickStreamer:
             self._redis = None
             self.errors += 1
 
-    def _poll_symbol(self, symbol):
-        """Fetch new ticks for a symbol via REST and publish to Redis."""
+    def _poll_all_symbols(self):
+        """Fetch ticks for all symbols in one batch POST and publish to Redis."""
         try:
-            resp = self._session.get(
-                f'{self.flask_url}/fetch_ticks',
-                params={'symbol': symbol, 'seconds_back': 3, 'count': 500},
-                timeout=5,
+            resp = self._session.post(
+                f'{self.flask_url}/fetch_ticks_batch',
+                json={'symbols': self.symbols, 'count': 500, 'seconds_back': 3},
+                timeout=10.0,
             )
             resp.raise_for_status()
-            ticks = resp.json()
-        except requests.RequestException as e:
+            batch = resp.json()
+        except requests.RequestException:
             # Flask not ready yet or network issue — silently skip
             return
         except Exception as e:
-            logger.debug("Fetch ticks error for %s: %s", symbol, e)
+            logger.debug("Batch fetch ticks error: %s", e)
             return
 
+        for symbol, ticks in batch.items():
+            self._process_symbol_ticks(symbol, ticks)
+
+    def _process_symbol_ticks(self, symbol, ticks):
+        """Filter and publish ticks for a symbol to Redis."""
         if not ticks:
             return
 

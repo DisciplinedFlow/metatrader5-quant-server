@@ -71,6 +71,7 @@ services:
     logging: *default-logging
 
   mt5:
+    profiles: ["forex", "all"]
     build:
       context: backend/mt5
       dockerfile: Dockerfile
@@ -115,7 +116,7 @@ services:
 
       traefik.http.services.api-mt5-service.loadbalancer.server.port: 5001
     logging: *default-logging
-    mem_limit: 4g
+    mem_limit: 2g
     cpus: 2
     depends_on:
       - traefik
@@ -192,7 +193,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    mem_limit: 2g
+    command: gunicorn --bind 0.0.0.0:8000 --workers 4 --worker-class=gthread --threads=2 --max-requests=1000 --max-requests-jitter=100 --timeout 120 app.wsgi:application
+    mem_limit: 1536m
     cpus: 1.5
 
   redis:
@@ -219,11 +221,16 @@ services:
       retries: 3
 
   celery:
+    profiles: ["forex", "all"]
     build:
       context: backend/django
       dockerfile: Dockerfile
     container_name: celery
-    command: bash -c "python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=8 -Q default,critical,analysis"
+    command: bash -c "python -m app.ws.server & python manage.py tick_consumer --redis-url redis://redis:6379/2 & celery -A app worker --loglevel=info --concurrency=6 -Q default,critical,analysis -n celery-forex@%h"
+    extra_hosts:
+      - "raspberrypi:172.28.55.86"
+    ports:
+      - "8001:8001"
     volumes:
       - static_volume:/app/staticfiles
       - quant-logs:/app/logs
@@ -248,12 +255,15 @@ services:
     mem_limit: 3g
     cpus: 2
 
-  celery-beat:
+  celery-beat-forex:
+    profiles: ["forex", "all"]
     build:
       context: backend/django
       dockerfile: Dockerfile
-    container_name: celery-beat
+    container_name: celery-beat-forex
     command: celery -A app beat --loglevel=info
+    environment:
+      DJANGO_SETTINGS_MODULE: app.settings_forex
     volumes:
       - static_volume:/app/staticfiles
     env_file:
@@ -266,216 +276,69 @@ services:
     labels:
       <<: *default-labels
     logging: *default-logging
+    mem_limit: 256m
+    cpus: 0.3
+
+  celery-beat-crypto:
+    profiles: ["crypto", "all"]
+    build:
+      context: backend/django
+      dockerfile: Dockerfile
+    container_name: celery-beat-crypto
+    command: celery -A app beat --loglevel=info
+    environment:
+      DJANGO_SETTINGS_MODULE: app.settings_crypto
+    volumes:
+      - static_volume:/app/staticfiles
+    env_file:
+      - .env
+    depends_on:
+      - celery-crypto
+      - redis
+    networks:
+      - default
+    labels:
+      <<: *default-labels
+    logging: *default-logging
+    mem_limit: 256m
+    cpus: 0.3
+
+  celery-crypto:
+    profiles: ["crypto", "all"]
+    build:
+      context: backend/django
+      dockerfile: Dockerfile
+    container_name: celery-crypto
+    command: celery -A app worker --loglevel=info --concurrency=3 -Q crypto-critical,crypto-analysis -n celery-crypto@%h
+    volumes:
+      - quant-logs:/app/logs
+      - ./ml_models:/app/ml_models
+    env_file:
+      - .env
+    depends_on:
+      - django
+      - redis
+    networks:
+      - default
+    labels:
+      <<: *default-labels
+    logging: *default-logging
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, sys; sys.exit(0 if any('celery' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore') and 'beat' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore') for p in os.listdir('/proc') if p.isdigit()) else 1)"]
+      test: ["CMD-SHELL", "python -c \"import os; [p for p in os.listdir('/proc') if p.isdigit() and 'celery' in open(f'/proc/{p}/cmdline','rb').read().decode('utf-8','ignore')]\" && test $? -eq 0"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
-    mem_limit: 512m
-    cpus: 0.5
+    mem_limit: 1g
+    cpus: 1.5
 
-  grafana:
-    image: grafana/grafana:${GRAFANA_VERSION:-11.0.0}
-    container_name: grafana
-    restart: unless-stopped
-    environment:
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_USERS_DEFAULT_THEME=dark
-      - GF_LOG_MODE=console
-      - GF_LOG_LEVEL=critical
-      - GF_PANELS_ENABLE_ALPHA=true
-      - GF_FEATURE_TOGGLES_ENABLE=accessControlOnCall lokiLogsDataplane
-      - GF_INSTALL_PLUGINS=grafana-polystat-panel,https://storage.googleapis.com/integration-artifacts/grafana-lokiexplore-app/grafana-lokiexplore-app-latest.zip;grafana-lokiexplore-app
-    volumes:
-      - ./monitoring/configs/grafana/provisioning/dashboards.yml:/etc/grafana/provisioning/dashboards/provisioning-dashboards.yaml:ro
-      - ./monitoring/configs/grafana/provisioning/datasources.yml:/etc/grafana/provisioning/datasources/provisioning-datasources.yaml:ro
-      - ./monitoring/configs/grafana/plugins/app.yaml:/etc/grafana/provisioning/plugins/app.yaml:ro
-      - ./monitoring/dashboards/node-metrics.json:/var/lib/grafana/dashboards/node-metrics.json:ro
-      - ./monitoring/dashboards/container-metrics.json:/var/lib/grafana/dashboards/container-metrics.json:ro
-      - ./monitoring/dashboards/log-search.json:/var/lib/grafana/dashboards/log-search.json:ro
-      - ./monitoring/dashboards/traefik_official.json:/var/lib/grafana/dashboards/traefik_official.json:ro
-      - ./monitoring/dashboards/altertmanager-dashboard.json:/var/lib/grafana/dashboards/altertmanager-dashboard.json:ro
-      - grafana-data:/var/lib/grafana
-    depends_on:
-      - prometheus
-      - traefik
-    ports:
-      - 3000:3000
-    cpus: 0.5
-    mem_limit: 512m
-    networks:
-      - default
-      - traefik-public
-    labels:
-      <<: *default-labels
-      traefik.enable: true
-      traefik.docker.network: traefik-public
-      traefik.http.routers.grafana.rule: Host(`${GRAFANA_DOMAIN?Variable not set}`)
-      traefik.http.routers.grafana.entrypoints: https
-      traefik.http.routers.grafana.tls: true
-      traefik.http.routers.grafana.tls.certresolver: le
-      traefik.http.services.grafana.loadbalancer.server.port: 3000
-    logging: *default-logging
-
-  prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION:-v2.42.0}
-    container_name: prometheus
-    restart: unless-stopped
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--log.level=error"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=7d"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
-      - "--web.external-url=http://localhost:9090"
-    volumes:
-      - ./monitoring/configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./monitoring/configs/prometheus/recording-rules.yml:/etc/prometheus/recording-rules.yml
-      - ./monitoring/configs/prometheus/alerting-rules.yml:/etc/prometheus/alerting-rules.yml
-      - prometheus-data:/prometheus
-    depends_on:
-      - alertmanager
-      - traefik
-    ports:
-      - 9090:9090
-    cpus: 0.5
-    mem_limit: 512m
-    networks:
-      - default
-    labels:
-      <<: *default-labels
-    logging: *default-logging
-
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:${CADVISOR_VERSION:-v0.46.0}
-    container_name: cadvisor
-    restart: unless-stopped
-    privileged: true
-    depends_on:
-      - traefik
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:rw
-      - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
-        # https://github.com/google/cadvisor/issues/1565#issuecomment-718812180
-      - /var/run/docker.sock:/var/run/docker.sock
-      #- /dev/disk:/dev/disk:ro
-    cpus: 0.5
-    mem_limit: 512m
-    networks:
-      - default
-    labels:
-      <<: *default-labels
-    logging: *default-logging
-
-  node-exporter:
-    image: prom/node-exporter:${NODE_EXPORTER_VERSION:-v1.5.0}
-    container_name: node-exporter
-    restart: unless-stopped
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - "--path.procfs=/host/proc"
-      - "--path.sysfs=/host/sys"
-      - "--collector.filesystem.ignored-mount-points"
-      - "^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
-    depends_on:
-      - traefik
-    cpus: 0.5
-    mem_limit: 512m
-    networks:
-      - default
-    labels:
-      <<: *default-labels
-    logging: *default-logging
-
-  alertmanager:
-    image: prom/alertmanager:${ALERTMANAGER_VERSION:-v0.25.0}
-    container_name: alertmanager
-    command:
-      - "--config.file=/etc/alertmanager/config.yml"
-      - "--log.level=error"
-      - "--storage.path=/alertmanager"
-      - "--web.external-url=http://localhost:9093"
-    volumes:
-      - ./monitoring/configs/alertmanager/alertmanager-fallback-config.yml:/etc/alertmanager/config.yml
-    ports:
-      - 9093:9093
-    cpus: 0.5
-    mem_limit: 512m
-    networks:
-      - default
-    depends_on:
-      - uncomplicated-alert-receiver
-      - traefik
-    labels:
-      <<: *default-labels
-    logging: *default-logging
-
-  uncomplicated-alert-receiver:
-    image: ghcr.io/jamesread/uncomplicated-alert-receiver
-    container_name: uncomplicated-alert-receiver
-    ports:
-      - 9094:8080
-    cpus: 0.5
-    mem_limit: 512m
-    networks:
-      - default
-    depends_on:
-      - traefik
-    labels:
-      <<: *default-labels
-    logging: *default-logging
-
-  loki:
-    image: grafana/loki:3.0.0
-    container_name: loki
-    user: root
-    ports:
-      - 3100:3100
-    command: -config.file=/etc/loki/loki.yaml
-    volumes:
-      - ./monitoring/configs/loki/loki.yaml:/etc/loki/loki.yaml
-      - ./monitoring/configs/loki/rules.yaml:/etc/loki/rules/fake/loki-rules.yml
-    depends_on:
-      - traefik
-    cpus: 0.5
-    mem_limit: 512m
-    networks:
-      - default
-    labels:
-      <<: *default-labels
-    logging: *default-logging
-
-  promtail:
-    image: grafana/promtail:3.0.0
-    container_name: promtail
-    volumes:
-      - ./monitoring/configs/promtail/promtail.yaml:/etc/promtail/docker-config.yaml
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: -config.file=/etc/promtail/docker-config.yaml
-    depends_on:
-      - loki
-      - traefik
-    cpus: 0.5
-    mem_limit: 512m
-    networks:
-      - default
-    labels:
-      <<: *default-labels
-    logging: *default-logging
+  # --- Monitoring stack (disabled — not needed for trading) ---
+  # grafana, prometheus, cadvisor, node-exporter, alertmanager,
+  # uncomplicated-alert-receiver, loki, promtail, neo4j
+  # Removed 2026-03-19: saved ~4 GB RAM + ~36 GB disk
 
 volumes:
   traefik-public-certificates: # Persistent volume for certificates
-  grafana-data: {}
-  prometheus-data: {}
   postgres-data: {}
   redis-data: {}
   static_volume: {}

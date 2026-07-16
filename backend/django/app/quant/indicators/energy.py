@@ -57,7 +57,8 @@ def energy_trend_follow(df, params=None):
         macd_signal (int):   MACD signal EMA    (default 9)
 
     Returns:
-        str: 'strong_long'  - stacked bullish EMAs + MACD histogram > 0 and growing
+        pd.Series of signal strings per bar:
+             'strong_long'  - stacked bullish EMAs + MACD histogram > 0 and growing
              'long'         - stacked bullish EMAs + MACD histogram > 0
              'strong_short' - stacked bearish EMAs + MACD histogram < 0 and shrinking
              'short'        - stacked bearish EMAs + MACD histogram < 0
@@ -71,46 +72,36 @@ def energy_trend_follow(df, params=None):
     macd_slow = params.get('macd_slow', 26)
     macd_signal = params.get('macd_signal', 9)
 
+    result = pd.Series('neutral', index=df.index, dtype=object)
+
     min_bars = max(trend_ema, macd_slow) + macd_signal + 2
     if len(df) < min_bars:
-        return 'neutral'
+        return result
 
     close = df['close']
 
     # EMAs
-    ema_fast = close.ewm(span=fast_ema, adjust=False).mean()
-    ema_slow = close.ewm(span=slow_ema, adjust=False).mean()
-    ema_trend = close.ewm(span=trend_ema, adjust=False).mean()
+    ef = close.ewm(span=fast_ema, adjust=False).mean()
+    es = close.ewm(span=slow_ema, adjust=False).mean()
+    et = close.ewm(span=trend_ema, adjust=False).mean()
 
     # MACD
     macd_line = close.ewm(span=macd_fast, adjust=False).mean() - close.ewm(span=macd_slow, adjust=False).mean()
     signal_line = macd_line.ewm(span=macd_signal, adjust=False).mean()
     histogram = macd_line - signal_line
+    hist_prev = histogram.shift(1)
 
-    # Latest values
-    ef = ema_fast.iloc[-1]
-    es = ema_slow.iloc[-1]
-    et = ema_trend.iloc[-1]
-    hist_now = histogram.iloc[-1]
-    hist_prev = histogram.iloc[-2]
+    valid = ef.notna() & es.notna() & et.notna() & histogram.notna() & hist_prev.notna()
 
-    if pd.isna(ef) or pd.isna(es) or pd.isna(et) or pd.isna(hist_now) or pd.isna(hist_prev):
-        return 'neutral'
+    bullish_stack = (ef > es) & (es > et) & valid
+    bearish_stack = (ef < es) & (es < et) & valid
 
-    bullish_stack = ef > es > et
-    bearish_stack = ef < es < et
+    result[bullish_stack & (histogram > 0) & (histogram > hist_prev)] = 'strong_long'
+    result[bullish_stack & (histogram > 0) & (histogram <= hist_prev) & (result == 'neutral')] = 'long'
+    result[bearish_stack & (histogram < 0) & (histogram < hist_prev)] = 'strong_short'
+    result[bearish_stack & (histogram < 0) & (histogram >= hist_prev) & (result == 'neutral')] = 'short'
 
-    if bullish_stack and hist_now > 0:
-        if hist_now > hist_prev:
-            return 'strong_long'
-        return 'long'
-
-    if bearish_stack and hist_now < 0:
-        if hist_now < hist_prev:  # histogram more negative = shrinking
-            return 'strong_short'
-        return 'short'
-
-    return 'neutral'
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +121,8 @@ def energy_range_detect(df, params=None):
         squeeze_threshold  (float): ATR compression ratio  (default 0.5)
 
     Returns:
-        str: 'ranging'  - ATR compressed AND BB width contracting (range-trade mode)
+        pd.Series of signal strings per bar:
+             'ranging'  - ATR compressed AND BB width contracting (range-trade mode)
              'volatile' - ATR well above average (breakout likely)
              'normal'   - neither extreme
     """
@@ -140,20 +132,16 @@ def energy_range_detect(df, params=None):
     bb_std = params.get('bb_std', 2.0)
     squeeze_threshold = params.get('squeeze_threshold', 0.5)
 
+    result = pd.Series('normal', index=df.index, dtype=object)
+
     atr_ma_period = 50
     min_bars = max(atr_period, bb_period, atr_ma_period) + 2
     if len(df) < min_bars:
-        return 'normal'
+        return result
 
     # ATR and its 50-period moving average
     atr_series = _atr(df, atr_period)
     atr_ma = atr_series.rolling(window=atr_ma_period).mean()
-
-    atr_now = atr_series.iloc[-1]
-    atr_ma_now = atr_ma.iloc[-1]
-
-    if pd.isna(atr_now) or pd.isna(atr_ma_now) or atr_ma_now == 0:
-        return 'normal'
 
     # Bollinger Band width
     close = df['close']
@@ -162,25 +150,18 @@ def energy_range_detect(df, params=None):
     bb_upper = bb_mid + bb_std * bb_rolling_std
     bb_lower = bb_mid - bb_std * bb_rolling_std
     bb_width = (bb_upper - bb_lower) / bb_mid
+    bb_width_prev = bb_width.shift(1)
 
-    bb_width_now = bb_width.iloc[-1]
-    bb_width_prev = bb_width.iloc[-2]
+    valid = atr_series.notna() & atr_ma.notna() & (atr_ma != 0) & bb_width.notna() & bb_width_prev.notna()
 
-    if pd.isna(bb_width_now) or pd.isna(bb_width_prev):
-        return 'normal'
+    atr_compressed = (atr_series < squeeze_threshold * atr_ma) & valid
+    bb_contracting = (bb_width < bb_width_prev) & valid
+    atr_expanded = (atr_series > 1.5 * atr_ma) & valid
 
-    # Conditions
-    atr_compressed = atr_now < squeeze_threshold * atr_ma_now
-    bb_contracting = bb_width_now < bb_width_prev
-    atr_expanded = atr_now > 1.5 * atr_ma_now
+    result[atr_compressed & bb_contracting] = 'ranging'
+    result[atr_expanded & (result == 'normal')] = 'volatile'
 
-    if atr_compressed and bb_contracting:
-        return 'ranging'
-
-    if atr_expanded:
-        return 'volatile'
-
-    return 'normal'
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +179,8 @@ def energy_range_trade(df, params=None):
         buffer_pct (float): Buffer as fraction of range       (default 0.002)
 
     Returns:
-        str: 'buy_support|support=X.XX|resistance=X.XX'
+        pd.Series of signal strings per bar:
+             'buy_support|support=X.XX|resistance=X.XX'
              'sell_resistance|support=X.XX|resistance=X.XX'
              'neutral'
     """
@@ -206,33 +188,36 @@ def energy_range_trade(df, params=None):
     lookback = params.get('lookback', 20)
     buffer_pct = params.get('buffer_pct', 0.002)
 
+    result = pd.Series('neutral', index=df.index, dtype=object)
+
     if len(df) < lookback + 1:
-        return 'neutral'
+        return result
 
-    window = df.iloc[-lookback - 1:-1]  # exclude current bar for level calc
-    support = window['low'].min()
-    resistance = window['high'].max()
-    range_size = resistance - support
+    # Compute rolling support/resistance per bar (using previous N bars)
+    rolling_support = df['low'].shift(1).rolling(window=lookback).min()
+    rolling_resistance = df['high'].shift(1).rolling(window=lookback).max()
+    range_size = rolling_resistance - rolling_support
 
-    if pd.isna(support) or pd.isna(resistance) or range_size <= 0:
-        return 'neutral'
+    close = df['close']
+    open_price = df['open']
 
-    close = df['close'].iloc[-1]
-    open_price = df['open'].iloc[-1]
+    valid = rolling_support.notna() & rolling_resistance.notna() & (range_size > 0)
     buffer = buffer_pct * range_size
 
-    support_fmt = f"{support:.2f}"
-    resistance_fmt = f"{resistance:.2f}"
+    buy_cond = valid & (close < rolling_support + buffer) & (close > open_price)
+    sell_cond = valid & (close > rolling_resistance - buffer) & (close < open_price)
 
-    # Buy at support: close near support AND bullish candle
-    if close < support + buffer and close > open_price:
-        return f"buy_support|support={support_fmt}|resistance={resistance_fmt}"
+    for i in range(len(df)):
+        if buy_cond.iloc[i]:
+            s = rolling_support.iloc[i]
+            r = rolling_resistance.iloc[i]
+            result.iloc[i] = f"buy_support|support={s:.2f}|resistance={r:.2f}"
+        elif sell_cond.iloc[i]:
+            s = rolling_support.iloc[i]
+            r = rolling_resistance.iloc[i]
+            result.iloc[i] = f"sell_resistance|support={s:.2f}|resistance={r:.2f}"
 
-    # Sell at resistance: close near resistance AND bearish candle
-    if close > resistance - buffer and close < open_price:
-        return f"sell_resistance|support={support_fmt}|resistance={resistance_fmt}"
-
-    return 'neutral'
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +238,8 @@ def energy_breakout(df, params=None):
         volume_mult  (float): Volume confirmation multiplier (default 1.5)
 
     Returns:
-        str: 'bullish_breakout'  - close > upper KC + volume confirmed
+        pd.Series of signal strings per bar:
+             'bullish_breakout'  - close > upper KC + volume confirmed
              'bearish_breakout'  - close < lower KC + volume confirmed
              'weak_bullish'      - close > upper KC, no volume
              'weak_bearish'      - close < lower KC, no volume
@@ -265,9 +251,11 @@ def energy_breakout(df, params=None):
     atr_period = params.get('atr_period', 14)
     volume_mult = params.get('volume_mult', 1.5)
 
+    result = pd.Series('neutral', index=df.index, dtype=object)
+
     min_bars = max(kc_period, atr_period) + 1
     if len(df) < min_bars:
-        return 'neutral'
+        return result
 
     # Keltner Channel
     close = df['close']
@@ -276,34 +264,26 @@ def energy_breakout(df, params=None):
     kc_upper = kc_mid + kc_atr_mult * atr_series
     kc_lower = kc_mid - kc_atr_mult * atr_series
 
-    upper = kc_upper.iloc[-1]
-    lower = kc_lower.iloc[-1]
-    close_now = close.iloc[-1]
+    valid = kc_upper.notna() & kc_lower.notna()
 
-    if pd.isna(upper) or pd.isna(lower):
-        return 'neutral'
-
-    # Volume confirmation
+    # Volume confirmation per bar
     vol_col = 'volume' if 'volume' in df.columns else 'tick_volume'
     if vol_col not in df.columns:
-        # No volume data — treat all breakouts as weak
-        volume_confirmed = False
+        vol_confirmed = pd.Series(False, index=df.index)
     else:
         vol = df[vol_col]
-        avg_vol = vol.rolling(window=kc_period).mean().iloc[-1]
-        current_vol = vol.iloc[-1]
-        if pd.isna(avg_vol) or avg_vol == 0:
-            volume_confirmed = False
-        else:
-            volume_confirmed = current_vol > volume_mult * avg_vol
+        avg_vol = vol.rolling(window=kc_period).mean()
+        vol_confirmed = (avg_vol.notna()) & (avg_vol != 0) & (vol > volume_mult * avg_vol)
 
-    # Signal logic
-    if close_now > upper:
-        return 'bullish_breakout' if volume_confirmed else 'weak_bullish'
-    if close_now < lower:
-        return 'bearish_breakout' if volume_confirmed else 'weak_bearish'
+    above_upper = (close > kc_upper) & valid
+    below_lower = (close < kc_lower) & valid
 
-    return 'neutral'
+    result[above_upper & vol_confirmed] = 'bullish_breakout'
+    result[above_upper & ~vol_confirmed] = 'weak_bullish'
+    result[below_lower & vol_confirmed] = 'bearish_breakout'
+    result[below_lower & ~vol_confirmed] = 'weak_bearish'
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -313,8 +293,8 @@ def energy_breakout(df, params=None):
 def keltner_channel(df, params=None):
     """Normalized position within the Keltner Channel.
 
-    Returns a float representing where the current close sits relative to
-    the channel:
+    Returns a Series of floats representing where the close sits relative to
+    the channel per bar:
         > 1.0 = above upper band
           0.5 = at the middle (EMA)
         < 0.0 = below lower band
@@ -325,16 +305,18 @@ def keltner_channel(df, params=None):
         atr_period (int):  ATR lookback       (default 14)
 
     Returns:
-        float: (close - lower) / (upper - lower), or 0.5 on insufficient data.
+        pd.Series of float: (close - lower) / (upper - lower), or 0.5 on insufficient data.
     """
     params = params or {}
     period = params.get('period', 20)
     atr_mult = params.get('atr_mult', 2.0)
     atr_period = params.get('atr_period', 14)
 
+    result = pd.Series(0.5, index=df.index)
+
     min_bars = max(period, atr_period) + 1
     if len(df) < min_bars:
-        return 0.5
+        return result
 
     close = df['close']
     kc_mid = close.ewm(span=period, adjust=False).mean()
@@ -342,18 +324,12 @@ def keltner_channel(df, params=None):
     kc_upper = kc_mid + atr_mult * atr_series
     kc_lower = kc_mid - atr_mult * atr_series
 
-    upper = kc_upper.iloc[-1]
-    lower = kc_lower.iloc[-1]
-    close_now = close.iloc[-1]
+    channel_width = kc_upper - kc_lower
+    valid = kc_upper.notna() & kc_lower.notna() & (channel_width != 0)
 
-    if pd.isna(upper) or pd.isna(lower):
-        return 0.5
+    result[valid] = (close[valid] - kc_lower[valid]) / channel_width[valid]
 
-    channel_width = upper - lower
-    if channel_width == 0:
-        return 0.5
-
-    return float((close_now - lower) / channel_width)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +351,8 @@ def brent_wti_spread(df, params=None):
         spread_low   (float): Lower threshold for narrow spread (default 1.0)
 
     Returns:
-        str: 'spread_wide'   - Brent premium > spread_high (potential mean reversion)
+        pd.Series of signal strings per bar:
+             'spread_wide'   - Brent premium > spread_high (potential mean reversion)
              'spread_narrow' - Brent premium < spread_low  (potential expansion)
              'normal'        - within typical range
     """
@@ -384,22 +361,20 @@ def brent_wti_spread(df, params=None):
     spread_high = params.get('spread_high', 5.0)
     spread_low = params.get('spread_low', 1.0)
 
+    result = pd.Series('normal', index=df.index, dtype=object)
+
     if wti_price is None or len(df) == 0:
-        return 'normal'
+        return result
 
-    brent_price = df['close'].iloc[-1]
+    brent_close = df['close']
+    valid = brent_close.notna()
 
-    if pd.isna(brent_price) or pd.isna(wti_price):
-        return 'normal'
+    spread = brent_close - wti_price
 
-    spread = brent_price - wti_price
+    result[(spread > spread_high) & valid] = 'spread_wide'
+    result[(spread < spread_low) & valid] = 'spread_narrow'
 
-    if spread > spread_high:
-        return 'spread_wide'
-    if spread < spread_low:
-        return 'spread_narrow'
-
-    return 'normal'
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -419,12 +394,13 @@ def energy_volatility_regime(df, params=None):
     Params:
         atr_period    (int):   ATR lookback            (default 14)
         avg_period    (int):   Long-term ATR average    (default 50)
-        low_ratio     (float): Below this → compression (default 0.7)
-        high_ratio    (float): Above this → elevated    (default 1.5)
-        crisis_ratio  (float): Above this → crisis      (default 2.5)
+        low_ratio     (float): Below this -> compression (default 0.7)
+        high_ratio    (float): Above this -> elevated    (default 1.5)
+        crisis_ratio  (float): Above this -> crisis      (default 2.5)
 
     Returns:
-        str: 'compression'  - ATR < 70% of avg (expect breakout)
+        pd.Series of signal strings per bar:
+             'compression'  - ATR < 70% of avg (expect breakout)
              'normal'       - standard conditions
              'elevated'     - ATR 1.5-2.5x avg (trend only, 75% size)
              'high'         - ATR 2.5x+ avg (trend only, 50% size)
@@ -437,31 +413,26 @@ def energy_volatility_regime(df, params=None):
     high_ratio = params.get('high_ratio', 1.5)
     crisis_ratio = params.get('crisis_ratio', 2.5)
 
+    result = pd.Series('normal', index=df.index, dtype=object)
+
     min_bars = max(atr_period, avg_period) + 5
     if len(df) < min_bars:
-        return 'normal'
+        return result
 
     atr_series = _atr(df, atr_period)
     atr_avg = atr_series.rolling(window=avg_period).mean()
 
-    atr_now = atr_series.iloc[-1]
-    atr_avg_now = atr_avg.iloc[-1]
+    valid = atr_series.notna() & atr_avg.notna() & (atr_avg != 0)
+    ratio = pd.Series(np.nan, index=df.index)
+    ratio[valid] = atr_series[valid] / atr_avg[valid]
 
-    if pd.isna(atr_now) or pd.isna(atr_avg_now) or atr_avg_now == 0:
-        return 'normal'
+    # Apply thresholds in priority order (most extreme first)
+    result[(ratio >= crisis_ratio * 1.4) & valid] = 'crisis'
+    result[(ratio >= crisis_ratio) & (ratio < crisis_ratio * 1.4) & valid] = 'high'
+    result[(ratio >= high_ratio) & (ratio < crisis_ratio) & valid] = 'elevated'
+    result[(ratio < low_ratio) & valid] = 'compression'
 
-    ratio = atr_now / atr_avg_now
-
-    if ratio >= crisis_ratio * 1.4:
-        return 'crisis'
-    if ratio >= crisis_ratio:
-        return 'high'
-    if ratio >= high_ratio:
-        return 'elevated'
-    if ratio < low_ratio:
-        return 'compression'
-
-    return 'normal'
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -475,29 +446,21 @@ def ng_seasonal_filter(df, params=None):
     rally (Sep 1 - Oct 25) averaged 56% return over 10 years with 7/10
     years positive and 1:3.2 R:R.
 
-    Uses the timestamp of the last bar to determine the current month.
+    Uses the timestamp of each bar to determine the month.
 
     Params:  (none -- seasonal rules are fixed)
 
     Returns:
-        str: 'strong_bullish' - September (best month historically)
+        pd.Series of signal strings per bar:
+             'strong_bullish' - September (best month historically)
              'bullish'        - March, April, October (pre-winter buildup)
              'bearish'        - May, June, November (injection ramp / sell-the-news)
              'neutral'        - other months (mixed signals)
     """
-    if len(df) == 0:
-        return 'neutral'
+    result = pd.Series('neutral', index=df.index, dtype=object)
 
-    last_idx = df.index[-1]
-    if hasattr(last_idx, 'month'):
-        month = last_idx.month
-    elif 'time' in df.columns:
-        try:
-            month = pd.Timestamp(df['time'].iloc[-1]).month
-        except Exception:
-            return 'neutral'
-    else:
-        return 'neutral'
+    if len(df) == 0:
+        return result
 
     seasonal_map = {
         1: 'neutral',          # Jan: bearish late, mixed overall
@@ -514,7 +477,22 @@ def ng_seasonal_filter(df, params=None):
         12: 'neutral',         # Dec: weather-driven swings
     }
 
-    return seasonal_map.get(month, 'neutral')
+    # Extract months from index or 'time' column
+    if isinstance(df.index, pd.DatetimeIndex):
+        months = df.index.month
+    elif 'time' in df.columns:
+        try:
+            months = pd.to_datetime(df['time']).dt.month
+        except Exception:
+            return result
+    else:
+        return result
+
+    for month_val, signal in seasonal_map.items():
+        if signal != 'neutral':  # neutral is already the default
+            result[months == month_val] = signal
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +517,8 @@ def energy_squeeze_detector(df, params=None):
         min_squeeze_bars (int): Min consecutive squeeze bars (default 5)
 
     Returns:
-        str: 'squeeze'              - BB inside KC (squeeze active)
+        pd.Series of signal strings per bar:
+             'squeeze'              - BB inside KC (squeeze active, enough consecutive bars)
              'squeeze_bullish_fire' - squeeze just released upward
              'squeeze_bearish_fire' - squeeze just released downward
              'no_squeeze'           - normal conditions
@@ -552,9 +531,11 @@ def energy_squeeze_detector(df, params=None):
     atr_period = params.get('atr_period', 14)
     min_squeeze_bars = params.get('min_squeeze_bars', 5)
 
+    result = pd.Series('no_squeeze', index=df.index, dtype=object)
+
     min_bars = max(bb_period, kc_period, atr_period) + min_squeeze_bars + 2
     if len(df) < min_bars:
-        return 'no_squeeze'
+        return result
 
     close = df['close']
 
@@ -572,33 +553,28 @@ def energy_squeeze_detector(df, params=None):
 
     # Detect squeeze: BB inside KC
     squeeze = (bb_upper < kc_upper) & (bb_lower > kc_lower)
+    squeeze = squeeze.fillna(False)
 
-    # Count consecutive squeeze bars (looking backward from second-to-last)
-    consecutive = 0
-    for i in range(len(squeeze) - 2, -1, -1):
+    # Count consecutive squeeze bars ending at each position
+    consec = pd.Series(0, index=df.index, dtype=int)
+    for i in range(len(df)):
         if squeeze.iloc[i]:
-            consecutive += 1
+            consec.iloc[i] = (consec.iloc[i - 1] + 1) if i > 0 else 1
         else:
-            break
+            consec.iloc[i] = 0
 
-    is_squeeze_now = bool(squeeze.iloc[-1]) if not pd.isna(squeeze.iloc[-1]) else False
-    was_squeeze_prev = bool(squeeze.iloc[-2]) if not pd.isna(squeeze.iloc[-2]) else False
+    squeeze_prev = squeeze.shift(1).fillna(False)
+    consec_prev = consec.shift(1).fillna(0)
 
-    # Squeeze just fired (was in squeeze, now released)
-    if was_squeeze_prev and not is_squeeze_now and consecutive >= min_squeeze_bars - 1:
-        close_now = close.iloc[-1]
-        kc_mid_now = kc_mid.iloc[-1]
-        if pd.isna(close_now) or pd.isna(kc_mid_now):
-            return 'no_squeeze'
-        if close_now > kc_mid_now:
-            return 'squeeze_bullish_fire'
-        else:
-            return 'squeeze_bearish_fire'
+    # Fire: was in squeeze (enough bars), now released
+    fire_mask = squeeze_prev & ~squeeze & (consec_prev >= min_squeeze_bars)
+    result[fire_mask & (close > kc_mid) & kc_mid.notna()] = 'squeeze_bullish_fire'
+    result[fire_mask & (close <= kc_mid) & kc_mid.notna()] = 'squeeze_bearish_fire'
 
-    if is_squeeze_now and consecutive >= min_squeeze_bars:
-        return 'squeeze'
+    # Active squeeze with enough consecutive bars
+    result[squeeze & (consec >= min_squeeze_bars) & (result == 'no_squeeze')] = 'squeeze'
 
-    return 'no_squeeze'
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +585,7 @@ def energy_session_filter(df, params=None):
     """Session filter for energy instruments.
 
     Energy markets have distinct liquidity profiles by session.  This
-    indicator returns the current session to allow strategies to trade
+    indicator returns the current session per bar to allow strategies to trade
     only during peak liquidity windows.
 
     Sessions (UTC):
@@ -622,31 +598,32 @@ def energy_session_filter(df, params=None):
     Params:  (none -- session times are fixed)
 
     Returns:
-        str: 'london' | 'overlap' | 'new_york' | 'dead_zone' | 'asian'
+        pd.Series of session strings per bar:
+             'london' | 'overlap' | 'new_york' | 'dead_zone' | 'asian'
     """
-    if len(df) == 0:
-        return 'dead_zone'
+    result = pd.Series('dead_zone', index=df.index, dtype=object)
 
-    last_idx = df.index[-1]
-    if hasattr(last_idx, 'hour'):
-        hour = last_idx.hour
+    if len(df) == 0:
+        return result
+
+    # Extract hours from index or 'time' column
+    if isinstance(df.index, pd.DatetimeIndex):
+        hours = df.index.hour
     elif 'time' in df.columns:
         try:
-            hour = pd.Timestamp(df['time'].iloc[-1]).hour
+            hours = pd.to_datetime(df['time']).dt.hour
         except Exception:
-            return 'dead_zone'
+            return result
     else:
-        return 'dead_zone'
+        return result
 
-    if 8 <= hour <= 12:
-        return 'london'
-    if 13 <= hour <= 16:
-        return 'overlap'
-    if 17 <= hour <= 20:
-        return 'new_york'
-    if hour >= 21 or hour <= 1:
-        return 'dead_zone'
-    return 'asian'
+    result[(hours >= 8) & (hours <= 12)] = 'london'
+    result[(hours >= 13) & (hours <= 16)] = 'overlap'
+    result[(hours >= 17) & (hours <= 20)] = 'new_york'
+    result[(hours >= 21) | (hours <= 1)] = 'dead_zone'
+    result[(hours >= 2) & (hours <= 7)] = 'asian'
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -665,7 +642,8 @@ def energy_momentum_roc(df, params=None):
         signal_period (int): Signal line SMA period     (default 5)
 
     Returns:
-        str: 'strong_bullish'  - ROC > 0, above signal, and accelerating
+        pd.Series of signal strings per bar:
+             'strong_bullish'  - ROC > 0, above signal, and accelerating
              'bullish'         - ROC > 0 and above signal
              'strong_bearish'  - ROC < 0, below signal, and accelerating
              'bearish'         - ROC < 0 and below signal
@@ -675,30 +653,26 @@ def energy_momentum_roc(df, params=None):
     roc_period = params.get('roc_period', 14)
     signal_period = params.get('signal_period', 5)
 
+    result = pd.Series('neutral', index=df.index, dtype=object)
+
     min_bars = roc_period + signal_period + 2
     if len(df) < min_bars:
-        return 'neutral'
+        return result
 
     close = df['close']
 
     roc = ((close - close.shift(roc_period)) / close.shift(roc_period)) * 100
     signal_line = roc.rolling(window=signal_period).mean()
+    roc_prev = roc.shift(1)
 
-    roc_now = roc.iloc[-1]
-    roc_prev = roc.iloc[-2]
-    signal_now = signal_line.iloc[-1]
+    valid = roc.notna() & roc_prev.notna() & signal_line.notna()
 
-    if pd.isna(roc_now) or pd.isna(roc_prev) or pd.isna(signal_now):
-        return 'neutral'
+    bull_above = (roc > 0) & (roc > signal_line) & valid
+    bear_below = (roc < 0) & (roc < signal_line) & valid
 
-    if roc_now > 0 and roc_now > signal_now:
-        if roc_now > roc_prev:
-            return 'strong_bullish'
-        return 'bullish'
+    result[bull_above & (roc > roc_prev)] = 'strong_bullish'
+    result[bull_above & (roc <= roc_prev) & (result == 'neutral')] = 'bullish'
+    result[bear_below & (roc < roc_prev)] = 'strong_bearish'
+    result[bear_below & (roc >= roc_prev) & (result == 'neutral')] = 'bearish'
 
-    if roc_now < 0 and roc_now < signal_now:
-        if roc_now < roc_prev:
-            return 'strong_bearish'
-        return 'bearish'
-
-    return 'neutral'
+    return result

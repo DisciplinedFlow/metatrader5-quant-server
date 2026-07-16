@@ -626,7 +626,7 @@ onMounted(() => {
 
 /* ═══ HELPERS ═══ */
 function pnlClass(v) { return v > 0 ? 'val-pos' : v < 0 ? 'val-neg' : '' }
-function fmtPnl(v) { return (v >= 0 ? '+' : '') + '$' + v.toFixed(2) }
+function fmtPnl(v) { return (v >= 0 ? '+' : '') + '€' + v.toFixed(2) }
 function wrColor(wr) {
   if (wr >= 55) return 'var(--tp-success)'
   if (wr >= 45) return 'var(--tp-text-dim)'
@@ -678,7 +678,7 @@ function metricColor(val, goodAbove, badBelow) {
         </div>
         <div class="stat-label">Total P&L</div>
         <div class="stat-value" :class="pnlClass(stats.totalPnl)">{{ fmtPnl(stats.totalPnl) }}</div>
-        <div class="stat-sub">{{ stats.expectancy >= 0 ? '+' : '' }}${{ stats.expectancy.toFixed(2) }}/trade</div>
+        <div class="stat-sub">{{ stats.expectancy >= 0 ? '+' : '' }}&euro;{{ stats.expectancy.toFixed(2) }}/trade</div>
       </div>
 
       <div class="tp-stat-card hero-stat" style="--stagger:2">
@@ -695,7 +695,7 @@ function metricColor(val, goodAbove, badBelow) {
           <span class="material-symbols-outlined">trending_down</span>
         </div>
         <div class="stat-label">Max Drawdown</div>
-        <div class="stat-value val-neg">-${{ stats.maxDrawdown.toFixed(2) }}</div>
+        <div class="stat-value val-neg">-&euro;{{ stats.maxDrawdown.toFixed(2) }}</div>
         <div class="stat-sub">Peak-to-trough</div>
       </div>
 
@@ -705,7 +705,7 @@ function metricColor(val, goodAbove, badBelow) {
         </div>
         <div class="stat-label">Profit Factor</div>
         <div class="stat-value" :class="stats.profitFactor >= 1 ? 'val-pos' : 'val-neg'">{{ stats.profitFactor.toFixed(2) }}</div>
-        <div class="stat-sub">Avg win ${{ stats.avgWin.toFixed(2) }}</div>
+        <div class="stat-sub">Avg win &euro;{{ stats.avgWin.toFixed(2) }}</div>
       </div>
 
       <div class="tp-stat-card hero-stat" style="--stagger:5">
@@ -714,7 +714,7 @@ function metricColor(val, goodAbove, badBelow) {
         </div>
         <div class="stat-label">Best Pair</div>
         <div class="stat-value val-pos">{{ stats.bestPair }}</div>
-        <div class="stat-sub" v-if="symbolData.length">+${{ symbolData[0]?.pnl?.toFixed(2) }}</div>
+        <div class="stat-sub" v-if="symbolData.length">+&euro;{{ symbolData[0]?.pnl?.toFixed(2) }}</div>
       </div>
 
       <div class="tp-stat-card hero-stat" style="--stagger:6">
@@ -723,7 +723,7 @@ function metricColor(val, goodAbove, badBelow) {
         </div>
         <div class="stat-label">Worst Pair</div>
         <div class="stat-value val-neg">{{ stats.worstPair }}</div>
-        <div class="stat-sub" v-if="symbolData.length">${{ symbolData[symbolData.length - 1]?.pnl?.toFixed(2) }}</div>
+        <div class="stat-sub" v-if="symbolData.length">&euro;{{ symbolData[symbolData.length - 1]?.pnl?.toFixed(2) }}</div>
       </div>
     </div>
 
@@ -789,8 +789,8 @@ function metricColor(val, goodAbove, badBelow) {
               <td class="num" :class="pnlClass(d.pnl)">{{ fmtPnl(d.pnl) }}</td>
               <td class="num" :class="pnlClass(d.cumulative)">{{ fmtPnl(d.cumulative) }}</td>
               <td class="num" :class="d.drawdown > 100 ? 'val-neg' : ''">{{ d.drawdown > 0 ? '$' + d.drawdown.toFixed(0) : '—' }}</td>
-              <td class="num val-pos">+${{ d.best.toFixed(2) }}</td>
-              <td class="num val-neg">${{ d.worst.toFixed(2) }}</td>
+              <td class="num val-pos">+&euro;{{ d.best.toFixed(2) }}</td>
+              <td class="num val-neg">&euro;{{ d.worst.toFixed(2) }}</td>
             </tr>
           </tbody>
         </table>
@@ -892,7 +892,7 @@ function metricColor(val, goodAbove, badBelow) {
           :style="{ '--cell-intensity': h.intensity }"
         >
           <span class="cell-hour">{{ String(h.hour).padStart(2, '0') }}</span>
-          <span class="cell-pnl" :class="pnlClass(h.pnl)">{{ h.pnl >= 0 ? '+' : '' }}${{ h.pnl.toFixed(0) }}</span>
+          <span class="cell-pnl" :class="pnlClass(h.pnl)">{{ h.pnl >= 0 ? '+' : '' }}&euro;{{ h.pnl.toFixed(0) }}</span>
           <span class="cell-wr">{{ h.count ? h.wr.toFixed(0) + '%' : '—' }}</span>
           <span class="cell-count">{{ h.count }}t</span>
         </div>
@@ -1117,19 +1117,19 @@ function metricColor(val, goodAbove, badBelow) {
         <div class="mfe-grid">
           <div class="mfe-item">
             <span class="mfe-label">Avg MFE (Winners)</span>
-            <span class="mfe-val val-pos">${{ mfeMaeData.avgMfeWin.toFixed(2) }}</span>
+            <span class="mfe-val val-pos">&euro;{{ mfeMaeData.avgMfeWin.toFixed(2) }}</span>
           </div>
           <div class="mfe-item">
             <span class="mfe-label">Avg MFE (Losers)</span>
-            <span class="mfe-val">${{ mfeMaeData.avgMfeLoss.toFixed(2) }}</span>
+            <span class="mfe-val">&euro;{{ mfeMaeData.avgMfeLoss.toFixed(2) }}</span>
           </div>
           <div class="mfe-item">
             <span class="mfe-label">Avg MAE (Winners)</span>
-            <span class="mfe-val">${{ mfeMaeData.avgMaeWin.toFixed(2) }}</span>
+            <span class="mfe-val">&euro;{{ mfeMaeData.avgMaeWin.toFixed(2) }}</span>
           </div>
           <div class="mfe-item">
             <span class="mfe-label">Avg MAE (Losers)</span>
-            <span class="mfe-val val-neg">${{ mfeMaeData.avgMaeLoss.toFixed(2) }}</span>
+            <span class="mfe-val val-neg">&euro;{{ mfeMaeData.avgMaeLoss.toFixed(2) }}</span>
           </div>
           <div class="mfe-divider"></div>
           <div class="mfe-item mfe-wide">
@@ -1160,9 +1160,9 @@ function metricColor(val, goodAbove, badBelow) {
           :style="{ '--cell-intensity': d.intensity }"
         >
           <span class="dow-name">{{ d.name }}</span>
-          <span class="dow-pnl" :class="pnlClass(d.pnl)">{{ d.pnl >= 0 ? '+' : '' }}${{ d.pnl.toFixed(0) }}</span>
+          <span class="dow-pnl" :class="pnlClass(d.pnl)">{{ d.pnl >= 0 ? '+' : '' }}&euro;{{ d.pnl.toFixed(0) }}</span>
           <span class="dow-wr" :style="{ color: wrColor(d.wr) }">{{ d.count ? d.wr.toFixed(0) + '%' : '—' }}</span>
-          <span class="dow-count">{{ d.count }}t &middot; ${{ d.avg.toFixed(2) }}/t</span>
+          <span class="dow-count">{{ d.count }}t &middot; &euro;{{ d.avg.toFixed(2) }}/t</span>
         </div>
       </div>
     </div>
@@ -1291,7 +1291,7 @@ function metricColor(val, goodAbove, badBelow) {
         <div class="mgmt-section" v-if="managementData.volCount > 0">
           <h4 class="mgmt-section-title">Position Sizing</h4>
           <div class="mgmt-row">
-            <span>Avg Size</span><span class="mgmt-val">${{ managementData.avgSize.toFixed(0) }}</span>
+            <span>Avg Size</span><span class="mgmt-val">&euro;{{ managementData.avgSize.toFixed(0) }}</span>
           </div>
           <div class="mgmt-row">
             <span>Trades w/ data</span><span class="mgmt-val">{{ managementData.volCount }}</span>

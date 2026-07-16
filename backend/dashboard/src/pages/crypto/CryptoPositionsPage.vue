@@ -3,38 +3,33 @@ import { ref, computed } from 'vue'
 import { usePolling } from '@/composables/usePolling'
 import api from '@/services/api'
 import SectionNav from '@/components/SectionNav.vue'
+import { cryptoLinks, COIN_COLORS, fmt, fmtPrice, fmtTime } from '@/utils/cryptoConstants'
 
-const cryptoLinks = [
-  { to: '/crypto', label: 'Overview' },
-  { to: '/crypto/positions', label: 'Positions' },
-  { to: '/crypto/history', label: 'History' },
-  { to: '/crypto/chart', label: 'Chart' },
-  { to: '/crypto/logs', label: 'Logs' },
-  { to: '/crypto/strategy', label: 'Strategies' },
-]
-
-// Wallet data for live positions
-const livePositions = ref([])
-const walletLoaded = ref(false)
-
-// DB positions for closed
-const dbPositions = ref([])
+// DB positions
+const openPositions = ref([])
+const closedPositions = ref([])
 const showClosed = ref(false)
 
-const displayPositions = computed(() => showClosed.value ? dbPositions.value : livePositions.value)
+// Live prices from wallet endpoint for unrealized PnL
+const livePrices = ref({})
 
 const totalUnrealizedPnl = computed(() =>
-  livePositions.value.reduce((sum, p) => sum + (p.unrealized_pnl ?? 0), 0)
+  openPositions.value.reduce((sum, p) => sum + unrealizedPnl(p), 0)
 )
 
 const totalClosedPnl = computed(() =>
-  dbPositions.value.reduce((sum, p) => sum + Number(p.pnl_usd ?? 0), 0)
+  closedPositions.value.reduce((sum, p) => sum + Number(p.pnl_usd ?? 0), 0)
 )
 
-const COIN_COLORS = {
-  BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', AVAX: '#e84142',
-  DOGE: '#c2a633', ARB: '#28a0f0', MATIC: '#8247e5', LINK: '#2a5ada',
-  OP: '#ff0420', SUI: '#4da2ff',
+function unrealizedPnl(p) {
+  const mark = livePrices.value[p.symbol]
+  if (!mark || !p.entry_price) return 0
+  if (p.side === 'LONG') return (mark - p.entry_price) * p.size
+  return (p.entry_price - mark) * p.size
+}
+
+function markPrice(p) {
+  return livePrices.value[p.symbol] ?? null
 }
 
 function getCoinColor(coin) {
@@ -42,42 +37,26 @@ function getCoinColor(coin) {
 }
 
 async function refresh() {
-  const [walletResult, closedResult] = await Promise.allSettled([
+  const [openResult, closedResult, walletResult] = await Promise.allSettled([
+    api.getCryptoPositions('OPEN'),
+    api.getCryptoPositions('CLOSED'),
     api.getCryptoWallet(),
-    api.getCryptoPositions('closed'),
   ])
-  if (walletResult.status === 'fulfilled') {
-    livePositions.value = walletResult.value.positions ?? []
-    walletLoaded.value = true
+  if (openResult.status === 'fulfilled') {
+    openPositions.value = openResult.value.results ?? openResult.value ?? []
   }
   if (closedResult.status === 'fulfilled') {
-    dbPositions.value = closedResult.value.results ?? closedResult.value ?? []
+    closedPositions.value = closedResult.value.results ?? closedResult.value ?? []
+  }
+  if (walletResult.status === 'fulfilled') {
+    const prices = walletResult.value.prices ?? []
+    const map = {}
+    for (const p of prices) map[p.coin] = p.price
+    livePrices.value = map
   }
 }
 
-function fmt(val, decimals = 2) {
-  if (val == null) return '-'
-  return Number(val).toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
-
-function fmtPrice(val) {
-  if (val == null) return '-'
-  const n = Number(val)
-  if (n >= 1000) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  if (n >= 1) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-  return n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })
-}
-
-function fmtDate(val) {
-  if (!val) return '-'
-  const d = new Date(val)
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-}
-
-usePolling(refresh, 10000)
+usePolling(refresh, 60000)  // was 10s — bot gets API priority
 </script>
 
 <template>
@@ -86,7 +65,7 @@ usePolling(refresh, 10000)
     <div class="page-header">
       <div>
         <h1>Crypto Positions</h1>
-        <p>{{ showClosed ? 'Closed position history' : 'Live on-chain positions from Hyperliquid' }}</p>
+        <p>{{ showClosed ? 'Closed position history' : 'Live positions on Lighter.xyz' }}</p>
       </div>
       <div class="header-actions">
         <label class="toggle-label">
@@ -103,7 +82,7 @@ usePolling(refresh, 10000)
     <!-- Stats Row — glass strip -->
     <div class="stats-row">
       <div class="stat-card">
-        <div class="stat-value">{{ showClosed ? dbPositions.length : livePositions.length }}</div>
+        <div class="stat-value">{{ showClosed ? closedPositions.length : openPositions.length }}</div>
         <div class="stat-label">{{ showClosed ? 'Closed Trades' : 'Open Positions' }}</div>
       </div>
       <div class="stat-card">
@@ -132,24 +111,24 @@ usePolling(refresh, 10000)
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!livePositions.length">
+              <tr v-if="!openPositions.length">
                 <td colspan="8" style="padding: 3rem 2rem; text-align: center;">
                   <div class="empty-state-inner">
                     <div class="empty-icon">
                       <span class="material-symbols-outlined" style="font-size:2rem;color:var(--tp-text-dim)">account_balance_wallet</span>
                     </div>
                     <p class="empty-title">No open positions</p>
-                    <p class="empty-desc">Live positions from Hyperliquid will appear here.</p>
+                    <p class="empty-desc">Active positions on Lighter.xyz will appear here.</p>
                   </div>
                 </td>
               </tr>
-              <tr v-for="p in livePositions" :key="p.coin">
+              <tr v-for="p in openPositions" :key="p.id">
                 <td>
                   <div style="display: flex; align-items: center; gap: 0.5rem;">
-                    <div class="coin-icon-sm" :style="{ background: getCoinColor(p.coin) + '22', color: getCoinColor(p.coin) }">
-                      {{ p.coin.slice(0, 2) }}
+                    <div class="coin-icon-sm" :style="{ background: getCoinColor(p.symbol) + '22', color: getCoinColor(p.symbol) }">
+                      {{ p.symbol.slice(0, 2) }}
                     </div>
-                    <span class="td-symbol">{{ p.coin }}</span>
+                    <span class="td-symbol">{{ p.symbol }}</span>
                   </div>
                 </td>
                 <td>
@@ -159,12 +138,12 @@ usePolling(refresh, 10000)
                 </td>
                 <td style="font-weight: 600;">{{ fmt(Math.abs(p.size), 4) }}</td>
                 <td class="td-price">${{ fmtPrice(p.entry_price) }}</td>
-                <td class="td-price">${{ fmtPrice(p.mark_price) }}</td>
+                <td class="td-price">{{ markPrice(p) ? '$' + fmtPrice(markPrice(p)) : '-' }}</td>
                 <td>{{ p.leverage }}x</td>
-                <td>${{ fmt(p.margin_used) }}</td>
+                <td>${{ fmt(p.entry_price * p.size / p.leverage) }}</td>
                 <td>
-                  <span class="td-pnl" :class="p.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg'">
-                    {{ p.unrealized_pnl >= 0 ? '+' : '' }}${{ fmt(p.unrealized_pnl) }}
+                  <span class="td-pnl" :class="unrealizedPnl(p) >= 0 ? 'pnl-pos' : 'pnl-neg'">
+                    {{ unrealizedPnl(p) >= 0 ? '+' : '' }}${{ fmt(unrealizedPnl(p)) }}
                   </span>
                 </td>
               </tr>
@@ -193,7 +172,7 @@ usePolling(refresh, 10000)
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!dbPositions.length">
+              <tr v-if="!closedPositions.length">
                 <td colspan="9" style="padding: 3rem 2rem; text-align: center;">
                   <div class="empty-state-inner">
                     <div class="empty-icon">
@@ -204,7 +183,7 @@ usePolling(refresh, 10000)
                   </div>
                 </td>
               </tr>
-              <tr v-for="p in dbPositions" :key="p.id">
+              <tr v-for="p in closedPositions" :key="p.id">
                 <td class="td-symbol">{{ p.symbol }}</td>
                 <td>
                   <span class="side-badge" :class="p.side === 'LONG' ? 'buy' : 'sell'">
@@ -221,7 +200,7 @@ usePolling(refresh, 10000)
                   </span>
                 </td>
                 <td class="td-reason">{{ p.close_reason ?? '-' }}</td>
-                <td class="td-time">{{ fmtDate(p.opened_at) }}</td>
+                <td class="td-time">{{ fmtTime(p.opened_at) }}</td>
               </tr>
             </tbody>
           </table>

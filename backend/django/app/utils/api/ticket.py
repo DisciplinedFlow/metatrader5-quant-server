@@ -44,41 +44,98 @@ def history_orders_get(ticket: int) -> Dict:
         logger.error(error_msg)
 
 def get_deal_from_ticket(ticket: int, from_date: datetime, to_date: datetime) -> Dict:
-    # Pass datetime objects directly — history_deals_get sends them as ISO strings
+    """Get deal history for a position ticket from MT5.
+
+    Filters the raw deal list to only include deals matching this position_id,
+    then separates entry (entry=0) and exit (entry=1) deals.
+    """
     deals = history_deals_get(from_date, to_date, position=ticket)
     if not deals:
-        error_msg = f"No deal history found for position ticket {ticket} between {from_date} and {to_date}."
-        logger.error(error_msg)
+        logger.debug(f"No deal history for position {ticket}")
         return None
 
-    # Convert deals to a DataFrame for easier processing
-    deals_df = pd.DataFrame(deals)
-
-    # Optional: Verify that all deals belong to the same symbol
-    if not deals_df.empty and not all(deal == deals_df['symbol'].iloc[0] for deal in deals_df['symbol']):
-        error_msg = f"Inconsistent symbols found in deals for position ticket {ticket}."
-        logger.error(error_msg)
+    # Filter to only deals for THIS position (MT5 returns broad matches)
+    pos_deals = [d for d in deals if d.get('position_id') == ticket]
+    if not pos_deals:
+        logger.debug(f"No deals matching position_id={ticket}")
         return None
 
-    # Extract relevant information
-    if not deals_df.empty:
-        deal_details = {
+    # Separate entry and exit deals
+    entry_deals = [d for d in pos_deals if d.get('entry') == 0]
+    exit_deals = [d for d in pos_deals if d.get('entry') == 1]
+
+    if not entry_deals:
+        logger.debug(f"No entry deal found for position {ticket}")
+        return None
+
+    entry = entry_deals[0]
+    symbol = entry['symbol']
+
+    # If no exit deal yet, position is still open
+    if not exit_deals:
+        return {
             'ticket': ticket,
-            'symbol': deals_df['symbol'].iloc[0],
-            'type': 'BUY' if deals_df['type'].iloc[0] == 'DEAL_TYPE_BUY' else 'SELL',
-            'volume': deals_df['volume'].sum(),
-            'open_time': datetime.fromtimestamp(deals_df['time'].min(), tz=TIMEZONE),
-            'close_time': datetime.fromtimestamp(deals_df['time'].max(), tz=TIMEZONE),
-            'open_price': deals_df['price'].iloc[0],
-            'close_price': deals_df['price'].iloc[-1],
-            'profit': deals_df['profit'].sum(),
-            'commission': deals_df['commission'].sum(),
-            'swap': deals_df['swap'].sum(),
-            'comment': deals_df['comment'].iloc[-1]  # Use the last comment if multiple
+            'symbol': symbol,
+            'type': 'BUY' if entry.get('type') == 0 else 'SELL',
+            'volume': entry.get('volume', 0),
+            'open_time': datetime.fromtimestamp(entry['time'], tz=TIMEZONE),
+            'open_price': entry['price'],
+            'close_time': None,
+            'close_price': None,
+            'profit': 0,
+            'commission': sum(d.get('commission', 0) for d in pos_deals),
+            'swap': sum(d.get('swap', 0) for d in pos_deals),
+            'comment': entry.get('comment', ''),
+            'still_open': True,
         }
-        return deal_details
-    else:
-        return None
+
+    exit_deal = exit_deals[-1]  # Last exit deal (handles partial closes)
+    total_profit = sum(d.get('profit', 0) for d in pos_deals)
+    total_commission = sum(d.get('commission', 0) for d in pos_deals)
+    total_swap = sum(d.get('swap', 0) for d in pos_deals)
+
+    return {
+        'ticket': ticket,
+        'symbol': symbol,
+        'type': 'BUY' if entry.get('type') == 0 else 'SELL',
+        'volume': entry.get('volume', 0),
+        'open_time': datetime.fromtimestamp(entry['time'], tz=TIMEZONE),
+        'close_time': datetime.fromtimestamp(exit_deal['time'], tz=TIMEZONE),
+        'open_price': entry['price'],
+        'close_price': exit_deal['price'],
+        'profit': total_profit,
+        'commission': total_commission,
+        'swap': total_swap,
+        'comment': exit_deal.get('comment', ''),
+        'still_open': False,
+    }
+
+
+def history_deals_bulk(from_date: datetime, to_date: datetime) -> list:
+    """Fetch ALL deals in date range (no position filter). For reconciliation.
+
+    GET http://mt5:5001/history_deals_get?from_date=...&to_date=...
+    The position parameter is now optional on the MT5 side, so omitting it
+    returns every deal in the window — much more efficient than per-ticket queries.
+
+    Returns a list of deal dicts, or an empty list on failure.
+    """
+    try:
+        params = {
+            'from_date': from_date.isoformat(),
+            'to_date': to_date.isoformat(),
+        }
+        url = f"{BASE_URL}/history_deals_get"
+        response = get_session().get(url, params=params, timeout=30)
+        response.raise_for_status()
+
+        data = response.json()
+        if data is None:
+            return []
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.error(f"Exception fetching bulk deal history: {e}\n{traceback.format_exc()}")
+        return []
 
 
 def get_order_from_ticket(ticket: int) -> Dict:

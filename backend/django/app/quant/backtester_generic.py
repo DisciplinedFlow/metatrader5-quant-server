@@ -128,6 +128,10 @@ CONDITION_OPS = {
     'structure_lib': lambda a, b: isinstance(a, str) and b in a,
     'liquidity_lib': lambda a, b: isinstance(a, str) and b in a,
     'smc_confluence_lib': lambda a, b: isinstance(a, str) and b in a,
+    # General-purpose operators for custom strategies
+    'neq': lambda a, b: a != b,
+    'contains': lambda a, b: isinstance(a, str) and b in a,
+    'not_contains': lambda a, b: isinstance(a, str) and b not in a,
 }
 
 TIMEFRAME_YAHOO_INTERVAL = {

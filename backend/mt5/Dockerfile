@@ -12,9 +12,10 @@ RUN mkdir -p /config/.wine && \
     chown -R abc:abc /config/.wine && \
     chmod -R 755 /config/.wine
 
-# Remove stale backports repo (no longer has a Release file) then update
-RUN rm -f /etc/apt/sources.list.d/*backports* && \
+# Remove stale repos (nodesource 18.x + backports no longer have Release files)
+RUN rm -f /etc/apt/sources.list.d/*backports* /etc/apt/sources.list.d/*nodesource* && \
     sed -i '/bullseye-backports/d' /etc/apt/sources.list && \
+    sed -i '/nodesource/d' /etc/apt/sources.list && \
     apt-get update && apt-get upgrade -y
 
 # Install required packages
