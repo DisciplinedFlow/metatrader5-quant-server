@@ -27,10 +27,14 @@ Postgres 1G, Redis+Beat 1G) plus K3s overhead and the future monitoring stack.
 | RAM | 16 GB | 16 GB |
 | Disk | 80 GB NVMe | 160+ GB |
 
-**Suggested:** Hetzner CPX41 (8 vCPU AMD, 16 GB, 240 GB NVMe, ~€30/mo),
-Falkenstein or Nuremberg region — EU placement keeps broker latency low.
-DigitalOcean/Vultr equivalents work the same. OS: **Ubuntu 24.04 LTS**, with
-your SSH public key set at creation (never password auth).
+**Suggested:** Hetzner CX43 (Shared Cost-Optimized, 8 vCPU Intel, 16 GB,
+160 GB, ~€12/mo), Nuremberg or Falkenstein — EU placement keeps broker latency
+low. The pricier CPX line buys less-contended vCPUs; not needed here (the
+tightest loop is the 15s beat tick), and you can rescale to CPX later without
+rebuilding. **Select "Primary IPv4" (~€0.50/mo), not "IPv6 only"** — MT5
+broker trade servers are effectively IPv4-only; an IPv6-only VM cannot reach
+the broker. DigitalOcean/Vultr equivalents work the same. OS: **Ubuntu 24.04
+LTS**, with your SSH public key set at creation (never password auth).
 
 **Gate:** `ssh root@<ip>` works with your key.
 

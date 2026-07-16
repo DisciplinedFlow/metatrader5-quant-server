@@ -110,3 +110,4 @@ ml_models/
 
 # D-Bus session files
 config/.dbus/
+.gitnexus
