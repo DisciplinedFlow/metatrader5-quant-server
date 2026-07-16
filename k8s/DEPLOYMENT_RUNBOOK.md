@@ -92,10 +92,12 @@ grafana.mt5.<domain>     → <ip>   (for the later monitoring phase)
 ## Phase 5 — Clone, configure, build, deploy
 
 ```bash
-git clone https://github.com/nomubuilders/mt5-quant-server.git && cd mt5-quant-server
+git clone https://github.com/DisciplinedFlow/metatrader5-quant-server.git && cd metatrader5-quant-server
 cp .env.example .env
 vim .env   # real broker creds, strong POSTGRES_PASSWORD, real domains, API keys
            # add: DASHBOARD_DOMAIN=dashboard.mt5.<domain>
+           # add: TRAEFIK_HASHED_PASSWORD — not in .env.example; generate with:
+           #      openssl passwd -apr1 '<password>'
 
 k8s/scripts/build-images.sh   # builds mt5/django/dashboard, imports into k3s
 k8s/scripts/deploy.sh         # secret from .env + manifests + ingress

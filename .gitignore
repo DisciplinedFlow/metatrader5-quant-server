@@ -102,8 +102,6 @@ config/.wine/
 # Claude Code workspace
 .claude/
 .agents/
-CLAUDE.md
-**/CLAUDE.md
 
 # RuFlo runtime (logs, sessions, data, metrics)
 .claude-flow/logs/
