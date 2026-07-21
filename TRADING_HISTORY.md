@@ -15,13 +15,12 @@
 7. [Phase 6: Paper Trading Launch & Sunday Disaster (Mar 14--16)](#phase-6-paper-trading-launch--sunday-disaster-mar-1416)
 8. [Phase 7: The Brain Era (Mar 17)](#phase-7-the-brain-era-mar-17)
 9. [Phase 8: Brain Replacement & Simplification (Mar 18)](#phase-8-brain-replacement--simplification-mar-18)
-10. [The Crypto / Lighter.xyz Side](#the-crypto--lighterxyz-side)
-11. [What Worked](#what-worked)
-12. [What Did Not Work](#what-did-not-work)
-13. [Backtest vs Live Comparison](#backtest-vs-live-comparison)
-14. [Current State of the Codebase](#current-state-of-the-codebase)
-15. [Key Lessons Learned](#key-lessons-learned)
-16. [Strategy Performance Scorecard](#strategy-performance-scorecard)
+10. [What Worked](#what-worked)
+11. [What Did Not Work](#what-did-not-work)
+12. [Backtest vs Live Comparison](#backtest-vs-live-comparison)
+13. [Current State of the Codebase](#current-state-of-the-codebase)
+14. [Key Lessons Learned](#key-lessons-learned)
+15. [Strategy Performance Scorecard](#strategy-performance-scorecard)
 
 ---
 
@@ -438,46 +437,6 @@ ADDED (3,053 lines):
 
 ---
 
-## The Crypto / Lighter.xyz Side
-
-### Architecture
-
-Lighter.xyz is a zero-fee DEX. The integration uses a split architecture:
-- **Read ops:** Pure-Python SDK from Docker (candles, orderbook, account info)
-- **Write ops:** macOS native HTTP proxy on port 5555 (Go SignerClient crashes under QEMU)
-
-### Strategy Evolution
-
-| Date | Strategy | Parameters | Result |
-|------|----------|-----------|--------|
-| Mar 9 | EMA 8/21 + RSI 14/30/65 | Backtested 162 combos | 53.3% WR, +41.36%, PF 1.98 |
-| Mar 9 | RSI(2) scalper | 5m candles, SL 1%, TP 0.75% | R:R 0.75:1 = needed >57% WR |
-| Mar 12 | 5-strategy crypto backtesting | Grid, mean reversion, RSI scalp, momentum | System built |
-| Mar 16 | Lighter signer proxy crashed | 16 signals generated, 0 executed | Critical downtime |
-| Mar 17 | Kelly sizing, funding signal, OB signal | 7 new crypto modules added | Infrastructure only |
-| Mar 18 | RSI(2) moved to 15m candles | SL 1.0% -> TP 2.0% (1:2 R:R) | Fix from 0.75:1 |
-| Mar 18 | EMA position slots decoupled | EMA gets own 3-slot capacity | Was sharing with RSI(2) |
-| Mar 18 | entry_crypto.py created | H4 ADX/MACD + H1 structure/CVD + OB filter | Clean 379-line entry |
-
-### Current Crypto Config
-
-- **Symbols:** BTC, ETH, SOL, AVAX, XAG
-- **Sizing:** 30% of account balance per trade, max 3 open
-- **Entry:** H4 trend (ADX>20 + MACD direction) AND (H1 structure OR CVD setup)
-- **OB filter:** Real-time orderbook from ws_streamer, blocks extreme imbalance
-- **SL:** 1.5x ATR, TP: 3.0x ATR
-- **Circuit breaker:** 4 losses -> 1h pause
-- **Cooldown:** 600s per symbol
-
-### Crypto Problems
-
-1. **Signer proxy reliability:** Runs natively on macOS, needs launchd persistence
-2. **QEMU incompatibility:** Go-based SignerClient crashes under Docker QEMU emulation
-3. **No live trading data yet:** Account needs funding, paused by default
-4. **R:R was broken:** 0.75:1 on RSI(2) scalper required >57% WR to break even, fixed to 1:2
-
----
-
 ## What Worked
 
 ### 1. CVD Lack of Participants Strategy
@@ -676,19 +635,6 @@ entry_forex.py (Celery beat every 60s, OR direct trigger from tick_consumer)
   -> send_market_order with min_rr=1.95
 ```
 
-### Crypto Entry Pipeline
-
-```
-entry_crypto.py (Celery beat every 60s)
-  -> H4 candles from Lighter.xyz API
-  -> H4 trend: ADX > 20 + MACD direction + RSI not extreme
-  -> H1 structure: HH/HL (bullish) or LH/LL (bearish)
-  -> H1 CVD: Lack of Participants or Absorption
-  -> Real-time orderbook imbalance filter (Redis DB2)
-  -> place_market_order_usd via signer proxy
-  -> OCO SL/TP on-chain
-```
-
 ### Active Celery Tasks
 
 | Task | Queue | Interval | Purpose |
@@ -697,29 +643,17 @@ entry_crypto.py (Celery beat every 60s)
 | run_quant_trailing_stop | critical | 2s | Position management |
 | run_quant_close | critical | 15s | Detect closed positions |
 | run_position_reconciliation | critical | 30s | MT5 <-> DB sync |
-| run_crypto_entry | default | 60s | Lighter.xyz crypto entry |
-| run_lighter_exit | default | 15s | Crypto position management |
-| run_lighter_rsi_scalper | default | 30s | RSI(2) mean reversion |
-| run_lighter_reconcile | default | 60s | Crypto position sync |
-| run_lighter_entry | default | 60s | EMA crossover crypto |
-| run_lighter_grid | default | 60s | Grid trading |
-| run_lighter_mean_reversion | default | 300s | Mean reversion crypto |
-| run_lighter_cvd | default | 60s | CVD crypto entry |
-| run_lighter_momentum | default | 60s | Momentum crypto entry |
 
 ### Files That Matter (Current)
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `entry_forex.py` | 351 | Primary forex entry algorithm |
-| `entry_crypto.py` | 380 | Primary crypto entry algorithm |
 | `brain_entry.py` | 328 | Neo4j brain entry (secondary) |
 | `position_manager.py` | ~450 | 6-phase exit management |
 | `close/close.py` | ~300 | Trade closure detection + recording |
 | `engine/mtf_engine.py` | 212 | Real-time multi-timeframe bars |
 | `engine/indicators.py` | 261 | Clean indicator library |
-| `lighter/rsi_scalper.py` | ~300 | RSI(2) crypto scalper |
-| `lighter/client.py` | ~350 | Lighter.xyz API wrapper |
 | `knowledge/graph.py` | ~400 | Neo4j pattern storage |
 
 ### Files Deleted on Mar 18
@@ -817,8 +751,6 @@ At sub-50% win rates (which is where CVD divergence lives), the R:R ratio determ
 | Bollinger Mean Rev M5 | <30% WR | negative | Disabled | Consistent loser |
 | SCALPING | 33.8% | negative | Disabled | Impossible with 1-3s order latency |
 | STRUCTURE_AUTONOMOUS | n/a | not tested | Deleted | Too noisy |
-| RSI(2) Scalper (crypto) | ~45% | pending | Active | R:R fixed to 1:2, needs live data |
-| EMA 8/21 (crypto) | 53.3% | +41% (backtest) | Active | Best backtest result, needs live |
 
 ### Risk Parameter Evolution
 

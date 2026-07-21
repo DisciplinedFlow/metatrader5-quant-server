@@ -20,13 +20,6 @@ const PLATFORM_CONFIG = {
     longLabel: 'Entry Rules - Long',
     shortLabel: 'Entry Rules - Short',
   },
-  CRYPTO: {
-    pairs: ['BTC', 'ETH', 'SOL', 'AVAX', 'MATIC', 'DOGE', 'ARB'],
-    timeframes: ['M15', 'H1', 'H4', 'D1'],
-    pairLabel: 'Trading Pairs',
-    longLabel: 'Entry Rules - Long',
-    shortLabel: 'Entry Rules - Short',
-  },
 }
 
 const platformConfig = computed(() => PLATFORM_CONFIG[props.domain] || PLATFORM_CONFIG.FOREX)

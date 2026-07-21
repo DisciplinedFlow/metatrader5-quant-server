@@ -349,8 +349,6 @@ gantt
     section Default Queue
     tick_health (60s)        :0, 60
     market_pulse (2m)        :0, 120
-    crypto_entry (60s)       :0, 60
-    crypto_exit (30s)        :0, 30
     backtest (6h)            :0, 21600
 ```
 
@@ -447,21 +445,6 @@ flowchart TB
 | `training/status/` | GET | TrainingStatusView | Training progress |
 | `training/history/` | GET | TrainingHistoryView | Past training runs |
 
-### Crypto — `/v1/crypto/`
-
-| Endpoint | Method | View | Purpose |
-|----------|--------|------|---------|
-| `positions/` | CRUD | CryptoPositionViewSet | Crypto positions |
-| `trades/` | CRUD | CryptoTradeViewSet | Crypto trades |
-| `backtests/` | CRUD | CryptoBacktestViewSet | Crypto backtests |
-| `bot/status/` | GET/POST | CryptoBotControlView | Crypto bot control |
-| `funding-arb/` | GET | CryptoFundingArbView | Arb opportunities |
-| `funding-rates/` | GET | CryptoFundingArbView | Current rates |
-| `logs/` | GET | CryptoLogsView | Crypto logs |
-| `dashboard/` | GET | CryptoDashboardView | Crypto overview |
-| `wallet/` | GET | CryptoWalletView | Wallet balance |
-| `strategy/` | GET/POST | CryptoStrategyConfigView | Strategy config |
-
 ### MT5 Flask API — `:5001`
 
 | Endpoint | Method | Purpose |
@@ -538,7 +521,7 @@ erDiagram
         int id PK
         string name
         json definition
-        string domain "FOREX/CRYPTO"
+        string domain "FOREX"
         int strategy_config_id FK
     }
 
@@ -605,14 +588,13 @@ metatrader5-quant-server-python/
 ├── backend/
 │   ├── django/
 │   │   ├── Dockerfile              # Gunicorn WSGI, 8 workers
-│   │   ├── requirements.txt        # UTF-16LE encoding
+│   │   ├── requirements.txt
 │   │   ├── manage.py
 │   │   └── app/
 │   │       ├── settings.py         # Celery config, beat schedule
-│   │       ├── urls.py             # /admin, /v1/, /v1/crypto/
+│   │       ├── urls.py             # /admin, /v1/
 │   │       ├── wsgi.py / asgi.py
 │   │       ├── nexus/              # Forex models, views, serializers
-│   │       ├── crypto/             # Crypto models, views, tasks
 │   │       ├── quant/
 │   │       │   ├── tasks.py        # 21 Celery tasks
 │   │       │   ├── tick_consumer.py
@@ -628,8 +610,7 @@ metatrader5-quant-server-python/
 │   │       │   │   ├── regime.py
 │   │       │   │   ├── mtf_analyzer.py
 │   │       │   │   ├── close/
-│   │       │   │   ├── scalping/
-│   │       │   │   └── crypto/
+│   │       │   │   └── scalping/
 │   │       │   └── ml/
 │   │       │       ├── regime_hmm.py
 │   │       │       ├── trainer.py
@@ -650,10 +631,8 @@ metatrader5-quant-server-python/
 │   │       ├── pages/              # 19 Vue pages
 │   │       ├── components/         # 16 Vue components
 │   │       ├── composables/        # usePolling.js
-│   │       ├── services/           # api.js (40+ endpoints)
+│   │       ├── services/           # api.js
 │   │       └── stores/             # Pinia stores
-│   │
-│   └── lighter-proxy/              # Lighter.xyz DEX proxy
 │
 ├── monitoring/
 │   ├── configs/

@@ -265,39 +265,21 @@ class CustomStrategyViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='activate')
     def activate(self, request, pk=None):
-        """Activate a custom strategy — FOREX sets StrategyConfig, others write to Redis."""
-        import redis
-        import json
+        """Activate a custom strategy — sets StrategyConfig active state."""
         custom = self.get_object()
         domain = custom.domain
-        definition = custom.definition or {}
 
-        if domain == 'FOREX':
-            if not custom.strategy_config:
-                return Response({'error': 'No StrategyConfig linked to this custom strategy'}, status=status.HTTP_400_BAD_REQUEST)
-            custom.strategy_config.is_active = not custom.strategy_config.is_active
-            if custom.strategy_config.is_active:
-                custom.strategy_config.last_activated = timezone.now()
-            custom.strategy_config.save()
-            status_label = 'activated' if custom.strategy_config.is_active else 'deactivated'
-            return Response({'status': status_label, 'domain': domain, 'strategy': custom.name})
-
-        r = redis.Redis.from_url(settings.CACHES.get('default', {}).get('LOCATION', 'redis://redis:6379/0'))
-
-        if domain == 'CRYPTO':
-            config = {
-                'pairs': definition.get('pairs', ['BTC', 'ETH', 'SOL']),
-                'capital_usd': definition.get('capital_usd', 1000),
-                'leverage': definition.get('leverage', 1),
-                'fast_ma': definition.get('fast_ma', 50),
-                'slow_ma': definition.get('slow_ma', 200),
-                'max_position_pct': definition.get('max_position_pct', 0.10),
-            }
-            r.set('crypto:strategy:config', json.dumps(config))
-        else:
+        if domain != 'FOREX':
             return Response({'error': f'Activation not supported for domain: {domain}'}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({'status': 'activated', 'domain': domain})
+        if not custom.strategy_config:
+            return Response({'error': 'No StrategyConfig linked to this custom strategy'}, status=status.HTTP_400_BAD_REQUEST)
+        custom.strategy_config.is_active = not custom.strategy_config.is_active
+        if custom.strategy_config.is_active:
+            custom.strategy_config.last_activated = timezone.now()
+        custom.strategy_config.save()
+        status_label = 'activated' if custom.strategy_config.is_active else 'deactivated'
+        return Response({'status': status_label, 'domain': domain, 'strategy': custom.name})
 
 
 class MarketPulseView(views.APIView):

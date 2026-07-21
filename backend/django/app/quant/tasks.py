@@ -436,24 +436,6 @@ def run_forex_entry():
         logger.error(f"[entry_forex] Task error: {e}")
 
 
-@shared_task(name='quant.tasks.run_crypto_entry', max_retries=2, soft_time_limit=55, time_limit=75)
-def run_crypto_entry():
-    """
-    KISS crypto entry — CVD LoP + CVD Absorption on Lighter.xyz.
-    Runs every 5 minutes from Celery beat.
-    """
-    from app.crypto.bot_control import is_crypto_bot_paused
-    if is_crypto_bot_paused():
-        return
-    try:
-        from app.quant.algorithms.entry_crypto import entry_crypto_algorithm
-        entry_crypto_algorithm()
-    except SoftTimeLimitExceeded:
-        logger.warning("[entry_crypto] Task timed out")
-    except Exception as e:
-        logger.error(f"[entry_crypto] Task error: {e}")
-
-
 @shared_task(name='quant.tasks.update_brain_pattern', max_retries=0)
 def update_brain_pattern(fingerprint: str = '', won: bool = False, pnl_r: float = 0.0,
                          symbol: str = '', closing_reason: str = ''):

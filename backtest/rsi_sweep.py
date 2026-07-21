@@ -15,7 +15,7 @@ import numpy as np
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 
-SYMBOLS = ['SOL', 'XAU', 'AVAX', 'DOGE']
+SYMBOLS = ['XAU']
 TIMEFRAMES = ['5m', '15m', '1h']
 RSI_PERIODS = [2, 3, 5, 7, 14]
 OVERSOLD = [10, 15, 20, 25, 30]

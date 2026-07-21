@@ -40,13 +40,12 @@ def make_ema_signal(fast_period: int, slow_period: int):
 
 # ── Parameter grid ──────────────────────────────────────────
 
-SYMBOLS = ['SOL', 'XAU', 'AVAX', 'DOGE']
+SYMBOLS = ['XAU']
 TIMEFRAMES = ['5m', '15m', '1h']
 FAST_PERIODS = [5, 8, 13, 21]
 SLOW_PERIODS = [21, 34, 50, 100]
 
-# SL/TP as (sl_pct, tp_pct) — crypto vs XAU
-CRYPTO_SLTP = [(0.015, 0.03), (0.02, 0.04), (0.03, 0.06)]
+# SL/TP as (sl_pct, tp_pct)
 XAU_SLTP = [(0.01, 0.02), (0.015, 0.03), (0.02, 0.04)]
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
@@ -60,7 +59,7 @@ def main():
     skipped = 0
 
     for symbol in SYMBOLS:
-        sltp_list = XAU_SLTP if symbol == 'XAU' else CRYPTO_SLTP
+        sltp_list = XAU_SLTP
 
         for tf in TIMEFRAMES:
             # Check if data file exists

@@ -35,7 +35,7 @@ instead:
 | 6 | Dashboard absent | Vue 3 SPA behind nginx that proxies `/api/mt5/` and `/api/django/` | `dashboard.yaml` with a K8s-adapted nginx config (the baked-in one uses Docker's `resolver 127.0.0.11`) |
 | 7 | `redis:7`, no persistence | `redis:6` with AOF + maxmemory policy; holds tick stream, beat schedule state, HMM cache | Matching args + `redis-data` PVC |
 | 8 | 3 namespaces (`trading-core`/`execution`/`intelligence`) | `.env` and dashboard nginx use bare hostnames (`redis`, `mt5`, `django`) — cross-namespace DNS breaks all of them | Single namespace `mt5-quant`; on one VM the split bought nothing |
-| 9 | Secret with 5 hardcoded values | ~40 env vars incl. MT5 creds, ANTHROPIC_API_KEY, Polymarket/Hyperliquid/Lighter wallet keys | Secret `app-env` generated from `.env` at deploy time — never committed |
+| 9 | Secret with 5 hardcoded values | ~40 env vars incl. MT5 creds, ANTHROPIC_API_KEY | Secret `app-env` generated from `.env` at deploy time — never committed |
 | 10 | Ingress for the Django API only | Four web surfaces: Django API, MT5 Flask API, VNC, dashboard | All four hosts, rendered from `.env` domains |
 | 11 | No probes, no resource limits | Compose defines healthchecks + mem/cpu limits per service | Translated 1:1 to probes/resources |
 | 12 | Shared volumes not addressed | `ml_models`, `quant-logs`, `static_volume` shared django↔celery | RWO PVCs — safe because single-node (all pods co-scheduled) |
@@ -51,8 +51,6 @@ instead:
   ClusterIssuer, then uncomment the TLS blocks in `ingress.template.yaml`.
 - **`~/.ssh` mount into celery** (present in compose): mount a Secret of type
   `kubernetes.io/ssh-auth` if that workflow is still needed.
-- **lighter-proxy**: a macOS launchd service (signer proxy), not a container —
-  runs outside the cluster by design.
 
 ## Operational notes for a trading system
 

@@ -2,7 +2,7 @@ import traceback
 import logging
 import pandas as pd
 
-from app.utils.constants import MT5Timeframe, METALS, OILS, CURRENCY_PAIRS, CRYPTOCURRENCIES
+from app.utils.constants import MT5Timeframe, METALS, OILS, CURRENCY_PAIRS
 from app.utils.api.data import symbol_info
 
 logger = logging.getLogger(__name__)
@@ -326,9 +326,7 @@ def calculate_commission(order_size_usd: float, pair: str) -> float:
     :return: The total commission for opening and closing the trade.
     """
     try:
-        if pair in CRYPTOCURRENCIES:
-            commission_rate = 0.0005 # 0.05%
-        elif pair in OILS:
+        if pair in OILS:
             commission_rate = 0.00025
         elif pair in METALS:
             commission_rate = 0.00025

@@ -11,7 +11,7 @@ each ends with a verification gate — don't continue past a failing gate.
 - [ ] MT5 broker account credentials (start with a **demo account** — see Phase 8)
 - [ ] A domain you control, with DNS managed somewhere you can add A records
 - [ ] API keys ready for whatever is enabled in `.env`: Anthropic (AI Brain /
-      Polymarket LLM), Polymarket wallet, Hyperliquid, Lighter
+      trade pattern labeling)
 - [ ] This repo accessible from the VM (`gh auth login` or a deploy key)
 
 ## Phase 1 — Provision the VM

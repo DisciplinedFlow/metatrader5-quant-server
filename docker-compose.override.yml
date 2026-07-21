@@ -75,7 +75,7 @@ services:
       traefik.http.routers.django-https.tls.certresolver: ""
 
   dashboard:
-    profiles: ["forex", "crypto", "all"]
+    profiles: ["forex", "all"]
     build:
       context: backend/dashboard
       dockerfile: Dockerfile

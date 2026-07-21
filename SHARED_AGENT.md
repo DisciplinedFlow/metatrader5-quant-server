@@ -107,8 +107,3 @@ See `git log --oneline -10` for latest commits.
 8. **MT5 API:** localhost:5001 (from host) or mt5:5001 (from containers)
 9. **Dashboard:** rebuild with `docker compose up -d --build dashboard`
 10. **Always clean orphans** after any restart/crash
-Santiment SDK (sanpy) — crypto social sentiment
-- Free tier: limited historical data, paid for real-time
-- Best for: Lighter DEX crypto bot (social volume, whale tracking)
-- Not useful for: forex (no XAGUSD/EURUSD coverage)
-- pip install sanpy, docs: https://academy.santiment.net/sanapi/

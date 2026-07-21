@@ -2,7 +2,7 @@
 Bollinger Band Mean Reversion Parameter Sweep
 =============================================
 Tests ALL combinations of BB params, RSI confirmation, ADX filter,
-TP type (mid-BB dynamic vs fixed %), and SL across SOL/XAU/AVAX/DOGE.
+TP type (mid-BB dynamic vs fixed %), and SL across XAU.
 
 Custom simulation loop handles dynamic BB middle-band TP target.
 """
@@ -21,7 +21,7 @@ import pandas as pd
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 
 # ── Parameter grid ──────────────────────────────────────────
-SYMBOLS = ['SOL', 'XAU', 'AVAX', 'DOGE']
+SYMBOLS = ['XAU']
 TIMEFRAMES = ['5m', '15m', '1h']
 BB_PERIODS = [14, 20, 30]
 BB_STDS = [1.5, 2.0, 2.5, 3.0]

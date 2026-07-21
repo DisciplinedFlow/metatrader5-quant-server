@@ -7,7 +7,7 @@
 
 ## The Problem
 
-We have a $100K demo account running 6 strategies with a 40% win rate and -$112 PnL. The crypto bot on Lighter DEX, with simpler logic, runs 60% WR and +$22. Why?
+We have a $100K demo account running 6 strategies with a 40% win rate and -$112 PnL. A simpler rule-based bot on a comparable market runs 60% WR and +$22. Why?
 
 **Because our forex bot doesn't trade — it matches checklists.**
 
@@ -220,11 +220,11 @@ Stanford 2025 research shows Vision Transformers on candlestick charts outperfor
 
 ## Why This Works
 
-The crypto bot at 60% WR uses simple RSI + EMA + session-aware entries on a DEX. It works because:
+The 60% WR bot uses simple RSI + EMA + session-aware entries. It works because:
 1. It trades WITH the trend (EMA direction filter)
 2. It enters at extremes (RSI oversold/overbought)
 3. It has proper R:R (small losses, let winners run)
-4. The market (Lighter DEX) has consistent patterns
+4. The market has consistent patterns
 
 Our forex bot at 40% WR uses 10 layers of filters and sophisticated indicators. It fails because:
 1. It doesn't see the trend — it matches rules

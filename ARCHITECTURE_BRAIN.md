@@ -1,4 +1,4 @@
-# Quant Brain v1.0 — Full Dual-Domain Architecture
+# Quant Brain v1.0 — Forex Architecture
 
 ## System Overview
 
@@ -6,8 +6,6 @@
 graph TB
     subgraph DATA["DATA SOURCES"]
         MT5["MT5 Wine/QEMU\n14 forex symbols, 4 TFs\nDOM orderbook"]
-        LIGHTER_API["Lighter.xyz DEX\nZero-fee perps\n30+ symbols"]
-        HL_API["Hyperliquid\nOn-chain perps\nMainnet"]
         RSS["RSS Feeds\nCNBC, MarketWatch\nBBC, Yahoo"]
         PI["Raspberry Pi 5\nFinBERT NLP 67ms\nOllama Qwen 2.5"]
         CLAUDE["Claude Haiku\nCausal analysis\n100 EUR budget"]
@@ -19,7 +17,7 @@ graph TB
         CLAUDE --> |"2nd: Causal chains"| NEWS_CHAIN
         RSS --> |"3rd: Keywords"| NEWS_CHAIN
         NEWS_CHAIN --> RISK["Risk Level\nEXTREME 0.5x\nELEVATED 0.75x\nNORMAL 1.0x"]
-        CLAUDE --> CAUSAL["CausalChain nodes\nIran -> oil -> gold -> crypto"]
+        CLAUDE --> CAUSAL["CausalChain nodes\nIran -> oil -> gold"]
     end
 
     subgraph FOREX["FOREX DOMAIN"]
@@ -47,32 +45,8 @@ graph TB
         end
     end
 
-    subgraph CRYPTO["CRYPTO DOMAIN"]
-        direction TB
-        subgraph CR_ENGINES["Entry Engines"]
-            RSI2["RSI(2) Scalper\nEvery 30s\n5m candles\nRSI<15 + EMA(50)"]
-            MR["Mean Reversion\nEvery 45s\n15m candles\nBB + RSI + ADX\n+ liquidation cascade"]
-            EMA["EMA Entry\nEvery 60s\n1h EMA(8/21)\n+ 15m RSI timing"]
-        end
-        subgraph CR_INTEL["Intelligence"]
-            CR_NEWS["News Sentiment\nSizing modifier"]
-            CR_GRAPH["Graph Advisor\nPattern memory\nCAUTION 0.7x"]
-            CR_WHALE["Whale Detection\nCVD flow analysis\nBuy/sell pressure"]
-            CR_FUNDING["Funding Signal\nRate z-score\nContrarian sizing"]
-        end
-        subgraph CR_EXEC["Execution"]
-            PROXY["Signer Proxy :5555\nGo native on macOS"]
-            CR_ORDER["Lighter Protocol\nZero-fee market orders\nOn-chain SL/TP (OCO)"]
-        end
-        subgraph CR_MANAGE["Position Management"]
-            CR_EXIT["Exit Algorithm\nEvery 30s\nTrailing + SL/TP"]
-            CR_RECON["Reconciliation\nExchange <-> DB\nEvery 60s\nSide flip detection"]
-            CR_GRID["Grid Strategy\nEvery 60s"]
-        end
-    end
-
     subgraph NEO["NEO4J KNOWLEDGE GRAPH"]
-        TRADES["Trade 308+\nForex + Crypto\nRULE_BASED -> BRAIN_V1"]
+        TRADES["Trade 308+\nForex\nRULE_BASED -> BRAIN_V1"]
         REASONING["TradeReasoning 6+\nWHY each trade\nSetup + context"]
         CHAINS["CausalChain\nEvent -> impact\nPREDICTS_IMPACT"]
         REJECTED["RejectedSignal 575+\nBlocked entries\nRejection layer"]
@@ -82,17 +56,12 @@ graph TB
 
     subgraph DASH["DASHBOARD"]
         FX_DASH["Forex Pages\nOverview, Positions\nHistory, Chart\nStrategies, Logs\nML, AI Brain"]
-        CR_DASH["Crypto Pages\nOverview + News Feed\nPositions, History\nChart, Logs\nStrategies"]
         WS["WebSocket :8001\nReal-time events\ntrade/position/status/news"]
     end
 
     %% Data flows
     MT5 --> CVD
     MT5 --> STRUCT
-    LIGHTER_API --> RSI2
-    LIGHTER_API --> MR
-    LIGHTER_API --> EMA
-    HL_API --> CR_DASH
 
     %% Forex pipeline
     CVD --> MTF
@@ -102,35 +71,21 @@ graph TB
     RISK --> FX_SIZING
     FX_SIZING --> FX_ORDER
 
-    %% Crypto pipeline
-    RSI2 --> CR_NEWS
-    MR --> CR_NEWS
-    EMA --> CR_NEWS
-    CR_NEWS --> CR_GRAPH
-    CR_GRAPH --> CR_WHALE
-    CR_WHALE --> CR_ORDER
-    CR_ORDER --> PROXY
-
     %% Neo4j connections
     FX_ORDER --> TRADES
-    CR_ORDER --> TRADES
     FX_ORDER --> REASONING
-    CR_ORDER --> REASONING
     CAUSAL --> CHAINS
 
     %% Management
     PM --> MT5
     FX_RECON --> MT5
-    CR_EXIT --> LIGHTER_API
-    CR_RECON --> LIGHTER_API
 
     %% Dashboard
     TRADES --> WS
-    WS --> CR_DASH
     WS --> FX_DASH
 ```
 
-## Intelligence Flow (Shared Across Domains)
+## Intelligence Flow
 
 ```mermaid
 flowchart LR
@@ -151,10 +106,8 @@ flowchart LR
     KW --> |risk_level| CACHE
 
     CACHE --> FX_ENTRY[Forex Entry\n12-factor sizing]
-    CACHE --> CR_ENTRY[Crypto Entry\nAll 3 strategies]
     NEO4J --> ADVISOR[Graph Advisor\nTemporal decay 7d\nBRAIN_V1 2x weight]
     ADVISOR --> FX_ENTRY
-    ADVISOR --> CR_ENTRY
 ```
 
 ## Forex Entry Pipeline (23 Gates)
@@ -182,59 +135,6 @@ flowchart TD
     EXECUTE --> RECORD_DB["PostgreSQL"]
     EXECUTE --> RECORD_NEO["Neo4j\nTrade + Reasoning"]
     EXECUTE --> RECORD_WS["WebSocket push"]
-```
-
-## Crypto Entry Pipeline (Unshackled — Training Mode)
-
-```mermaid
-flowchart TD
-    subgraph RSI2_FLOW["RSI(2) Scalper — Every 30s"]
-        RSI_SIG["RSI(2) < 15 + Price > EMA(50)\nor RSI(2) > 85 + Price < EMA(50)"]
-        RSI_SIG --> RSI_NEWS["News Sentiment\nSizing only"]
-        RSI_NEWS --> RSI_GRAPH["Graph Advisor\nCAUTION=0.7x\nAVOID=skip"]
-        RSI_GRAPH --> RSI_WHALE["Whale CVD\nFlow analysis"]
-        RSI_WHALE --> RSI_SIZE["Position Sizing\n$8 x leverage x news x graph\nx neo4j x funding x flow"]
-        RSI_SIZE --> RSI_EXEC["Market Order\n+ OCO SL/TP on-chain"]
-    end
-
-    subgraph MR_FLOW["Mean Reversion — Every 45s"]
-        MR_SIG["Price near BB(20,2.5)\n+ RSI oversold/overbought\n+ ADX < 40 (ranging)"]
-        MR_LIQ{"Liquidation\nCascade?"}
-        MR_SIG --> MR_LIQ
-        MR_LIQ --> |"Aligned"| MR_BOOST["1.5x boost"]
-        MR_LIQ --> |"Alone"| MR_HALF["0.5x solo entry"]
-        MR_LIQ --> |"None"| MR_NORMAL["Normal size"]
-        MR_BOOST --> MR_INTEL["News + Graph\nSizing modifiers"]
-        MR_HALF --> MR_INTEL
-        MR_NORMAL --> MR_INTEL
-        MR_INTEL --> MR_EXEC["Market Order\n+ OCO SL/TP"]
-    end
-
-    subgraph EMA_FLOW["EMA Entry — Every 60s"]
-        EMA_SIG["1h EMA(8/21) Crossover\nor Extreme RSI Pullback\ntrend_pullback DISABLED"]
-        EMA_SIG --> EMA_INTEL["News + Graph\nSizing modifiers"]
-        EMA_INTEL --> EMA_EXEC["Market Order\n+ OCO SL/TP"]
-    end
-
-    RSI_EXEC --> RECORD["Record to DB\n+ Neo4j TradeReasoning\n+ WebSocket push"]
-    MR_EXEC --> RECORD
-    EMA_EXEC --> RECORD
-```
-
-## Disabled Crypto Gates (Training Mode)
-
-```mermaid
-flowchart LR
-    ML["ML Filter\nXGBoost score < 0.55\nBLANKET 0.44 on all"] --> |DISABLED| X1["Was blocking 92%\nof signals"]
-    STREAK["Losing Streak\n5 losses -> 5m pause"] --> |DISABLED| X2["Brain needs to\nobserve all conditions"]
-    PULLBACK["trend_pullback_15m\n36% WR, -$2.38"] --> |KILLED| X3["Statistically\nlosing strategy"]
-
-    style ML fill:#ef4444,color:#fff
-    style STREAK fill:#ef4444,color:#fff
-    style PULLBACK fill:#ef4444,color:#fff
-    style X1 fill:#1e293b,color:#9ca3af
-    style X2 fill:#1e293b,color:#9ca3af
-    style X3 fill:#1e293b,color:#9ca3af
 ```
 
 ## Neo4j Knowledge Graph Schema
@@ -275,7 +175,6 @@ graph TB
         REDIS_C["Redis 512MB\n3 DBs: broker/cache/ticks"]
         PG_C["PostgreSQL 58MB"]
         DASH_C["Dashboard :3080\nVue 3 + Vite"]
-        PROXY_C["Lighter Proxy :5555\nGo signer on macOS"]
     end
 
     subgraph PI_HW["Raspberry Pi 5 16GB + Hailo 40 TOPS"]
@@ -289,16 +188,11 @@ graph TB
     subgraph CLOUD["External APIs"]
         ANTHROPIC["Claude Haiku\n100 EUR budget"]
         VANTAGE["Vantage MT5\nDemo account"]
-        LIGHTER_EX["Lighter.xyz\nTestnet DEX\nAccount #718566"]
-        HYPERLIQ["Hyperliquid\nMainnet\n$0 balance"]
     end
 
     CELERY_C <--> |"HTTP :8100"| FLASK_PI
     MT5_C <--> |"HTTP :5001"| VANTAGE
     CELERY_C <--> |"HTTPS"| ANTHROPIC
-    CELERY_C <--> |"HTTP :5555"| PROXY_C
-    PROXY_C <--> |"HTTPS"| LIGHTER_EX
-    CELERY_C <--> |"HTTPS"| HYPERLIQ
     CELERY_C <--> NEO4J_C
     CELERY_C <--> REDIS_C
     CELERY_C <--> PG_C
@@ -320,16 +214,6 @@ pie title Memory Allocation (9.8GB of 16GB)
     "Redis" : 512
     "Celery-Beat" : 512
     "8x Monitoring" : 2048
-```
-
-## Crypto Performance (160+ trades)
-
-```mermaid
-xychart-beta
-    title "Crypto Strategy Performance"
-    x-axis ["Reconciled", "RSI2 Buy", "Crossover", "RSI2 Sell", "Pullback (KILLED)"]
-    y-axis "Total PnL ($)" -5 --> 35
-    bar [31.58, 5.63, 0.79, -1.72, -2.38]
 ```
 
 ## Trading Eras Timeline
@@ -367,28 +251,4 @@ timeline
         $200 equity : Re-enable losing streak cooldown
         500 trades : ML threshold -> 0.55, graph features active
         $500 equity : Increase position limits + sizing
-```
-
-## Cross-Domain Data Flow
-
-```mermaid
-flowchart TB
-    subgraph FOREX_SIGNALS["Forex Signals"]
-        FX_NEWS["News: Iran sanctions\noil spike detected"]
-        FX_REGIME["Regime: USD strength\nrisk-off detected"]
-    end
-
-    subgraph SHARED_BRAIN["Shared Knowledge Graph"]
-        CHAIN1["CausalChain:\nIran -> oil -> USD -> gold -> crypto risk-off"]
-        ADVISOR2["Graph Advisor:\nBTC loses 65% WR in risk-off"]
-    end
-
-    subgraph CRYPTO_IMPACT["Crypto Impact"]
-        CR_SIZE["BTC LONG sizing: 0.5x\nSOL LONG sizing: 0.5x\nETH LONG: AVOID"]
-    end
-
-    FX_NEWS --> CHAIN1
-    FX_REGIME --> CHAIN1
-    CHAIN1 --> ADVISOR2
-    ADVISOR2 --> CR_SIZE
 ```

@@ -159,7 +159,7 @@ wsOn('news_alert', () => fetchMarketPulse())
 
 onMounted(fetchTrades)
 usePolling(refresh, 30000)              // was 5s — bot gets API priority
-usePolling(fetchMarketPulse, 300000)    // was 120s — use Lighter browser instead
+usePolling(fetchMarketPulse, 300000)    // was 120s
 usePolling(fetchTrades, 60000)          // was 30s
 usePolling(() => hmmRegime.fetch(), 120000)  // was 30s
 </script>

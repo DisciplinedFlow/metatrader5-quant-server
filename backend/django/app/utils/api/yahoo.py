@@ -23,16 +23,6 @@ MT5_TO_YAHOO = {
     'NG': 'NG=F',
     'BRN': 'BZ=F',
     'WTI': 'CL=F',
-    # Crypto
-    'BTC': 'BTC-USD',
-    'ETH': 'ETH-USD',
-    'SOL': 'SOL-USD',
-    'AVAX': 'AVAX-USD',
-    'DOGE': 'DOGE-USD',
-    'ADA': 'ADA-USD',
-    'MATIC': 'MATIC-USD',
-    'DOT': 'DOT-USD',
-    'LINK': 'LINK-USD',
 }
 
 

@@ -1183,7 +1183,7 @@ Lower timeframe confirmation before entry. We could use M1 confirmation for our 
 | **Trailing** | ATR-adaptive (2x/4x/3x ATR) | S/R swing trailing + phase-based |
 | **Data processing** | Polars (fast) | Pandas (slower but sufficient) |
 | **Broker** | Direct MT5 Python API | MT5 Flask API (containerized) |
-| **Instruments** | XAUUSD only | Multi-pair forex + Lighter DEX |
+| **Instruments** | XAUUSD only | Multi-pair forex |
 | **Retraining** | Daily auto with rollback | Manual trigger at 30 labeled trades |
 | **Dashboard** | Next.js web UI | Vue 3 + lightweight-charts |
 | **Notifications** | Telegram bidirectional | Django AI Brain (advisory) |
@@ -1214,17 +1214,15 @@ Lower timeframe confirmation before entry. We could use M1 confirmation for our 
 
 1. **MFE/MAE-optimized exits** -- Our Phase 0-3 system based on actual trade statistics (MFE lock at $5+, flat exit threshold). Data-driven rather than rule-based.
 
-2. **Multi-instrument support** -- We trade multiple forex pairs + crypto. They're single-instrument (XAUUSD).
+2. **Multi-instrument support** -- We trade multiple forex pairs. They're single-instrument (XAUUSD).
 
 3. **S/R-based dynamic TP/SL** -- Our multi-TF swing clustering places TP/SL at actual structure levels. They use fixed ATR multiples.
 
 4. **AI Brain advisory system** -- LLM-powered trade analysis (advisory for exits, auto-execute for SL tightening).
 
-5. **Lighter DEX integration** -- Cross-venue execution capability.
+5. **Celery task architecture** -- Distributed, fault-tolerant task processing vs their monolithic loop.
 
-6. **Celery task architecture** -- Distributed, fault-tolerant task processing vs their monolithic loop.
-
-7. **Full 30-feature extraction for LLM training** -- We extract extensive features for future LLM training data, beyond what the live ML model uses.
+6. **Full 30-feature extraction for LLM training** -- We extract extensive features for future LLM training data, beyond what the live ML model uses.
 
 ### Recommended Integration Path
 

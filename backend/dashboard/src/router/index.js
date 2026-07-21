@@ -46,32 +46,6 @@ const routes = [
     component: () => import('@/pages/StrategiesPage.vue'),
   },
 
-  // --- Crypto ---
-  {
-    path: '/crypto',
-    component: () => import('@/pages/crypto/CryptoDashboardPage.vue'),
-  },
-  {
-    path: '/crypto/positions',
-    component: () => import('@/pages/crypto/CryptoPositionsPage.vue'),
-  },
-  {
-    path: '/crypto/history',
-    component: () => import('@/pages/crypto/CryptoHistoryPage.vue'),
-  },
-  {
-    path: '/crypto/chart',
-    component: () => import('@/pages/crypto/CryptoChartPage.vue'),
-  },
-  {
-    path: '/crypto/logs',
-    component: () => import('@/pages/crypto/CryptoLogsPage.vue'),
-  },
-  {
-    path: '/crypto/strategy',
-    component: () => import('@/pages/crypto/CryptoStrategyPage.vue'),
-  },
-
   // --- AI Brain ---
   {
     path: '/ai-brain',

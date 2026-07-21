@@ -1,4 +1,4 @@
-from app.utils.constants import CRYPTOCURRENCIES, TIMEZONE, MT5Timeframe
+from app.utils.constants import TIMEZONE, MT5Timeframe
 
 PAIRS = ['NG-C', 'UKOUSDft', 'USOUSD', 'XAGUSD', 'XAUUSD', 'XAUEUR', 'EURUSD', 'EURGBP', 'USDJPY', 'USDCAD', 'USDCHF', 'AUDUSD', 'NZDUSD']
 MAIN_TIMEFRAME = MT5Timeframe.M15

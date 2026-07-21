@@ -16,7 +16,6 @@ class Trade(models.Model):
 
     MARKET_TYPE_CHOICES = [
         ('FOREX', 'Forex'),
-        ('CRYPTO', 'Crypto'),
         ('OTHER', 'Other'),
     ]
 
@@ -160,7 +159,6 @@ class BacktestResult(models.Model):
 class CustomStrategy(models.Model):
     DOMAIN_CHOICES = [
         ('FOREX', 'Forex'),
-        ('CRYPTO', 'Crypto'),
     ]
 
     name = models.CharField(max_length=100)

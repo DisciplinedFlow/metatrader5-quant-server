@@ -66,16 +66,6 @@ LOGGING = {
             'filename': os.path.join(BASE_DIR, 'logs/quant.log'),
             'formatter': 'verbose',
         },
-        'crypto_file': {
-            'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs/crypto.log'),
-            'formatter': 'verbose',
-        },
-        'lighter_file': {
-            'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs/lighter.log'),
-            'formatter': 'verbose',
-        },
         'ai_brain_file': {
             'class': 'logging.FileHandler',
             'filename': os.path.join(BASE_DIR, 'logs/ai_brain.log'),
@@ -85,16 +75,6 @@ LOGGING = {
     'loggers': {
         'app.quant': {
             'handlers': ['console', 'file'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'app.crypto': {
-            'handlers': ['console', 'crypto_file'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'app.lighter': {
-            'handlers': ['console', 'lighter_file'],
             'level': 'INFO',
             'propagate': False,
         },
@@ -127,7 +107,6 @@ INSTALLED_APPS = [
     'django_extensions',
     'app.nexus',
     'app.quant',
-    'app.crypto',
 ]
 
 REST_FRAMEWORK = {
@@ -277,26 +256,6 @@ CELERY_TASK_ROUTES = {
     'quant.tasks.run_ml_retrain': {'queue': 'analysis'},
     'quant.tasks.run_llm_retrain': {'queue': 'analysis'},
     'quant.tasks.check_news_sentiment': {'queue': 'default'},
-    # ── Crypto (celery-crypto worker: queues crypto-critical, crypto-analysis) ──
-    'quant.tasks.run_crypto_entry': {'queue': 'crypto-critical'},
-    'crypto.tasks.run_lighter_exit': {'queue': 'crypto-critical'},
-    'crypto.tasks.run_lighter_reconcile': {'queue': 'crypto-critical'},
-    'crypto.tasks.run_lighter_rsi_scalper': {'queue': 'crypto-critical'},
-    'crypto.tasks.run_lighter_bb_scalper': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_lighter_adx_entry': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_lighter_entry': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_lighter_mean_reversion': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_lighter_cvd': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_lighter_momentum': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_lighter_wti': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_lighter_near': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_lighter_tsla': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_funding_arb_scan': {'queue': 'crypto-analysis'},
-    'crypto.tasks.sync_crypto_prices': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_crypto_exit': {'queue': 'crypto-critical'},
-    'crypto.tasks.run_crypto_backtest': {'queue': 'crypto-analysis'},
-    'crypto.tasks.run_crypto_backtest_all': {'queue': 'crypto-analysis'},
-    'crypto.tasks.train_crypto_ml': {'queue': 'crypto-analysis'},
 }
 
 # --- Neo4j Knowledge Graph (DISABLED — container removed) ---
@@ -332,47 +291,6 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.check_tick_consumer_health',
         'schedule': 60.0,
     },
-    # ── Crypto (Lighter.xyz) ─────────────────────────────────
-    'run-crypto-entry': {
-        'task': 'quant.tasks.run_crypto_entry',
-        'schedule': 60.0,
-    },
-    'run-lighter-exit': {
-        'task': 'crypto.tasks.run_lighter_exit',
-        'schedule': 10.0,  # 6/min × 2 = 12 API/min — fastest possible exit detection
-    },
-    'run-lighter-rsi-scalper': {
-        'task': 'crypto.tasks.run_lighter_rsi_scalper',
-        'schedule': 20.0,  # 3/min × 2 = 6 API/min — XAU scalp entries
-    },
-    'run-lighter-bb-scalper': {
-        'task': 'crypto.tasks.run_lighter_bb_scalper',
-        'schedule': 30.0,  # every 30s — WTI BB mean reversion
-    },
-    # DISABLED — ADX strategy unprofitable over 60d Yahoo backtest (PF<1 all pairs)
-    # 'run-lighter-adx-entry': {
-    #     'task': 'crypto.tasks.run_lighter_adx_entry',
-    #     'schedule': 30.0,
-    # },
-    'run-lighter-reconcile': {
-        'task': 'crypto.tasks.run_lighter_reconcile',
-        'schedule': 45.0,  # 1.3/min × 3 = 4 API/min
-    },
-    'run-lighter-entry': {
-        'task': 'crypto.tasks.run_lighter_entry',
-        'schedule': 30.0,  # 2/min × 2 = 4 API/min — XAU/XAG/WTI momentum
-    },
-    'run-lighter-mean-reversion': {
-        'task': 'crypto.tasks.run_lighter_mean_reversion',
-        'schedule': 60.0,  # 1/min × 2 = 2 API/min
-    },
-    'run-lighter-wti': {
-        'task': 'crypto.tasks.run_lighter_wti',
-        'schedule': 30.0,  # 2/min × 3 = 6 API/min — war headlines move fast
-    },
-    # NEAR/TSLA disabled — commodities only (war economy focus)
-    # 'run-lighter-near': { ... },
-    # 'run-lighter-tsla': { ... },
     # ── Monitoring ──────────────────────────────────────────
     'fetch-market-pulse': {
         'task': 'quant.tasks.fetch_market_pulse',
@@ -382,8 +300,4 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'quant.tasks.check_news_sentiment',
         'schedule': 300.0,
     },
-    # 'run-funding-arb-scan': {  # Disabled — not trading on Hyperliquid
-    #     'task': 'crypto.tasks.run_funding_arb_scan',
-    #     'schedule': 300.0,
-    # },
 }

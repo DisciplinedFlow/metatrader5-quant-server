@@ -256,7 +256,7 @@ class BacktestEngine:
         drawdown = peak - cum_pnl
         max_drawdown = float(np.max(drawdown)) if len(drawdown) > 0 else 0.0
 
-        # Annualized Sharpe (24/7 crypto trading)
+        # Annualized Sharpe (trades-per-year estimated from actual data timespan)
         returns = np.array([t['pnl_net'] for t in closed])
         if len(returns) > 1 and np.std(returns) > 0:
             # Estimate trades per year: total trades / data span * 365 days

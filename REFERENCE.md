@@ -123,7 +123,6 @@ ENERGY_TP = 4.0               # Still 1:2 R:R
 | `nexus_marketregime` | ❌ TRUNCATE | Cached HMM states (stale) |
 | `nexus_backtestresult` | ❌ TRUNCATE | Old backtests |
 | `nexus_rotationlog` | ❌ TRUNCATE | Strategy rotation history |
-| `crypto_*` | ❌ TRUNCATE | Crypto bot paused, account at $30 |
 
 ### CLI Tool
 `tools/trade_cli.py` — standalone Python CLI for manual market analysis and order placement. Pure math, hits MT5 Flask API directly. Keep as-is.
@@ -137,7 +136,6 @@ ENERGY_TP = 4.0               # Still 1:2 R:R
 backend/django/app/quant/knowledge/          # Neo4j graph — 3,737 lines, no data
 backend/django/app/quant/ml/                 # HMM + XGBoost + LLM — 4,631 lines, no data
 backend/django/app/quant/intelligence/       # Claude Haiku labeler — async, non-blocking, pointless without data
-backend/django/app/quant/algorithms/crypto/  # Dead (crypto bot paused)
 backend/django/app/quant/algorithms/scalping/      # Dead (disabled)
 backend/django/app/quant/algorithms/mean_reversion/ # Dead (disabled)
 ```
@@ -196,11 +194,6 @@ Every 5 minutes (Celery beat):
   6. Place order → trailing stop takes over
 ```
 
-### Crypto Bot — NOT NOW
-- Account at $30 after testing. No structural edge found.
-- Bot paused via `cache.set('crypto_bot_paused', True)`.
-- Do not restart until account funded and edge verified on paper.
-
 ### Symbols to Trade (Forex)
 ```python
 SCAN_SYMBOLS = [
@@ -227,9 +220,6 @@ TRUNCATE nexus_mlmodel CASCADE;
 TRUNCATE nexus_rotationlog CASCADE;
 TRUNCATE nexus_pairlock CASCADE;
 TRUNCATE nexus_trainingrun CASCADE;
-TRUNCATE crypto_cryptoposition CASCADE;
-TRUNCATE crypto_cryptotrade CASCADE;
-TRUNCATE crypto_cryptobacktestresult CASCADE;
 "
 
 # 2. Redis — flush all 3 databases

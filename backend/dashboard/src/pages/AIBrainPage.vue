@@ -172,18 +172,6 @@ usePolling(refresh, 60000)  // was 15s
           </ul>
         </div>
 
-        <!-- Crypto -->
-        <div class="tp-card">
-          <div class="card-section-header">
-            <span class="material-symbols-outlined" style="font-size:18px">currency_bitcoin</span>
-            Crypto Analysis
-          </div>
-          <p class="analysis-summary">{{ analysis.crypto_analysis?.summary }}</p>
-          <ul v-if="analysis.crypto_analysis?.recommendations?.length" class="rec-list">
-            <li v-for="(r, i) in analysis.crypto_analysis.recommendations" :key="i">{{ r }}</li>
-          </ul>
-        </div>
-
       </div>
 
       <!-- Strategy Insights -->

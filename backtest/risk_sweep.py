@@ -1,6 +1,6 @@
 """
 Risk management parameter sweep — SL/TP ratios, time-based exits, trailing stops.
-Uses EMA 8/21 crossover as baseline signal across SOL, XAU, AVAX, DOGE.
+Uses EMA 8/21 crossover as baseline signal across XAU.
 """
 
 import os
@@ -260,7 +260,7 @@ def compute_stats(trades: List[Dict]) -> Dict:
 # ── SWEEP 1: R:R Ratio ───────────────────────────────────
 
 def sweep_rr():
-    symbols = ['SOL', 'XAU', 'AVAX', 'DOGE']
+    symbols = ['XAU']
     sl_pcts = [0.01, 0.015, 0.02, 0.03]
     rr_ratios = [1.0, 1.5, 2.0, 2.5, 3.0]
     timeframe = '1h'
@@ -306,7 +306,7 @@ def sweep_rr():
 # ── SWEEP 2: Time-based exits ────────────────────────────
 
 def sweep_time():
-    symbols = ['SOL', 'XAU', 'AVAX', 'DOGE']
+    symbols = ['XAU']
     timeframes = ['1h', '15m']
     max_holds = [5, 10, 20, 50, 100]
     sl_pct = 0.02
@@ -350,7 +350,7 @@ def sweep_time():
 # ── SWEEP 3: Trailing stops ──────────────────────────────
 
 def sweep_trailing():
-    symbols = ['SOL', 'XAU', 'AVAX', 'DOGE']
+    symbols = ['XAU']
     timeframe = '1h'
     sl_pct = 0.02
     trail_activations = [0.01, 0.02, 0.03]
@@ -451,7 +451,7 @@ def _print_table(sub: pd.DataFrame, sweep_name: str):
 def main():
     print("=" * 80)
     print("RISK MANAGEMENT PARAMETER SWEEP")
-    print("EMA 8/21 crossover | SOL, XAU, AVAX, DOGE")
+    print("EMA 8/21 crossover | XAU")
     print("Slippage: 0.05% | Fees: 0.028% per leg")
     print("=" * 80)
 
